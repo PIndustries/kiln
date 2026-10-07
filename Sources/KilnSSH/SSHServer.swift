@@ -290,8 +290,9 @@ private final class ShellHandler: ChannelInboundHandler {
         busy = true
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands
+        let sessionID = owner.uuidString
         Task {
-            let result = await commands.execute(line)
+            let result = await commands.execute(line, sessionID: sessionID)
             let modules = await commands.snapshot()
             let management = await commands.management()
             channel.eventLoop.execute {

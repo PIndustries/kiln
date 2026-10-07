@@ -358,3 +358,21 @@ extension KilnRuntime {
         return "Active \(name)@\(manifest.version) via 127.0.0.1:\(manifest.ingressPort!) (healthy; previous connections drained)"
     }
 }
+
+
+extension KilnRuntime {
+    public func performApprovedOperation(_ operation: String, name: String, fingerprint: String) async throws -> String {
+        guard snapshot().first(where: { $0.id == name })?.generationFingerprint == fingerprint else {
+            throw KilnError.message("Module changed since proposal; ask AI for a fresh proposal")
+        }
+        switch operation {
+        case "start": return try await start(name)
+        case "stop": return try await stop(name)
+        case "rollback": return try await rollback(name)
+        case "restart":
+            _ = try await stop(name)
+            return try await start(name)
+        default: throw KilnError.message("Unsupported AI operation")
+        }
+    }
+}

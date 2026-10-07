@@ -41,6 +41,7 @@ public struct KilnTerminal {
     private var history: [String] = []
     private var historyPosition: Int?
     private var draft = ""
+    private var aiMode = false
     private var transcript: [String] = ["Command drawer ready. Type help, or use Tab to complete."]
     private var scroll = 0
     private var menu: Int? = nil
@@ -78,9 +79,9 @@ public struct KilnTerminal {
         transcript = Array(transcript.suffix(300)); scroll = 0
         notice = status == 0 ? (lines.count > 1 ? "Command completed. Output is in the drawer." : lines.first ?? "Done") : "Failed: " + (lines.first ?? "Unknown error")
     }
-    private mutating func execute(_ command: String) -> [TerminalEffect] {
+    private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
         guard !busy else { return [] }
-        busy = true; scroll = 0; transcript.append("> " + command)
+        busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
         notice = "Working: " + command
         return [.command(command)]
     }
@@ -211,7 +212,7 @@ public struct KilnTerminal {
                 cursor = input.count
             }
         case .tab:
-            let fixed = ["vault help", "vault put ", "vault list", "vault grant ", "vault revoke ", "vault grants ", "vault delete ", "session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app deploy ", "app rollback ", "app releases ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
+            let fixed = ["ai", "ai help", "ai status", "ai ask ", "ai reset", "vault help", "vault put ", "vault list", "vault grant ", "vault revoke ", "vault grants ", "vault delete ", "session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app deploy ", "app rollback ", "app releases ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
             let sessionCommands = sessions.flatMap { ["session attach " + $0.name, "session close " + $0.name] }
             let expanded = ["start", "stop", "restart", "health", "logs", "rollback", "releases"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
             let matches = (fixed + expanded + sessionCommands).filter { $0.hasPrefix(input) && $0 != input }
@@ -222,7 +223,7 @@ public struct KilnTerminal {
                 if common.count > input.count { input = common; cursor = input.count }
                 else { transcript += matches; transcript = Array(transcript.suffix(300)) }
             }
-        case .pageUp: scroll = min(max(0, transcript.count - 1), scroll + 5)
+        case .pageUp: scroll = min(max(0, (aiMode ? transcript.reduce(0) { $0 + max(1, ($1.count / max(1, width - 4)) + 1) } : transcript.count) - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
@@ -231,6 +232,17 @@ public struct KilnTerminal {
             guard !command.isEmpty else { return [] }
             if history.last != command { history.append(command); history = Array(history.suffix(100)) }
             input = ""; cursor = 0; historyPosition = nil
+            if !aiMode && command == "ai" {
+                aiMode = true; transcript = ["KILN AI / Erebine", "Ask about Kiln or request an operation.", "Prompts and read-tool results go to Erebine. Do not paste credentials.", "/exit returns to commands; /reset clears context; /approve ID or /deny ID handles proposals."]
+                scroll = 0; return []
+            }
+            if aiMode {
+                if command == "/exit" { aiMode = false; transcript.append("Left AI chat."); return [] }
+                if command == "/reset" { transcript = []; return execute("ai reset") }
+                if command.hasPrefix("/approve ") || command.hasPrefix("/deny ") { return execute("ai " + command.dropFirst()) }
+                let quoted = "\"" + command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+                return execute("ai ask " + quoted, display: "You: " + command)
+            }
             return execute(command)
         }
         return []
@@ -276,8 +288,11 @@ public struct KilnTerminal {
         }
         lines.append(row(tabs, accent))
         lines.append(row("  " + String(repeating: "-", count: max(0,w-4)), muted))
-        let bodyEnd = drawer ? max(8, height / 2) : height - 3
-        if page == 5 {
+        let bodyEnd = drawer ? (aiMode ? 8 : max(8, height / 2)) : height - 3
+        if aiMode && drawer {
+            lines.append(row("  NATIVE SWIFT AI  /  LIVE KILN TOOLS", accent))
+            lines.append(row("  Read tools automatic; changes need your explicit approval.", muted))
+        } else if page == 5 {
             lines.append(row("  SERVERS   [n Add server]",accent))
             hits.append(Hit(row:6,column:13,width:14,click:.key(.text("n"))))
             lines.append(row("  Enter/click manage | key setup | verify identity | new terminal",muted))
@@ -366,18 +381,29 @@ public struct KilnTerminal {
             lines.append(row("  " + String(repeating: "=", count: max(0, w - 4)), accent))
             hits.append(Hit(row: lines.count, column: 1, width: w, click: .key(.text("`"))))
             hits.append(Hit(row: lines.count+1, column: 1, width: w, click: .key(.text("`"))))
-            lines.append(row("  COMMAND DRAWER   \(busy ? "[working]" : "[ready]")   Esc / ` to close", accent))
+            lines.append(row("  \(aiMode ? "KILN AI CHAT" : "COMMAND DRAWER")   \(busy ? "[working]" : "[ready]")   Esc / ` to close", accent))
             let available = max(0, height - lines.count - 3)
-            let end = max(0, transcript.count - scroll)
-            let visible = Array(transcript.prefix(end).suffix(available))
+            let displayLines: [String] = aiMode ? transcript.flatMap { text -> [String] in
+                var rest = Self.safe(text); var wrapped: [String] = []
+                let columns = max(1, w - 3)
+                while rest.count > columns {
+                    let prefix = String(rest.prefix(columns))
+                    let cut = prefix.lastIndex(of: " ").map { prefix.distance(from: prefix.startIndex, to: $0) }.flatMap { $0 > columns / 2 ? $0 : nil } ?? columns
+                    wrapped.append(String(rest.prefix(cut))); rest = String(rest.dropFirst(cut))
+                    if rest.first == " " { rest.removeFirst() }
+                }
+                wrapped.append(rest); return wrapped
+            } : transcript
+            let end = max(0, displayLines.count - scroll)
+            let visible = Array(displayLines.prefix(end).suffix(available))
             for text in visible { lines.append(row("  " + text, text.hasPrefix("Error") ? red : fg)) }
             while lines.count < height - 3 { lines.append(row()) }
             let room = max(1,w-9)
             let offset = max(0, cursor - room + 1)
             let shown = String(Array(input).dropFirst(offset).prefix(room))
             hits.append(Hit(row: height-2, column: 10, width: room, click: .cursor(offset)))
-            lines.append(row("  kiln > " + shown, accent))
-            lines.append(row("  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
+            lines.append(row((aiMode ? "  chat > " : "  kiln > ") + shown, accent))
+            lines.append(row(aiMode ? "  /exit commands | /reset | /approve ID | PgUp/PgDn" : "  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
             lines.append(row("  " + notice, muted))
             let cursorColumn = min(w, 10 + cursor - offset)
             return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)

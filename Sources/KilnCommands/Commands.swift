@@ -1,4 +1,5 @@
 import KilnRuntime
+import KilnAI
 import KilnVault
 import KilnKit
 import KilnTelemetry
@@ -19,6 +20,7 @@ public struct KilnCommands: Sendable {
     private let runtime: KilnRuntime
     private let bastion: BastionClient
     private let telemetry: KilnTelemetry
+    private let assistant = KilnAssistant()
     public init(runtime: KilnRuntime) { self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     public func allowForward(host: String, port: Int) async -> Bool {
         if await runtime.allowIngress(host: host, port: port) { return true }
@@ -53,7 +55,7 @@ public struct KilnCommands: Sendable {
         do { return CommandResult(try runtime.vault.put(name, value: value)) }
         catch { return CommandResult("Vault write failed: \(error)", status: 1) }
     }
-    public func execute(_ line: String) async -> CommandResult {
+    public func execute(_ line: String, sessionID: String = "console") async -> CommandResult {
         var parts: [String]
         do { parts = try Self.tokenize(line) }
         catch { return CommandResult("Unclosed quote or trailing escape", status: 2) }
@@ -61,6 +63,7 @@ public struct KilnCommands: Sendable {
         if parts.isEmpty { return CommandResult("") }
         do {
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
+            if parts.first == "ai" { return try await aiCommand(parts, sessionID: sessionID) }
             if parts.first == "vault" {
                 switch parts {
                 case ["vault", "help"]:
@@ -106,6 +109,7 @@ public struct KilnCommands: Sendable {
                 app restart <name>      Stop and start an application
                 app health <name>       Check its configured HTTP health endpoint
                 app logs <name>         Last 8 KiB of application logs
+                ai help                 Native Erebine chat, reports and proposed operations
                 vault help              Encrypted credentials and per-module grants
                 server help             Saved servers, jump forwarding and managed SSH
                 key help                Keychain-backed Ed25519 keys
@@ -214,5 +218,73 @@ private extension KilnCommands {
             return CommandResult(try await bastion.add(name:p[2],host:p[3],user:p[4],port:port))
         }
         return CommandResult("Invalid bastion command; run server help",status:2)
+    }
+}
+
+
+private extension KilnCommands {
+    func aiCommand(_ parts: [String], sessionID: String) async throws -> CommandResult {
+        let configURL = runtime.stateDirectory.appendingPathComponent("ai.json")
+        let knowledgeURL = runtime.stateDirectory.appendingPathComponent("ai-knowledge.json")
+        switch parts {
+        case ["ai"], ["ai", "help"]:
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+        case ["ai", "reset"]: return CommandResult(try await assistant.reset(sessionID))
+        default: break
+        }
+        if parts.count == 5, parts[1] == "configure" {
+            let config = AIConfiguration(baseURL: parts[2], model: parts[3], secret: parts[4]); try config.validate()
+            try KilnVault.validateName(config.secret)
+            try JSONEncoder().encode(config).write(to: configURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            return CommandResult("AI configured. Grant kiln/ai the named Vault secret. Credentials are never stored in ai.json.")
+        }
+        if parts.count == 4, parts[1] == "knowledge", parts[2] == "install" {
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: parts[3]))
+            guard bytes.count <= 32768 else { throw AIError.message("Knowledge pack exceeds 32 KiB") }
+            let pack = try JSONDecoder().decode(AIKnowledgePack.self, from: bytes); try pack.validate()
+            try JSONEncoder().encode(pack).write(to: knowledgeURL, options: .atomic)
+            return CommandResult("Knowledge pack \(pack.version) installed. New turns use it without a restart; permissions are unchanged.")
+        }
+        if parts.count == 3, parts[1] == "deny" { return CommandResult(try await assistant.deny(parts[2], session: sessionID)) }
+        if parts.count == 3, parts[1] == "approve" {
+            let action = try await assistant.takeApproval(parts[2], session: sessionID)
+            do {
+                let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint)
+                await assistant.record(result, session: sessionID)
+                return CommandResult("Executed approved operation: " + result)
+            } catch {
+                await assistant.record("Operation failed; inspect current state. Proposal consumed.", session: sessionID)
+                throw error
+            }
+        }
+        guard let data = try? Data(contentsOf: configURL), let configuration = try? JSONDecoder().decode(AIConfiguration.self, from: data) else {
+            throw AIError.message("AI is not configured. Run ai help.")
+        }
+        try configuration.validate()
+        let knowledge: AIKnowledgePack?
+        if FileManager.default.fileExists(atPath: knowledgeURL.path) {
+            knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
+        } else { knowledge = nil }
+        if parts == ["ai", "status"] {
+            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 1\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+        }
+        guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
+        let values = try runtime.vault.environment(for: "kiln/ai", bindings: ["API_KEY": configuration.secret])
+        guard let key = values["API_KEY"] else { throw AIError.message("AI credential unavailable") }
+        let modules = await runtime.snapshot()
+        let context = "Kiln release \(KilnVersion.current)\n" + (await runtime.list())
+        let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
+            modules: modules, context: context, knowledge: knowledge) { name, module in
+                switch name {
+                case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; no automatic restart or cluster."
+                case "list_modules": return await runtime.list()
+                case "host_metrics": return await telemetry.sample().summary
+                case "module_health": return try await runtime.health(module!)
+                case "release_info": return try await runtime.releases(module!)
+                default: throw AIError.message("Unsupported read tool")
+                }
+            }
+        return CommandResult(text)
     }
 }
