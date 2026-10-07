@@ -16,9 +16,9 @@ public struct CommandResult: Sendable {
 
 public struct KilnCommands: Sendable {
     private let runtime: KilnRuntime
-    private let bastion: KilnBastion
+    private let bastion: BastionClient
     private let telemetry: KilnTelemetry
-    public init(runtime: KilnRuntime) { self.runtime = runtime; self.bastion = KilnBastion(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public init(runtime: KilnRuntime) { self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     public func allowForward(host: String, port: Int) async -> Bool { (try? await bastion.allowForward(host: host, port: port)) ?? false }
     public func observations() -> AsyncStream<Observation> {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
@@ -34,9 +34,16 @@ public struct KilnCommands: Sendable {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
-    public func sessions() async -> [TerminalSessionSnapshot] { await bastion.sessionSnapshots() }
-    public func session(_ name: String) async throws -> RemoteTerminal { try await bastion.session(name) }
-    public func shutdownSessions() async { await bastion.shutdownSessions() }
+    public func management() async -> ManagementSnapshot {
+        do {
+            return ManagementSnapshot(servers:try await bastion.serverSnapshots(),sessions:try await bastion.sessionSnapshots(),keys:try await bastion.keys().split(separator:"\n").map(String.init))
+        } catch { return ManagementSnapshot(error:"Session service unavailable; terminal state is unknown. \(error)") }
+    }
+    public func sessions() async -> [TerminalSessionSnapshot] { (try? await bastion.sessionSnapshots()) ?? [] }
+    public func session(_ name: String) async throws -> RemoteTerminalClient { try await bastion.session(name) }
+    public func startSessionService() async throws { try await bastion.start() }
+    public func servers() async -> [ServerSnapshot] { (try? await bastion.serverSnapshots()) ?? [] }
+    public func keyNames() async -> [String] { ((try? await bastion.keys()) ?? "").split(separator: "\n").map(String.init) }
     public func snapshot() async -> [ModuleSnapshot] { await runtime.snapshot() }
     public func execute(_ line: String) async -> CommandResult {
         var parts: [String]
@@ -47,10 +54,15 @@ public struct KilnCommands: Sendable {
         do {
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
             switch parts {
+            case let p where p.count == 4 && p[0] == "session" && p[1] == "open":
+                let text = try await bastion.createSession(name:p[2],server:p[3])
+                return CommandResult(text,attachSession:p[2])
+            case let p where p.count == 4 && p[0] == "session" && p[1] == "rename":
+                return CommandResult(try await bastion.renameSession(p[2],to:p[3]))
             case ["session", "help"]:
-                return CommandResult("session new <name> <server>  Create a persistent remote terminal\nsession list                 List terminals\nsession attach <name>        Attach from an interactive SSH PTY\nsession close <name>         End a terminal and its remote connection\nCtrl-B then d/w detaches to Kiln; n/p switches sessions; Ctrl-B twice sends Ctrl-B.\nSessions survive client disconnects, not Kiln restart or destination/network loss.")
+                return CommandResult("session new <name> <server>  Create a persistent remote terminal\nsession open <name> <server> Create and attach from the dashboard\nsession list                 List terminals\nsession attach <name>        Attach from an interactive SSH PTY\nsession rename <old> <new>   Rename a detached terminal\nsession close <name>         End a terminal and its remote connection\nCtrl-B then d/w detaches to Kiln; n/p switches sessions; Ctrl-B twice sends Ctrl-B.\nSessions survive client disconnects, including dashboard restart while the session service stays alive. Service restart, host reboot or destination/network loss ends them.")
             case ["session", "list"]:
-                let list = await sessions()
+                let list = try await bastion.sessionSnapshots()
                 return CommandResult(list.isEmpty ? "No sessions. Use session new <name> <server>" : (["NAME  SERVER  STATE  VIEWER"] + list.map { "\($0.name)  \($0.server)  \($0.state)  \($0.attached ? "attached" : "detached")" }).joined(separator: "\n"))
             case let p where p.count == 4 && p[0] == "session" && p[1] == "new":
                 return CommandResult(try await bastion.createSession(name: p[2], server: p[3]))
@@ -128,6 +140,8 @@ private extension KilnCommands {
         case ["server", "help"], ["key", "help"]:
             return CommandResult("""
             server add <name> <host> <user> [port]   Allow forwarding to a saved destination
+            server edit <name> <host> <user> [port] Update destination; changed host/port clears trust
+            server generate-key <name> <key-name>  Generate and assign a Keychain key
             server list                             List saved servers
             server remove <name>                    Block new tunnels to that destination
             server key <name> <key-name>             Assign a Keychain key
@@ -160,14 +174,16 @@ private extension KilnCommands {
             }
         }
         if p.count == 4, p[0] == "server" {
+            if p[1] == "generate-key" { return CommandResult(try await bastion.generateKey(server:p[2],name:p[3])) }
             if p[1] == "key" { return CommandResult(try await bastion.assign(server:p[2],key:p[3])) }
             if p[1] == "trust" { return CommandResult(try await bastion.trust(p[2],fingerprint:p[3])) }
             if p[1] == "exec" {
                 let result=try await bastion.execute(p[2],command:p[3]);return CommandResult(result.output,status:result.status)
             }
         }
-        if (p.count == 5 || p.count == 6), p[0] == "server", p[1] == "add" {
+        if (p.count == 5 || p.count == 6), p[0] == "server", (p[1] == "add" || p[1] == "edit") {
             guard let port=Int(p.count == 6 ? p[5] : "22") else { return CommandResult("Invalid port",status:2) }
+            if p[1] == "edit" { return CommandResult(try await bastion.edit(name:p[2],host:p[3],user:p[4],port:port)) }
             return CommandResult(try await bastion.add(name:p[2],host:p[3],user:p[4],port:port))
         }
         return CommandResult("Invalid bastion command; run server help",status:2)

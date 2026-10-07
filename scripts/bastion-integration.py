@@ -104,3 +104,7 @@ Host *
                 try:process.wait(timeout=12)
                 except subprocess.TimeoutExpired:process.kill();process.wait()
         log.close()
+
+        # The detached session service has its own lifetime; explicitly stop test fixtures.
+        for pidfile in tmp.rglob("session-service.pid"):
+            subprocess.run([str(BIN/"kiln"),"session-service-stop","--state",str(pidfile.parent)],capture_output=True,timeout=10)

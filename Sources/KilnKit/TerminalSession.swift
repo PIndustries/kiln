@@ -1,4 +1,4 @@
-public struct TerminalSessionSnapshot: Sendable {
+public struct TerminalSessionSnapshot: Codable, Sendable {
     public let name: String
     public let server: String
     public let state: String

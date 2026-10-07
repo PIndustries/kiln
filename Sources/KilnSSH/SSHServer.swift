@@ -60,7 +60,13 @@ private final class ShellHandler: ChannelInboundHandler {
     var escapeTask: Scheduled<Void>?
     var refreshing = false
     var lastFrame = ""
-    var remote: RemoteTerminal?
+    var panes: [RemoteTerminalClient] = []
+    var focusedPane = 0
+    var stacked = false
+    var splitRatio = 0.5
+    var paneGeneration = 0
+    var remoteEscape: [UInt8] = []
+    var remote: RemoteTerminalClient? { panes.indices.contains(focusedPane) ? panes[focusedPane] : nil }
     var remoteTask: Task<Void, Never>?
     let owner = UUID()
     var remotePrefix = false
@@ -75,7 +81,7 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func channelInactive(context: ChannelHandlerContext) {
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
-        remote?.detach(owner: owner); remote = nil
+        releasePanes()
         context.fireChannelInactive()
     }
     func output(_ text: String, channel: Channel) {
@@ -95,11 +101,11 @@ private final class ShellHandler: ChannelInboundHandler {
         let commands = commands
         Task {
             let modules = await commands.snapshot()
-            let sessions = await commands.sessions()
+            let management = await commands.management()
             channel.eventLoop.execute {
                 let shell = bound.value; shell.refreshing = false
                 guard channel.isActive else { return }
-                shell.terminal?.update(modules); shell.terminal?.updateSessions(sessions); shell.paint(channel: channel)
+                shell.terminal?.update(modules); shell.terminal?.updateManagement(management); shell.paint(channel: channel)
             }
         }
     }
@@ -125,8 +131,8 @@ private final class ShellHandler: ChannelInboundHandler {
         case let request as SSHChannelRequestEvent.WindowChangeRequest:
             if request.terminalCharacterWidth > 0 { columns = request.terminalCharacterWidth }
             if request.terminalRowHeight > 0 { rows = request.terminalRowHeight }
-            if let remote {
-                remote.resize(width: columns, height: rows, owner: owner)
+            if remote != nil {
+                resizePanes()
                 terminal?.resize(width: columns, height: rows)
                 return
             }
@@ -147,11 +153,11 @@ private final class ShellHandler: ChannelInboundHandler {
                 refreshTask = Task {
                     for await observation in commands.observations() {
                         guard !Task.isCancelled else { break }
-                        let sessions = await commands.sessions()
+                        let management = await commands.management()
                         channel.eventLoop.execute {
                             guard channel.isActive else { return }
                             bound.value.terminal?.observe(observation)
-                            bound.value.terminal?.updateSessions(sessions)
+                            bound.value.terminal?.updateManagement(management)
                             bound.value.paint(channel: channel)
                         }
                     }
@@ -178,7 +184,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func close(channel: Channel, status: Int) {
-        remoteTask?.cancel(); remote?.detach(owner: owner); remote = nil
+        remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
         interactive = false
@@ -236,8 +242,10 @@ private final class ShellHandler: ChannelInboundHandler {
         Task {
             let result = await commands.execute(line)
             let modules = await commands.snapshot()
+            let management = await commands.management()
             channel.eventLoop.execute {
                 let shell = bound.value
+                shell.terminal?.updateManagement(management)
                 guard channel.isActive else { return }
                 shell.busy = false
                 if let name = result.attachSession, shell.interactive, shell.terminal != nil {
@@ -265,88 +273,191 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
 
-    func detach(channel: Channel) {
-        let name = remote?.name ?? "terminal"
-        remoteTask?.cancel(); remoteTask = nil
-        remote?.detach(owner: owner); remote = nil; remotePrefix = false
-        keys = TerminalKeys(); lastFrame = ""
-        // Restore Kiln's input modes after viewing a remote screen.
-        output("\u{1b}[?1l\u{1b}[?7h" + KilnTerminal.enterScreen, channel: channel)
-        terminal?.showSessions()
-        terminal?.finish(text: "Detached " + name + ". Use the picker to reattach.", status: 0)
-        paint(channel: channel); refresh(channel: channel)
+    struct PaneRect: Sendable { let x: Int; let y: Int; let width: Int; let height: Int }
+    func paneRects() -> [PaneRect] {
+        guard panes.count == 2 else { return [PaneRect(x:1,y:1,width:columns,height:rows)] }
+        if stacked {
+            let first = max(3,min(rows-4,Int(Double(rows-1)*splitRatio)))
+            return [PaneRect(x:1,y:1,width:columns,height:first),PaneRect(x:1,y:first+2,width:columns,height:max(3,rows-first-1))]
+        }
+        let first = max(10,min(columns-11,Int(Double(columns-1)*splitRatio)))
+        return [PaneRect(x:1,y:1,width:first,height:rows),PaneRect(x:first+2,y:1,width:max(10,columns-first-1),height:rows)]
     }
-    func attach(_ name: String, channel: Channel) {
-        guard !attaching else { return }
-        attaching = true
-        let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+    func resizePanes() {
+        paneGeneration += 1
+        for (pane, rect) in zip(panes,paneRects()) { pane.resize(width:rect.width,height:rect.height,owner:owner) }
+    }
+    func releasePanes() {
+        for pane in panes { pane.detach(owner:owner) }
+        panes = []; focusedPane = 0; paneGeneration += 1
+    }
+    func detach(channel: Channel) {
+        remoteTask?.cancel(); remoteTask = nil; escapeTask?.cancel()
+        releasePanes(); remotePrefix = false; remoteEscape = []
+        keys = TerminalKeys(); lastFrame = ""
+        output("\u{1b}[?1l\u{1b}[?7h" + KilnTerminal.enterScreen, channel:channel)
+        terminal?.showSessions(); terminal?.finish(text:"Detached. Terminals remain in the session service.",status:0)
+        paint(channel:channel); refresh(channel:channel)
+    }
+    func attach(_ name:String, channel:Channel, split:Bool = false, replaceFocused:Bool = false) {
+        guard !attaching else { return }; attaching = true
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
         let commands = commands, owner = owner, width = columns, height = rows
         Task {
             do {
-                let remote = try await commands.session(name)
-                try await remote.attach(owner: owner, width: width, height: height)
+                let next = try await commands.session(name)
+                try await next.attach(owner:owner,width:width,height:height)
                 channel.eventLoop.execute {
                     let shell = bound.value; shell.attaching = false
-                    guard channel.isActive else { remote.detach(owner: owner); return }
-                    shell.remoteTask?.cancel(); shell.remote?.detach(owner: owner)
-                    shell.remote = remote; shell.remotePrefix = false
-                    shell.output("\u{1b}[?1000l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[0m\u{1b}[2J\u{1b}[H", channel: channel)
-                    shell.remoteTask = Task {
-                        var revision: UInt64?
-                        while !Task.isCancelled {
-                            if let frame = await remote.frame(owner: owner, after: revision) {
-                                let painted = try? await channel.eventLoop.submit {
-                                    guard channel.isActive, channel.isWritable, bound.value.remote === remote else { return false }
-                                    if frame.revision == .max {
-                                        bound.value.detach(channel: channel)
-                                        bound.value.terminal?.finish(text: "Session closed", status: 0)
-                                        bound.value.paint(channel: channel)
-                                    } else { bound.value.output(frame.text, channel: channel) }
-                                    return true
-                                }.get()
-                                if painted == true { revision = frame.revision }
-                            }
-                            do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
-                        }
+                    guard channel.isActive else { next.detach(owner:owner); return }
+                    if split, shell.panes.count == 1, shell.panes[0].name != name {
+                        shell.panes.append(next); shell.focusedPane = 1
+                    } else if replaceFocused, shell.panes.indices.contains(shell.focusedPane) {
+                        let old = shell.panes[shell.focusedPane]; if old.name != name { old.detach(owner:owner) }
+                        shell.panes[shell.focusedPane] = next
+                    } else {
+                        for old in shell.panes where old.name != name { old.detach(owner:owner) }
+                        shell.panes = [next]; shell.focusedPane = 0
                     }
+                    shell.remotePrefix = false; shell.remoteEscape = []; shell.resizePanes()
+                    shell.output("\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?2004l\u{1b}[0m\u{1b}[2J\u{1b}[H",channel:channel)
+                    shell.startPanePump(channel:channel)
                 }
             } catch {
                 let message = "Error: \(error)"
                 channel.eventLoop.execute {
                     let shell = bound.value; shell.attaching = false
                     guard channel.isActive else { return }
-                    shell.terminal?.finish(text: message, status: 1)
-                    if shell.remote == nil { shell.paint(channel: channel) }
+                    shell.terminal?.finish(text:message,status:1)
+                    if shell.remote == nil { shell.paint(channel:channel) }
+                    else { shell.detach(channel:channel); shell.terminal?.finish(text:message,status:1); shell.paint(channel:channel) }
                 }
             }
         }
     }
-    func remoteInput(_ bytes: [UInt8], channel: Channel) {
+    static func offsetFrame(_ text:String,rect:PaneRect) -> String {
+        guard let regex = try? NSRegularExpression(pattern:"\\u001B\\[([0-9]+);([0-9]+)H") else { return text }
+        let matches = regex.matches(in:text,range:NSRange(text.startIndex...,in:text))
+        var result = text
+        for match in matches.reversed() {
+            guard let r = Range(match.range,in:result), let ry = Range(match.range(at:1),in:result), let rx = Range(match.range(at:2),in:result), let y = Int(result[ry]), let x = Int(result[rx]) else { continue }
+            result.replaceSubrange(r,with:"\u{1b}[\(rect.y+y-1);\(rect.x+x-1)H")
+        }
+        return result
+    }
+    func startPanePump(channel:Channel) {
+        remoteTask?.cancel()
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), owner = owner
+        remoteTask = Task { @Sendable [bound, owner, channel] in
+            var frames: [String:RemoteTerminalFrame] = [:], generation = -1
+            while !Task.isCancelled {
+                guard let snapshot = try? await channel.eventLoop.submit({ (bound.value.panes,bound.value.paneRects(),bound.value.paneGeneration,bound.value.focusedPane) }).get(), !snapshot.0.isEmpty else { break }
+                var changed = generation != snapshot.2
+                if changed { frames = [:] }; generation = snapshot.2
+                var ended: String?
+                for pane in snapshot.0 {
+                    if let frame = await pane.frame(owner:owner,after:frames[pane.name]?.revision) {
+                        if frame.revision == .max { ended = frame.text; break }
+                        frames[pane.name] = frame; changed = true
+                    }
+                }
+                if let ended {
+                    let message = ended
+                    try? await channel.eventLoop.submit {
+                        guard channel.isActive, bound.value.paneGeneration == snapshot.2 else { return }
+                        bound.value.detach(channel:channel); bound.value.terminal?.finish(text:message,status:1); bound.value.paint(channel:channel)
+                    }.get(); break
+                }
+                if changed {
+                    var output = "\u{1b}[?25l"
+                    for (pane,rect) in zip(snapshot.0,snapshot.1) { if let frame = frames[pane.name] { output += Self.offsetFrame(frame.text,rect:rect) } }
+                    if snapshot.0.count == 2 {
+                        let first = snapshot.1[0]
+                        output += "\u{1b}[0;38;5;215m"
+                        if snapshot.1[1].y > 1 {
+                            output += "\u{1b}[\(first.height+1);1H" + String(repeating:"=",count:first.width)
+                        } else {
+                            for row in 1...first.height { output += "\u{1b}[\(row);\(first.width+1)H|" }
+                        }
+                    }
+                    if snapshot.0.indices.contains(snapshot.3), let frame = frames[snapshot.0[snapshot.3].name] {
+                        let rect = snapshot.1[snapshot.3]
+                        let title = " \(snapshot.3+1):\(snapshot.0[snapshot.3].name) | ^B d/w picker o focus %/\" split x unsplit h/l size"
+                        output += "\u{1b}[?7l\u{1b}[\(rect.y+rect.height-1);\(rect.x)H\u{1b}[0;48;5;24;38;5;231m" + String(title.prefix(rect.width)).padding(toLength:rect.width,withPad:" ",startingAt:0) + "\u{1b}[0m\u{1b}[?7h"
+                        output += "\u{1b}[\(rect.y+(frame.cursorRow ?? 1)-1);\(rect.x+(frame.cursorColumn ?? 1)-1)H"
+                        output += frame.cursorVisible == false ? "\u{1b}[?25l" : "\u{1b}[?25h"
+                        output += frame.applicationCursor == true ? "\u{1b}[?1h" : "\u{1b}[?1l"
+                        output += frame.bracketedPaste == true ? "\u{1b}[?2004h" : "\u{1b}[?2004l"
+                    }
+                    let rendered = output
+                    let painted = try? await channel.eventLoop.submit {
+                        guard channel.isActive,channel.isWritable,bound.value.paneGeneration == snapshot.2 else { return false }
+                        bound.value.output(rendered,channel:channel); return true
+                    }.get()
+                    if painted != true { generation = -1 }
+                }
+                do { try await Task.sleep(for:.milliseconds(100)) } catch { break }
+            }
+        }
+    }
+    func cycleRemote(channel:Channel,backwards:Bool = false,split:Bool = false) {
+        let current = remote?.name, commands = commands, namesInView = panes.map(\.name)
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
+        Task {
+            let sessions = await commands.sessions()
+            let names = sessions.filter { (!$0.attached && !namesInView.contains($0.name)) || $0.name == current }.map(\.name)
+            guard let current, let index = names.firstIndex(of:current), names.count > 1 else { return }
+            let next = names[(index+(backwards ? names.count-1 : 1)) % names.count]
+            channel.eventLoop.execute { if channel.isActive { bound.value.attach(next,channel:channel,split:split,replaceFocused:!split) } }
+        }
+    }
+    func remoteInput(_ bytes:[UInt8],channel:Channel) {
+        escapeTask?.cancel()
         var forwarded: [UInt8] = []
         for byte in bytes {
+            if !remoteEscape.isEmpty {
+                remoteEscape.append(byte)
+                let prefix = Array("\u{1b}[<".utf8)
+                if remoteEscape.count <= 3, prefix.starts(with:remoteEscape) { continue }
+                if remoteEscape.starts(with:prefix) {
+                    if byte == 77 || byte == 109 {
+                        let fields = String(decoding:remoteEscape.dropFirst(3).dropLast(),as:UTF8.self).split(separator:";").compactMap { Int($0) }
+                        if byte == 77, fields.count == 3, fields[0] == 0 {
+                            for (index,rect) in paneRects().enumerated() where fields[1] >= rect.x && fields[1] < rect.x+rect.width && fields[2] >= rect.y && fields[2] < rect.y+rect.height { focusedPane = index; paneGeneration += 1 }
+                        }
+                        remoteEscape = []; continue
+                    }
+                    if remoteEscape.count < 32 { continue }
+                }
+                forwarded += remoteEscape; remoteEscape = []; continue
+            }
             if remotePrefix {
                 remotePrefix = false
-                if !forwarded.isEmpty { remote?.send(forwarded, owner: owner); forwarded.removeAll() }
+                if !forwarded.isEmpty { remote?.send(forwarded,owner:owner); forwarded = [] }
                 switch byte {
-                case 100, 119: detach(channel: channel); return // d / w
-                case 110, 112: // n / p
-                    let current = remote?.name, commands = commands
-                    let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
-                    Task {
-                        let sessions = await commands.sessions()
-                        let names = sessions.filter { !$0.attached || $0.name == current }.map(\.name)
-                        guard let current, let index = names.firstIndex(of: current), names.count > 1 else { return }
-                        let next = names[(index + (byte == 110 ? 1 : names.count - 1)) % names.count]
-                        channel.eventLoop.execute { if channel.isActive { bound.value.attach(next, channel: channel) } }
-                    }
-                    return
+                case 100,119: detach(channel:channel); return
+                case 110,112: cycleRemote(channel:channel,backwards:byte == 112); return
+                case 37,34:
+                    stacked = byte == 34
+                    if panes.count == 2 { resizePanes() } else { cycleRemote(channel:channel,split:true) }; return
+                case 111: focusedPane = (focusedPane+1) % max(1,panes.count); paneGeneration += 1; return
+                case 104,108: splitRatio = min(0.75,max(0.25,splitRatio+(byte == 108 ? 0.05 : -0.05))); resizePanes(); return
+                case 120:
+                    if let keep = remote { for pane in panes where pane !== keep { pane.detach(owner:owner) }; panes = [keep]; focusedPane = 0; resizePanes(); output("\u{1b}[2J",channel:channel) }; return
                 case 2: forwarded.append(2)
-                default: forwarded += [2, byte]
+                default: forwarded += [2,byte]
                 }
             } else if byte == 2 { remotePrefix = true }
+            else if byte == 27 { remoteEscape = [27] }
             else { forwarded.append(byte) }
         }
-        if !forwarded.isEmpty { remote?.send(forwarded, owner: owner) }
+        if !forwarded.isEmpty { remote?.send(forwarded,owner:owner) }
+        if !remoteEscape.isEmpty {
+            let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
+            escapeTask = channel.eventLoop.scheduleTask(in:.milliseconds(150)) {
+                let shell = bound.value; shell.remote?.send(shell.remoteEscape,owner:shell.owner); shell.remoteEscape = []
+            }
+        }
     }
     func errorCaught(context: ChannelHandlerContext, error: Error) { close(channel: context.channel, status: 1) }
 }

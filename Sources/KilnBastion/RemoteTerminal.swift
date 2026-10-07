@@ -10,9 +10,12 @@ private final class TerminalState: TerminalDelegate {
     var emulator: SwiftTerm.Terminal!
     var child: Channel?
     var parent: Channel?
+    var lastViewer = Date()
+    func expireViewer() { if Date().timeIntervalSince(lastViewer) > 6 { owner = nil } }
     var owner: UUID?
     var state = "connecting"
     var closed = false
+    var displayName: String?
     var revision: UInt64 = 0
     var cursorVisible = true
     let ready: EventLoopPromise<Void>
@@ -125,7 +128,13 @@ private final class TerminalChild: ChannelInboundHandler {
     }
 }
 
-public struct RemoteTerminalFrame: Sendable { public let revision: UInt64; public let text: String }
+public struct RemoteTerminalFrame: Codable, Sendable { public let revision: UInt64; public let text: String
+    public var cursorRow: Int? = nil
+    public var cursorColumn: Int? = nil
+    public var cursorVisible: Bool? = nil
+    public var applicationCursor: Bool? = nil
+    public var bracketedPaste: Bool? = nil
+}
 public final class RemoteTerminal: Sendable {
     public let name: String
     public let server: String
@@ -168,12 +177,13 @@ public final class RemoteTerminal: Sendable {
         }
     }
     public func snapshot() async -> TerminalSessionSnapshot {
-        (try? await loop.submit { TerminalSessionSnapshot(name: self.name, server: self.server, state: self.state.value.state, attached: self.state.value.owner != nil) }.get()) ?? TerminalSessionSnapshot(name: name, server: server, state: "closed", attached: false)
+        (try? await loop.submit { self.state.value.expireViewer(); return TerminalSessionSnapshot(name: self.state.value.displayName ?? self.name, server: self.server, state: self.state.value.state, attached: self.state.value.owner != nil) }.get()) ?? TerminalSessionSnapshot(name: name, server: server, state: "closed", attached: false)
     }
     public func attach(owner: UUID, width: Int, height: Int) async throws {
         try await loop.submit {
+            self.state.value.expireViewer()
             guard self.state.value.owner == nil || self.state.value.owner == owner else { throw KilnError.message("Session is already attached; detach its other viewer first") }
-            self.state.value.owner = owner
+            self.state.value.owner = owner; self.state.value.lastViewer = Date()
             self.resizeOnLoop(width: width, height: height)
         }.get()
     }
@@ -199,9 +209,21 @@ public final class RemoteTerminal: Sendable {
     public func frame(owner: UUID, after revision: UInt64?) async -> RemoteTerminalFrame? {
         try? await loop.submit {
             let state = self.state.value
+            state.expireViewer()
+            if state.owner == owner { state.lastViewer = Date() }
             if state.closed { return RemoteTerminalFrame(revision: .max, text: "Session closed") }
-            guard state.owner == owner, revision != state.revision else { return nil as RemoteTerminalFrame? }
-            return RemoteTerminalFrame(revision: state.revision, text: state.frame(name: self.name))
+            guard state.owner == owner else { return RemoteTerminalFrame(revision:.max,text:"Viewer lease expired; reattach the session") }
+            guard revision != state.revision else { return nil as RemoteTerminalFrame? }
+            let cursor = state.emulator.getCursorLocation()
+            let dims = state.emulator.getDims()
+            return RemoteTerminalFrame(revision: state.revision, text: state.frame(name: state.displayName ?? self.name),cursorRow:min(dims.rows,max(1,cursor.y+1)),cursorColumn:min(dims.cols,max(1,cursor.x+1)),cursorVisible:state.cursorVisible,applicationCursor:state.emulator.applicationCursor,bracketedPaste:state.emulator.bracketedPasteMode)
+        }.get()
+    }
+    public func rename(_ name: String) async throws {
+        try await loop.submit {
+            self.state.value.expireViewer()
+            guard self.state.value.owner == nil else { throw KilnError.message("Detach the session before renaming it") }
+            self.state.value.displayName = name; self.state.value.revision &+= 1
         }.get()
     }
     public func close() async {

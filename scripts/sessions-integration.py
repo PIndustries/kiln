@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-sessions-') as tmp:
             pump(.1)
             assert time.monotonic()<end,(text,'\n'.join(screen.display))
     def send(data):os.write(master,data);pump()
-    def attach(name):send(b'`');expect('COMMAND DRAWER');send(f'session attach {name}\r'.encode());expect(f'KILN | {name} | running')
+    def attach(name):send(b'`');expect('COMMAND DRAWER');send(f'session attach {name}\r'.encode());expect(f'1:{name} |')
     try:
         deadline=time.monotonic()+10
         while not (tmp/'state/ssh-host-ed25519.pub').exists():
@@ -70,9 +70,9 @@ with tempfile.TemporaryDirectory(prefix='kiln-sessions-') as tmp:
         child,master,screen=connect();stream=pyte.ByteStream(screen);expect('5 Sessions')
         attach('alpha')
         send(b"export KILN_SESSION_TOKEN=retained-alpha; printf 'ALPHA_READY\\n'\r");expect('ALPHA_READY')
-        send(b'\x02n');expect('KILN | beta | running')
+        send(b'\x02n');expect('1:beta |')
         send(b"printf 'BETA_READY\\n'\r");expect('BETA_READY')
-        send(b'\x02p');expect('KILN | alpha | running');expect('ALPHA_READY')
+        send(b'\x02p');expect('1:alpha |');expect('ALPHA_READY')
         print('PASS: two real remote PTYs; switching restores independent terminal screens',flush=True)
         send(b"(sleep 2; printf 'BACKGROUND_%s\\n' FINISHED) &\r")
         child.kill();child.wait(timeout=5)
@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-sessions-') as tmp:
         print('PASS: abrupt viewer disconnect preserves shell environment and background output',flush=True)
         send(b"printf '\\033[?1049h\\033[2J\\033[H\\033[31mFULLSCREEN_%s\\033[0m' LIVE\r")
         expect('FULLSCREEN_LIVE')
-        send(b'\x02d');expect('TERMINAL SESSIONS');send(b'\r')
+        send(b'\x02d');expect('TERMINAL SESSIONS');send(b'a')
         expect('FULLSCREEN_LIVE')
         location=next((y,line.index('FULLSCREEN_LIVE')) for y,line in enumerate(screen.display) if 'FULLSCREEN_LIVE' in line)
         assert screen.buffer[location[0]][location[1]].fg == 'cd0000', screen.buffer[location[0]][location[1]]
@@ -97,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-sessions-') as tmp:
         send(b'stty size\r');expect('23 80')
         send(b'\x02w');expect('TERMINAL SESSIONS');pump(.4);preview(screen,'session-picker')
         assert command('session attach alpha',False).returncode!=0
-        send(b'\r');expect('KILN | alpha | running')
+        send(b'a');expect('1:alpha |')
         # A second interactive viewer cannot silently steal input ownership.
         first=(child,master,screen,stream)
         child,master,screen=connect();stream=pyte.ByteStream(screen);expect('5 Sessions')
@@ -122,3 +122,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-sessions-') as tmp:
             runtime.terminate();runtime.wait(timeout=15)
         if destination and destination.poll() is None:destination.terminate();destination.wait(timeout=5)
         log.close();sshlog.close()
+
+        # The detached session service has its own lifetime; explicitly stop test fixtures.
+        for pidfile in tmp.rglob("session-service.pid"):
+            subprocess.run([str(BIN/"kiln"),"session-service-stop","--state",str(pidfile.parent)],capture_output=True,timeout=10)

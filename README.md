@@ -9,7 +9,7 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Full-screen SSH dashboard with colors, aligned service rows, clickable tabs/actions, mouse-wheel navigation and a command drawer.
 - Shared host telemetry sampler and bounded one-second observation streams, with host CPU/memory/disk/load/uptime and supervisor/service CPU/RSS.
 - Public-key-only SSH authentication and noninteractive commands (default: `127.0.0.1:2222`).
-- Named remote terminal sessions with detach/reattach, a Sessions picker and Ctrl-B switching.
+- Menu-driven server/key/trust setup, session actions, two-pane splits, and remote terminals that survive dashboard restarts in a separate session service.
 - Saved bastion destinations, allowlisted OpenSSH ProxyJump, and macOS Keychain-backed Ed25519 keys for pinned remote command execution.
 - Persistent Ed25519 host identity; only the configured administrator is accepted.
 - Optional local stdin console, including with SSH disabled.
@@ -58,7 +58,7 @@ Interactive SSH opens the dashboard by default:
 - Tab completes commands and service IDs; Up/Down recalls session history.
 - Left/Right, Home/End, Ctrl-A/E/U/K and Backspace/Delete edit a command.
 - Page Up/Down scrolls output. Ctrl-C clears input; it does not cancel an operation already executing.
-- Tab or 1/2/3/4/5 switches views (Overview, Services, Metrics, Help, Sessions). q disconnects from the dashboard.
+- Tab or 1/2/3/4/5/6 switches views (Overview, Services, Metrics, Help, Sessions, Servers). q disconnects from the dashboard.
 - The layout follows SSH-reported dimensions, including live window changes. The divider spans the viewport, the drawer uses half the height, and service columns size from their content and available width. Unknown dimensions retain the last known size; only an excessive total cell count is rejected to bound untrusted rendering work. Screens below 50x16 show a resize prompt.
 
 The dashboard receives observation frames about once per second. Click tabs, service rows, action choices or the drawer divider; the wheel navigates services or scrolls command output. Standard xterm SGR mouse reporting is required. Mouse modes are disabled on normal exit; use your terminal's mouse-selection override (often Option or Shift) to select text while reporting is active. Running is not a health claim; use Check health to query an endpoint. New service IDs appear in the dashboard and completion automatically.
@@ -117,7 +117,8 @@ The sample uses the same compiled example executable with separate mode argument
 kiln executable (composition root)
   +-- KilnRuntime ----> KilnKit (release contract)
   +-- KilnCommands --> KilnRuntime + KilnBastion
-  |     +-- KilnBastion (server registry, Keychain, native SSH sessions)
+  |     +-- KilnBastion IPC client -> separate session-service process
+  |           +-- server registry, Keychain, native SSH sessions
   |           +-- SwiftTerm (retained terminal screen)
   +-- KilnSSH -------> KilnCommands
   |     +-- KilnTerminal (UI state, input decoder, ANSI renderer)
@@ -172,4 +173,6 @@ See [bastion setup](docs/bastion.md) for saved destinations, ProxyJump and Keych
 
 ## Persistent remote terminals
 
-See [terminal sessions](docs/sessions.md). Named shells survive viewer disconnects while Kiln remains running. Open **5 Sessions** to attach; Ctrl-B then d/w returns to the picker, n/p switches terminals.
+See [terminal sessions](docs/sessions.md). Named shells survive viewer disconnects and dashboard restarts while their separate session service stays alive. Open **6 Servers** to configure a destination and **5 Sessions** to create, attach, rename or close terminals. Ctrl-B then d/w returns to the picker; % and double quote split side-by-side or stacked; o or a mouse click changes focus.
+
+Stopping the dashboard leaves the session service running. To intentionally end it and all remote terminals, run `kiln session-service-stop --state PATH` before removing its state directory.

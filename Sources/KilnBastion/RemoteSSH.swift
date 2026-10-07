@@ -4,7 +4,7 @@ import NIOPosix
 import NIOSSH
 import KilnKit
 
-public struct RemoteResult: Sendable { public let output:String; public let status:Int }
+public struct RemoteResult: Codable, Sendable { public let output:String; public let status:Int }
 final class Authentication: NIOSSHClientUserAuthenticationDelegate {
     let user:String;let key:NIOSSHPrivateKey;var offered=false
     init(user:String,key:NIOSSHPrivateKey){self.user=user;self.key=key}

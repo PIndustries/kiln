@@ -12,6 +12,18 @@ public struct KilnTerminal {
     public private(set) var input = ""
     public private(set) var selected = 0
     public private(set) var busy = false
+    private var management = ManagementUI()
+    private var servers: [ServerSnapshot] = []
+    private var selectedServer = 0
+    public mutating func updateServers(_ servers: [ServerSnapshot], keys: [String]) {
+        let name = self.servers.indices.contains(selectedServer) ? self.servers[selectedServer].name : nil
+        self.servers = servers; management.servers = servers; management.keys = keys
+        selectedServer = name.flatMap { name in servers.firstIndex { $0.name == name } } ?? min(selectedServer,max(0,servers.count-1))
+    }
+    public mutating func updateManagement(_ snapshot: ManagementSnapshot) {
+        if let error = snapshot.error { notice = error; return }
+        updateSessions(snapshot.sessions); updateServers(snapshot.servers,keys:snapshot.keys)
+    }
     private var sessions: [TerminalSessionSnapshot] = []
     private var selectedSession = 0
     public mutating func updateSessions(_ sessions: [TerminalSessionSnapshot]) {
@@ -19,7 +31,7 @@ public struct KilnTerminal {
         self.sessions = sessions
         selectedSession = name.flatMap { name in sessions.firstIndex { $0.name == name } } ?? min(selectedSession, max(0, sessions.count - 1))
     }
-    public mutating func showSessions() { drawer = false; menu = nil; confirmation = nil; page = 4 }
+    public mutating func showSessions() { management.close(); drawer = false; menu = nil; confirmation = nil; page = 4 }
     private var host: HostMetrics?
     private var cpuHistory: [Double] = []
     private var width = 80
@@ -57,10 +69,10 @@ public struct KilnTerminal {
         }
         host = observation.host
     }
-    private enum Click { case key(TerminalKey), service(Int), session(Int), action(Int), cursor(Int) }
+    private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int) }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
-        busy = false
+        busy = false; management.finish(text:text,status:status)
         let lines = text.components(separatedBy: "\n")
         transcript += lines
         transcript = Array(transcript.suffix(300)); scroll = 0
@@ -73,6 +85,10 @@ public struct KilnTerminal {
         return [.command(command)]
     }
     public mutating func handle(_ key: TerminalKey) -> [TerminalEffect] {
+        if management.active {
+            if let command = management.handle(key,width:width,height:height) { return execute(command) }
+            return []
+        }
         if case let .mouse(button, column, row, released) = key {
             guard !released, column <= width, row <= height else { return [] }
             if button == 64 { return handle(drawer ? .pageUp : .up) }
@@ -84,6 +100,7 @@ public struct KilnTerminal {
                 if row == 4 { drawer = false }
                 return handle(key)
             case .service(let index): selected = index; drawer = false; return handle(.enter)
+            case .server(let index): selectedServer = index; drawer = false; return handle(.enter)
             case .session(let index): selectedSession = index; drawer = false; return handle(.enter)
             case .action(let index): menu = index; return handle(.enter)
             case .cursor(let offset): cursor = min(input.count, max(0, offset + column - hit.column)); return []
@@ -118,23 +135,38 @@ public struct KilnTerminal {
             }
             return []
         }
+        if page == 5 {
+            switch key {
+            case .text("n"): if !busy { management.newServer() }; return []
+            case .up, .text("k"): selectedServer = max(0,selectedServer-1); return []
+            case .down, .text("j"): selectedServer = min(max(0,servers.count-1),selectedServer+1); return []
+            case .enter:
+                if !busy, servers.indices.contains(selectedServer) { management.serverMenu(servers[selectedServer],row:9+min(selectedServer,max(0,height-12))) }; return []
+            default: break
+            }
+        }
         if page == 4 {
             switch key {
+            case .text("n"): if !busy { management.chooseServer() }; return []
+            case .text("a"):
+                guard sessions.indices.contains(selectedSession) else { return [] }
+                return execute("session attach " + sessions[selectedSession].name)
             case .up, .text("k"): selectedSession = max(0, selectedSession - 1); return []
             case .down, .text("j"): selectedSession = min(max(0, sessions.count - 1), selectedSession + 1); return []
             case .enter:
                 guard sessions.indices.contains(selectedSession) else { return [] }
-                return execute("session attach " + sessions[selectedSession].name)
+                if !busy { management.sessionMenu(sessions[selectedSession].name,row:9+min(selectedSession,max(0,height-12))) }; return []
             default: break
             }
         }
         switch key {
+        case .text("6"): page = 5
         case .text("5"): page = 4
         case .text("1"): page = 0
         case .text("2"): page = 1
         case .text("3"): page = 2
         case .text("4"), .text("?"): page = 3
-        case .tab: page = (page + 1) % 5
+        case .tab: page = (page + 1) % 6
         case .up, .text("k"): selected = max(0, selected - 1)
         case .down, .text("j"): selected = min(max(0, modules.count - 1), selected + 1)
         case .enter: if page < 2 && !modules.isEmpty && !busy { menu = 0 }
@@ -177,7 +209,7 @@ public struct KilnTerminal {
                 cursor = input.count
             }
         case .tab:
-            let fixed = ["session help", "session list", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
+            let fixed = ["session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
             let sessionCommands = sessions.flatMap { ["session attach " + $0.name, "session close " + $0.name] }
             let expanded = ["start", "stop", "restart", "health", "logs"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
             let matches = (fixed + expanded + sessionCommands).filter { $0.hasPrefix(input) && $0 != input }
@@ -233,7 +265,7 @@ public struct KilnTerminal {
         let brand = "P.INDUSTRIES"
         var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
                      row("  LOCAL NODE  /  ONLINE  /  SSH SESSION", green), row()]
-        let labels = width < 65 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions"]
+        let labels = width < 85 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY", "6 SSH"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions", "6 Servers"]
         var tabs = "  "
         for (index,label) in labels.enumerated() {
             let text = page == index ? "[" + label + "]" : " " + label + " "
@@ -243,9 +275,22 @@ public struct KilnTerminal {
         lines.append(row(tabs, accent))
         lines.append(row("  " + String(repeating: "-", count: max(0,w-4)), muted))
         let bodyEnd = drawer ? max(8, height / 2) : height - 3
-        if page == 4 {
-            lines.append(row("  TERMINAL SESSIONS / survive client disconnects", accent))
-            lines.append(row("  Enter/click attach | ` then session new <name> <server>", muted))
+        if page == 5 {
+            lines.append(row("  SERVERS   [n Add server]",accent))
+            hits.append(Hit(row:6,column:13,width:14,click:.key(.text("n"))))
+            lines.append(row("  Enter/click manage | key setup | verify identity | new terminal",muted))
+            lines.append(row("  " + fit("NAME",max(10,w/4)) + fit("DESTINATION",max(12,w/3)) + "KEY / TRUST",muted))
+            let capacity = max(1,bodyEnd-lines.count), offset = max(0,selectedServer-max(1,bodyEnd-lines.count)+1)
+            for index in offset..<min(servers.count,offset+capacity) {
+                let server = servers[index]
+                hits.append(Hit(row:lines.count+1,column:1,width:w,click:.server(index)))
+                lines.append(row((index == selectedServer ? "> " : "  ") + fit(server.name,max(10,w/4)) + fit(server.host+":"+String(server.port),max(12,w/3)) + (server.key ?? "no key") + (server.fingerprint == nil ? " / unverified" : " / pinned"),fg,selected:index == selectedServer))
+            }
+            if servers.isEmpty { lines.append(row("  No servers yet. Press n or click Add server.",muted)) }
+        } else if page == 4 {
+            lines.append(row("  TERMINAL SESSIONS   [n New terminal]", accent))
+            hits.append(Hit(row:6,column:23,width:16,click:.key(.text("n"))))
+            lines.append(row("  Enter/click actions | a attach | n new terminal", muted))
             lines.append(row("  " + fit("NAME", max(10,w/3)) + fit("SERVER", max(8,w/4)) + "STATE / VIEWER", muted))
             let capacity = max(1, bodyEnd - lines.count)
             let offset = max(0, selectedSession - capacity + 1)
@@ -254,9 +299,9 @@ public struct KilnTerminal {
                 hits.append(Hit(row: lines.count+1, column: 1, width: w, click: .session(index)))
                 lines.append(row((index == selectedSession ? "> " : "  ") + fit(session.name,max(10,w/3)) + fit(session.server,max(8,w/4)) + session.state + (session.attached ? " / attached" : " / detached"), fg, selected: index == selectedSession))
             }
-            if sessions.isEmpty { lines.append(row("  No sessions yet. Use session help in the drawer.", muted)) }
+            if sessions.isEmpty { lines.append(row("  No sessions yet. Press n or click New terminal.", muted)) }
         } else if page == 3 {
-            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
+            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5 / 6  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
                 if lines.count < bodyEnd { lines.append(row(text, muted)) }
             }
         } else if page == 2 {
@@ -336,7 +381,7 @@ public struct KilnTerminal {
             return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)
         }
         lines.append(row("  " + notice, muted))
-        lines.append(row(page == 4 ? "  Click/Enter attach | ` drawer | ? help | q exit" : "  Click/Enter manage | ` drawer | ? help | q exit", accent))
+        lines.append(row(page == 4 ? "  Enter actions | a attach | n new | ` drawer | q exit" : "  Click/Enter manage | ` drawer | ? help | q exit", accent))
         let sampled = host.map { String($0.timestamp.ISO8601Format().suffix(9)) } ?? "waiting"
         lines.append(row("  LIVE 1s / " + sampled + " / process state != health", muted))
         hits.append(Hit(row: height-1, column: 1, width: w, click: .key(.text("`"))))
@@ -373,6 +418,6 @@ public struct KilnTerminal {
                 }
             }
         }
-        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + overlay, hits)
+        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + overlay + management.render(width:width,height:height), hits)
     }
 }

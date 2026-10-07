@@ -54,6 +54,29 @@ public actor KilnBastion {
         do { try save() } catch { configuration=old;throw error }
         return "Added \(name): \(user)@\(host):\(port). ProxyJump allowed for this exact host/port. Managed execution requires a key and verified host identity."
     }
+    public func serverSnapshots() throws -> [ServerSnapshot] {
+        try load()
+        return try configuration!.servers.values.sorted { $0.name < $1.name }.map {
+            ServerSnapshot(name: $0.name, host: $0.host, user: $0.user, port: $0.port, key: $0.key,
+                fingerprint: try $0.trustedHostKey.map(Self.fingerprint), candidate: try $0.candidateHostKey.map(Self.fingerprint))
+        }
+    }
+    public func edit(name: String, host: String, user: String, port: Int) throws -> String {
+        try Self.validate(name: name, host: host, user: user, port: port)
+        var server = try profile(name)
+        let changed = server.host != host.lowercased() || server.port != port
+        if changed { server.trustedHostKey = nil; server.candidateHostKey = nil }
+        let old = configuration
+        configuration!.servers[name] = ServerProfile(name: name, host: host.lowercased(), port: port, user: user, key: server.key, trustedHostKey: server.trustedHostKey, candidateHostKey: server.candidateHostKey)
+        do { try save() } catch { configuration = old; throw error }
+        return "Updated \(name)." + (changed ? " Destination changed: verify and pin its host key again. Existing sessions are unchanged." : "")
+    }
+    public func generateKey(server: String, name: String) throws -> String {
+        _ = try profile(server)
+        let message = try createKey(name)
+        _ = try assign(server: server, key: name)
+        return message + "\nAssigned to " + server + ". Install the public key on that server before connecting."
+    }
     public func remove(_ name:String) throws -> String {
         try load();guard configuration!.servers[name] != nil else { throw KilnError.message("Unknown server") }
         let old=configuration;configuration!.servers.removeValue(forKey:name)
@@ -152,7 +175,7 @@ public actor KilnBastion {
         let terminal = try await RemoteTerminal.open(name: name, server: server, key: NIOSSHPrivateKey(ed25519Key: key), hostKey: NIOSSHPublicKey(openSSHPublicKey: pin))
         guard !closing else { await terminal.close(); throw KilnError.message("Runtime is closing") }
         terminals[name] = terminal
-        return "Created session \(name) on \(nameOfServer). Use session attach \(name). It survives client disconnects, not Kiln restarts."
+        return "Created session \(name) on \(nameOfServer). Use session attach \(name). It survives client disconnects and dashboard restarts while the session service stays alive."
     }
     public func session(_ name: String) throws -> RemoteTerminal {
         guard let terminal = terminals[name] else { throw KilnError.message("Unknown session") }
@@ -162,7 +185,18 @@ public actor KilnBastion {
         let current = terminals.values.sorted { $0.name < $1.name }
         var result: [TerminalSessionSnapshot] = []
         for terminal in current { result.append(await terminal.snapshot()) }
-        return result
+        return result.sorted { $0.name < $1.name }
+    }
+    public func renameSession(_ name: String, to replacement: String) async throws -> String {
+        try Self.validate(name: replacement, host: "localhost", user: "admin", port: 22)
+        guard terminals[replacement] == nil, !creating.contains(replacement), !creating.contains(name) else { throw KilnError.message("Session name is in use") }
+        let terminal = try session(name)
+        // Reserve both names across the async call, so concurrent create/rename cannot replace one.
+        creating.insert(name); creating.insert(replacement); defer { creating.remove(name); creating.remove(replacement) }
+        try await terminal.rename(replacement)
+        guard terminals[name] === terminal else { throw KilnError.message("Session was closed during rename") }
+        terminals.removeValue(forKey: name); terminals[replacement] = terminal
+        return "Renamed session to " + replacement
     }
     public func closeSession(_ name: String) async throws -> String {
         guard let terminal = terminals.removeValue(forKey: name) else { throw KilnError.message("Unknown session") }

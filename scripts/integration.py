@@ -122,3 +122,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
             process.terminate()
             try: process.wait(timeout=12)
             except subprocess.TimeoutExpired: process.kill(); process.wait()
+
+        # The detached session service has its own lifetime; explicitly stop test fixtures.
+        for pidfile in tmp.rglob("session-service.pid"):
+            subprocess.run([str(BIN/"kiln"),"session-service-stop","--state",str(pidfile.parent)],capture_output=True,timeout=10)

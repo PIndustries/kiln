@@ -3,6 +3,7 @@ import Dispatch
 import KilnRuntime
 import KilnCommands
 import KilnSSH
+import KilnBastion
 #if canImport(Darwin)
 import Darwin
 #else
@@ -17,11 +18,18 @@ struct Kiln {
     }
     static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.count == 3, args[1] == "--state", ["session-service", "session-service-stop"].contains(args[0]) {
+            let directory = URL(fileURLWithPath:args[2]).standardizedFileURL
+            if args[0] == "session-service" { try await SessionService.run(directory:directory) }
+            else { print(try await BastionClient(directory:directory).stop()) }
+            return
+        }
         if args.contains("--help") || args.isEmpty {
             print("""
             Kiln 0.2 development runtime
             kiln up [--state PATH] [--authorized-keys PATH] [--host 127.0.0.1] [--port 2222]
                     [--user admin] [--no-ssh] [--console]
+            kiln session-service-stop --state PATH   End persistent remote terminals
             --console enables the same command engine on local stdin.
             SSH is optional. --no-ssh never reads keys or opens an SSH listener.
             """); return
@@ -44,6 +52,7 @@ struct Kiln {
         defer { close(lockFD) }
         let runtime = try KilnRuntime(stateDirectory: state)
         let commands = KilnCommands(runtime: runtime)
+        try await commands.startSessionService()
         var ssh: KilnSSHServer?
         do {
             if !flags.contains("--no-ssh") {
@@ -77,7 +86,6 @@ struct Kiln {
         }
         for await _ in signals { break }
         print("Kiln shutting down")
-        await commands.shutdownSessions()
         await runtime.shutdown()
         await ssh?.stop()
     }
