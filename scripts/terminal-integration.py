@@ -81,7 +81,12 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         expect('RSS MiB')
         if a.preview: preview(screen,a.preview/'kiln-metrics.png')
         click_text('1 Overview'); expect('storefront/rest')
+        service_row=next(y for y,line in enumerate(screen.display) if 'storefront/rest' in line)
         click_text('storefront/rest'); expect('Manage storefront/rest')
+        menu_row=next(y for y,line in enumerate(screen.display) if 'Manage storefront/rest' in line)
+        assert menu_row == service_row+1, 'Menu must stay beside selected row'
+        assert screen.display[menu_row].index('Manage') > 2
+        if a.preview: preview(screen,a.preview/'kiln-row-menu.png')
         click_text('Back'); pump(.2)
         if a.preview: preview(screen,a.preview/'kiln-dashboard.png')
         send(b'\r'); expect('Manage storefront/rest')
@@ -113,6 +118,11 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
             screen.resize(lines=rows,columns=columns)
             fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',rows,columns,0,0))
             os.kill(process.pid,signal.SIGWINCH); pump(.3)
+            send(b'\r'); expect('Manage storefront/rest')
+            service_row=next(y for y,line in enumerate(screen.display) if '> storefront/rest' in line)
+            menu_row=next(y for y,line in enumerate(screen.display) if 'Manage storefront/rest' in line)
+            assert menu_row == service_row+1
+            click_text('Back')
             send(b'`'); expect('='*(columns-5))
             assert 'COMMAND DRAWER' in '\n'.join(screen.display)
             send(b'`')

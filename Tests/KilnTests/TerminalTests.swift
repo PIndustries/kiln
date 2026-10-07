@@ -81,7 +81,7 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     _ = ui.handle(.down); _ = ui.handle(.enter)
     #expect(ui.render().contains("Confirm:"))
     // Confirmation cancel is a distinct click target, never executes the action.
-    #expect(ui.handle(.mouse(button: 0,column: 24,row: 12,released: false)).isEmpty)
+    #expect(ui.handle(.mouse(button: 0,column: 40,row: 11,released: false)).isEmpty)
     #expect(!ui.render().contains("Confirm:"))
     #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1000l"))
     #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1006l"))

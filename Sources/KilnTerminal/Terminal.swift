@@ -307,21 +307,39 @@ public struct KilnTerminal {
         let sampled = host.map { String($0.timestamp.ISO8601Format().suffix(9)) } ?? "waiting"
         lines.append(row("  LIVE 1s / " + sampled + " / process state != health", muted))
         hits.append(Hit(row: height-1, column: 1, width: w, click: .key(.text("`"))))
-        if let action = menu {
-            let title = confirmation != nil ? "  Confirm: " + confirmation! + " ?" : "  Manage " + (modules.indices.contains(selected) ? modules[selected].id : "service")
-            let top = max(5, (height - 9)/2)
-            let panel = [row(title, accent, selected: true)] + (confirmation != nil ? [row("  Enter confirm   /   Esc cancel", fg, selected: true)] : actions.enumerated().map { i, name in row("  \(i == action ? ">" : " ") " + name, i == action ? accent : fg, selected: true) })
+        var overlay = ""
+        if let action = menu, modules.indices.contains(selected),
+           let anchor = hits.first(where: {
+               if case .service(let index) = $0.click { return index == selected }
+               return false
+           }) {
+            let title = confirmation.map { "Confirm: " + $0 + " ?" } ?? "Manage " + modules[selected].id
+            let choices = confirmation != nil ? ["Enter confirm   /   Esc cancel"] : actions.enumerated().map {
+                "\($0.offset == action ? ">" : " ") " + $0.element
+            }
+            let panelWidth = min(w - 4, max(title.count, choices.map(\.count).max() ?? 0) + 4)
+            let panelHeight = choices.count + 3
+            // Anchor to the visible service row, including scrolling and resize.
+            // Shift left/up only when the popup would cross the viewport edge.
+            let left = min(4 + Self.safe(modules[selected].id).count, w - panelWidth + 1)
+            let top = max(1, min(anchor.row, bodyEnd - panelHeight + 1))
+            let border = "+" + String(repeating: "-", count: panelWidth - 2) + "+"
+            let panel = [border, "| " + fit(title, panelWidth - 4) + " |"]
+                + choices.map { "| " + fit($0, panelWidth - 4) + " |" } + [border]
             hits = []
-            for (index,line) in panel.enumerated() where top+index < lines.count-2 {
-                lines[top+index] = line
-                if index > 0 {
+            for (index, text) in panel.enumerated() {
+                let color = index <= 1 || index == panel.count - 1 || (confirmation == nil && index == action + 2) ? accent : fg
+                overlay += "\u{1b}[\(top + index);\(left)H\u{1b}[0m\u{1b}[48;5;238m" + color + text + "\u{1b}[0m"
+                if index >= 2 && index < panel.count - 1 {
                     if confirmation != nil {
-                        hits.append(Hit(row: top+index+1, column: 3, width: 13, click: .key(.enter)))
-                        hits.append(Hit(row: top+index+1, column: 22, width: 10, click: .key(.escape)))
-                    } else { hits.append(Hit(row: top+index+1, column: 1, width: w, click: .action(index-1))) }
+                        hits.append(Hit(row: top + index, column: left + 2, width: 13, click: .key(.enter)))
+                        hits.append(Hit(row: top + index, column: left + 20, width: 10, click: .key(.escape)))
+                    } else {
+                        hits.append(Hit(row: top + index, column: left + 1, width: panelWidth - 2, click: .action(index - 2)))
+                    }
                 }
             }
         }
-        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n"), hits)
+        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + overlay, hits)
     }
 }
