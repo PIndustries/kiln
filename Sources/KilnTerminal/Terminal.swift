@@ -12,8 +12,8 @@ public struct KilnTerminal {
     public private(set) var input = ""
     public private(set) var selected = 0
     public private(set) var busy = false
-    private var width = 100
-    private var height = 30
+    private var width = 80
+    private var height = 24
     private var page = 0
     private var cursor = 0
     private var history: [String] = []
@@ -27,8 +27,13 @@ public struct KilnTerminal {
     private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Back"]
     public init() {}
     public mutating func resize(width: Int, height: Int) {
-        self.width = min(240, max(20, width > 0 ? width : 100))
-        self.height = min(100, max(6, height > 0 ? height : 30))
+        // SSH sends zero when a dimension is unknown: retain the last known value.
+        let columns = width > 0 ? width : self.width
+        let rows = height > 0 ? height : self.height
+        // Bound total work for untrusted SSH requests, not ordinary viewport dimensions.
+        guard columns <= 1_000_000 / rows else { return }
+        self.width = columns
+        self.height = rows
     }
     public mutating func update(_ modules: [ModuleSnapshot]) {
         let id = self.modules.indices.contains(selected) ? self.modules[selected].id : nil
@@ -174,7 +179,8 @@ public struct KilnTerminal {
             let lines = [row(" KILN / P.Industries", accent), row(" Terminal too small", accent), row(" Resize to at least 50 columns x 16 rows."), row(" Current: \(width) x \(height)", muted), row(" Ctrl-D disconnects", muted)]
             return "\u{1b}[?25l\u{1b}[H" + (lines + Array(repeating: row(), count: max(0,height-lines.count))).prefix(height).joined(separator: "\r\n")
         }
-        var lines = [row("  K I L N                                      P.INDUSTRIES", accent),
+        let brand = "P.INDUSTRIES"
+        var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
                      row("  LOCAL NODE  /  ONLINE  /  SSH SESSION", green), row()]
         lines.append(row("  \(page == 0 ? "[1 Overview]" : " 1 Overview ")  \(page == 1 ? "[2 Services]" : " 2 Services ")  \(page == 2 ? "[3 Help]" : " 3 Help ")", accent))
         lines.append(row("  " + String(repeating: "-", count: max(0,w-4)), muted))
@@ -187,17 +193,22 @@ public struct KilnTerminal {
             let count = modules.filter { $0.state == "running" }.count
             lines.append(row("  \(modules.count) MODULES     \(count) RUNNING     \(modules.count-count) INACTIVE", fg))
             lines.append(row())
-            let nameWidth = max(12, w - 39)
-            let wide = width >= 75
-            let header = wide ? "  " + fit("SERVICE", nameWidth) + "  " + fit("VERSION",10) + "  " + fit("STATE",9) + "  PID" : "  " + fit("SERVICE",w-15) + " STATE"
+            let versionWidth = max("VERSION".count, modules.map { $0.version.count }.max() ?? 0)
+            let stateWidth = max("STATE".count, modules.map { $0.state.count }.max() ?? 0)
+            let pidWidth = max("PID".count, modules.map { $0.pid.map(String.init)?.count ?? 1 }.max() ?? 0)
+            let metadataWidth = versionWidth + stateWidth + pidWidth + 6
+            let wide = w - 4 - metadataWidth >= max("SERVICE".count, (w - 4) / 3)
+            let nameWidth = max(1, w - 4 - (wide ? metadataWidth : stateWidth + 2))
+            let header = "  " + fit("SERVICE", nameWidth) + "  " + (wide ? fit("VERSION",versionWidth) + "  " + fit("STATE",stateWidth) + "  " + fit("PID",pidWidth) : fit("STATE",stateWidth))
             lines.append(row(header, muted))
-            let capacity = max(1, page == 0 && !drawer ? min(5, bodyEnd - lines.count - 8) : bodyEnd - lines.count)
+            let detailRows = page == 0 && !drawer && bodyEnd - lines.count >= 8 ? 7 : 0
+            let capacity = max(1, bodyEnd - lines.count - detailRows)
             let offset = max(0, selected - capacity + 1)
             if modules.isEmpty { lines.append(row("  No services installed. Open ` and use app install.", muted)) }
             for index in offset..<min(modules.count, offset + capacity) {
                 let module = modules[index]
                 let marker = index == selected ? "> " : "  "
-                let text = wide ? marker + fit(module.id,nameWidth) + "  " + fit(module.version,10) + "  " + fit(module.state,9) + "  " + (module.pid.map(String.init) ?? "-") : marker + fit(module.id,w-15) + " " + module.state
+                let text = marker + fit(module.id,nameWidth) + "  " + (wide ? fit(module.version,versionWidth) + "  " + fit(module.state,stateWidth) + "  " + fit(module.pid.map(String.init) ?? "-",pidWidth) : fit(module.state,stateWidth))
                 lines.append(row(text, module.state == "running" ? green : muted, selected: index == selected))
             }
             if page == 0 && !drawer && modules.indices.contains(selected) && bodyEnd - lines.count >= 7 {

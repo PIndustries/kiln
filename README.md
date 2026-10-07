@@ -56,7 +56,7 @@ Interactive SSH opens the dashboard by default:
 - Left/Right, Home/End, Ctrl-A/E/U/K and Backspace/Delete edit a command.
 - Page Up/Down scrolls output. Ctrl-C clears input; it does not cancel an operation already executing.
 - Tab or 1/2/3 switches views. q disconnects from the dashboard.
-- Resize adapts the layout; screens below 50x16 show a resize prompt.
+- The layout follows SSH-reported dimensions, including live window changes. The divider spans the viewport, the drawer uses half the height, and service columns size from their content and available width. Unknown dimensions retain the last known size; only an excessive total cell count is rejected to bound untrusted rendering work. Screens below 50x16 show a resize prompt.
 
 The dashboard refreshes process state every two seconds. Running is not a health claim; use Check health to query an endpoint. New service IDs appear in the dashboard and completion automatically.
 

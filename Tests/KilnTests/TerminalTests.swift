@@ -44,7 +44,7 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
 
 @Test func layoutFitsAndUntrustedOutputCannotInjectANSI() throws {
     var ui = KilnTerminal(); ui.update([sample])
-    for (width,height) in [(50,16),(80,24),(120,35)] {
+    for (width,height) in [(50,16),(80,24),(120,35),(320,120),(400,45)] {
         ui.resize(width: width,height: height)
         let ansi = try NSRegularExpression(pattern: "\u{1b}\\[[0-9;?]*[A-Za-z]")
         for drawer in [false,true] {
@@ -52,7 +52,8 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
             let frame = ui.render()
             let plain = ansi.stringByReplacingMatches(in: frame, range: NSRange(frame.startIndex...,in:frame),withTemplate: "")
             #expect(plain.components(separatedBy: "\r\n").count == height)
-            #expect(plain.components(separatedBy: "\r\n").allSatisfy { $0.count <= width-1 })
+            #expect(plain.components(separatedBy: "\r\n").allSatisfy { $0.count == width-1 })
+            if drawer { #expect(plain.contains(String(repeating: "=", count: width-5))) }
             if drawer { _ = ui.handle(.escape) }
         }
     }

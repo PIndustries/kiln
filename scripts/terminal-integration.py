@@ -91,6 +91,14 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         screen.resize(lines=30,columns=100)
         fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',30,100,0,0)); os.kill(process.pid,signal.SIGWINCH); pump(.5)
         expect('storefront/rest')
+        # Validate real window-change events beyond the old 240x100 viewport cap.
+        for columns,rows in [(320,120),(164,42),(80,24)]:
+            screen.resize(lines=rows,columns=columns)
+            fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack('HHHH',rows,columns,0,0))
+            os.kill(process.pid,signal.SIGWINCH); pump(.3)
+            send(b'`'); expect('='*(columns-5))
+            assert 'COMMAND DRAWER' in '\n'.join(screen.display)
+            send(b'`')
         send(b'\x1b[B\r\x1b[B\r'); expect('Confirm: app stop storefront/websocket')
         send(b'\r'); expect('Stopped storefront/websocket')
         send(b'\r\r'); expect('Started storefront/websocket')
