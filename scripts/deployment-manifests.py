@@ -9,7 +9,7 @@ p.add_argument('--worker-port', type=int, default=19090)
 a = p.parse_args()
 assert a.executable.is_file(), 'Build the example executable first'
 a.output.mkdir(parents=True, exist_ok=True)
-for version, worker in [('1.0.0', a.worker_port), ('1.1.0', a.worker_port+1)]:
+for version, worker in [('26.10.07.1', a.worker_port), ('26.10.07.2', a.worker_port+1)]:
     manifest = dict(application='release-demo', name='backend', version=version,
                     executable=str(a.executable.resolve()), arguments=['--websocket'],
                     healthURL=f'http://127.0.0.1:{worker}/health', ingressPort=a.ingress_port)

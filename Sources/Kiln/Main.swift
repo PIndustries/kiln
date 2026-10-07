@@ -1,6 +1,7 @@
 import Foundation
 import Dispatch
 import KilnRuntime
+import KilnKit
 import KilnCommands
 import KilnSSH
 import KilnBastion
@@ -18,6 +19,7 @@ struct Kiln {
     }
     static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args == ["--version"] { print(KilnVersion.current); return }
         if args.count == 3, args[1] == "--state", ["session-service", "session-service-stop"].contains(args[0]) {
             let directory = URL(fileURLWithPath:args[2]).standardizedFileURL
             if args[0] == "session-service" { try await SessionService.run(directory:directory) }
@@ -26,7 +28,7 @@ struct Kiln {
         }
         if args.contains("--help") || args.isEmpty {
             print("""
-            Kiln 0.2 development runtime
+            Kiln \(KilnVersion.current) development runtime
             kiln up [--state PATH] [--authorized-keys PATH] [--host 127.0.0.1] [--port 2222]
                     [--user admin] [--no-ssh] [--console]
             kiln session-service-stop --state PATH   End persistent remote terminals

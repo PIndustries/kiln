@@ -21,6 +21,10 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 
 This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, general-purpose secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
 
+## Release numbering
+
+Kiln releases use `YY.MM.DD.BUILD`, starting with `26.10.07.1`. The build counter starts at 1 each day and increments for each release that day. `kiln --version`, SSH help and runtime status share the version defined in `Sources/KilnKit/Version.swift`. Artifact directories use `kiln-<version>-<platform>-<architecture>`. Historical releases retain their original identity.
+
 ## Build
 
 Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux is an intended target, not yet verified.

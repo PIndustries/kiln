@@ -33,7 +33,7 @@ let package = Package(
         .target(name: "KilnSSH", dependencies: ["KilnBastion", "KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnHTTP", dependencies: [.product(name: "NIOHTTP1", package: "swift-nio")]),
         .target(name: "KilnWebSocket", dependencies: [.product(name: "NIOWebSocket", package: "swift-nio")]),
-        .executableTarget(name: "Kiln", dependencies: ["KilnBastion", "KilnCommands", "KilnSSH", "KilnRuntime"]),
+        .executableTarget(name: "Kiln", dependencies: ["KilnKit", "KilnBastion", "KilnCommands", "KilnSSH", "KilnRuntime"]),
         .executableTarget(name: "ExampleBackend", dependencies: ["KilnKit", "KilnHTTP", "KilnWebSocket", .product(name: "NIOPosix", package: "swift-nio")]),
         .testTarget(name: "KilnTests", dependencies: ["KilnKit", "KilnRuntime", "KilnCommands", "KilnTerminal", "KilnTelemetry", "KilnBastion"]),
     ]

@@ -21,7 +21,7 @@ For a binary distribution, use its `kiln` and `kiln-example-backend` files inste
 SSH into Kiln, open the command drawer with backtick, and run (substitute the printed absolute manifest path):
 
 ```text
-app deploy /absolute/path/releases-demo/1.0.0.json
+app deploy /absolute/path/releases-demo/26.10.07.1.json
 app health release-demo/backend
 app releases release-demo/backend
 ```
@@ -31,7 +31,7 @@ Locally, visit `http://127.0.0.1:18090/api/hello` or `/api/version`. WebSocket e
 Update without restarting Kiln:
 
 ```text
-app deploy /absolute/path/releases-demo/1.1.0.json
+app deploy /absolute/path/releases-demo/26.10.07.2.json
 app releases release-demo/backend
 app rollback release-demo/backend
 ```
@@ -55,7 +55,7 @@ Then browse `http://127.0.0.1:18090` on your computer. The network hop to Kiln i
 {
   "application": "release-demo",
   "name": "backend",
-  "version": "1.0.0",
+  "version": "26.10.07.1",
   "executable": "/absolute/path/kiln-example-backend",
   "arguments": ["--websocket"],
   "healthURL": "http://127.0.0.1:19090/health",

@@ -76,7 +76,7 @@ public struct KilnCommands: Sendable {
                 return CommandResult(try await bastion.closeSession(p[2]))
             case ["help"]:
                 return CommandResult("""
-                Kiln 0.2 development shell
+                Kiln \(KilnVersion.current) development shell
                 status                  Runtime status
                 metrics                 Host CPU, memory, disk, uptime and load
                 app list                Installed applications and process state
@@ -96,7 +96,7 @@ public struct KilnCommands: Sendable {
                 Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
             case ["metrics"]: return CommandResult(await telemetry.sample().summary)
-            case ["status"]: return CommandResult("Kiln runtime running\nMode: single node\nApplication isolation: OS processes\nAutomatic restart and clustering: not implemented")
+            case ["status"]: return CommandResult("Kiln runtime running\nRelease: \(KilnVersion.current)\nMode: single node\nApplication isolation: OS processes\nAutomatic restart and clustering: not implemented")
             case ["app", "list"]: return CommandResult(await runtime.list())
             case ["exit"], ["quit"]: return CommandResult("Goodbye.", disconnect: true)
             default:
