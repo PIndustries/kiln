@@ -67,3 +67,22 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     #expect(try KilnCommands.tokenize("app install \"/tmp/$(touch evil).json\"") == ["app","install","/tmp/$(touch evil).json"])
     #expect(throws: (any Error).self) { try KilnCommands.tokenize("app install 'unfinished") }
 }
+
+@Test func mouseReportsAreIncrementalAndReleaseDoesNotActivate() {
+    var decoder = TerminalKeys()
+    #expect(decoder.feed(Array("\u{1b}[<0;12;".utf8)).isEmpty)
+    #expect(decoder.feed(Array("4M".utf8)) == [.mouse(button: 0,column: 12,row: 4,released: false)])
+    #expect(decoder.feed(Array("\u{1b}[<0;12;4m".utf8)) == [.mouse(button: 0,column: 12,row: 4,released: true)])
+    var ui = KilnTerminal(); ui.update([sample]); ui.resize(width: 100,height: 30)
+    #expect(ui.handle(.mouse(button: 0,column: 6,row: 9,released: true)).isEmpty)
+    #expect(!ui.render().contains("Manage storefront/rest"))
+    _ = ui.handle(.mouse(button: 0,column: 6,row: 9,released: false))
+    #expect(ui.render().contains("Manage storefront/rest"))
+    _ = ui.handle(.down); _ = ui.handle(.enter)
+    #expect(ui.render().contains("Confirm:"))
+    // Confirmation cancel is a distinct click target, never executes the action.
+    #expect(ui.handle(.mouse(button: 0,column: 24,row: 12,released: false)).isEmpty)
+    #expect(!ui.render().contains("Confirm:"))
+    #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1000l"))
+    #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1006l"))
+}

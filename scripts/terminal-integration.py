@@ -66,6 +66,23 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         def send(data): os.write(master,data); pump()
         expect('storefront/websocket')
         assert b'\x1b[?1049h' in raw and b'\x1b[38;5;' in raw
+        def click_text(text):
+            for y,line in enumerate(screen.display):
+                x=line.find(text)
+                if x>=0:
+                    send(f'\x1b[<0;{x+2};{y+1}M\x1b[<0;{x+2};{y+1}m'.encode()); return
+            raise AssertionError(('Missing click target',text))
+        assert b'\x1b[?1000h' in raw and b'\x1b[?1006h' in raw
+        click_text('3 Metrics'); expect('CPU:')
+        before=next(line for line in screen.display if 'Sample:' in line)
+        pump(1.3)
+        after=next(line for line in screen.display if 'Sample:' in line)
+        assert before != after, 'Metrics sample did not stream'
+        expect('RSS MiB')
+        if a.preview: preview(screen,a.preview/'kiln-metrics.png')
+        click_text('1 Overview'); expect('storefront/rest')
+        click_text('storefront/rest'); expect('Manage storefront/rest')
+        click_text('Back'); pump(.2)
         if a.preview: preview(screen,a.preview/'kiln-dashboard.png')
         send(b'\r'); expect('Manage storefront/rest')
         send(b'\x1b[B\r'); expect('Confirm: app stop storefront/rest')
@@ -103,9 +120,13 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         send(b'\r'); expect('Stopped storefront/websocket')
         send(b'\r\r'); expect('Started storefront/websocket')
         send(b'q'); process.wait(timeout=5); pump()
-        assert b'\x1b[?1049l' in raw and b'\x1b[?25h' in raw
+        assert b'\x1b[?1049l' in raw and b'\x1b[?25h' in raw and b'\x1b[?1000l' in raw and b'\x1b[?1006l' in raw
         assert process.returncode==0
-        print('PASS: SSH dashboard, colors, menus, confirmation, stop/start actions, health action, completion, history, paste, resize, alternate-screen cleanup')
+        process,master=connect(); screen=pyte.Screen(100,30); stream=pyte.ByteStream(screen); raw=bytearray()
+        expect('storefront/rest')
+        runtime.terminate(); pump(1); runtime.wait(timeout=12); process.wait(timeout=5); pump(.1)
+        assert b'\x1b[?1000l' in raw and b'\x1b[?1006l' in raw and b'\x1b[?1049l' in raw
+        print('PASS: SSH dashboard, mouse clicks, streaming host metrics, colors, menus, confirmation, stop/start actions, health action, completion, history, paste, resize, terminal cleanup including server shutdown')
     finally:
         for process,master in clients:
             if process.poll() is None: process.kill(); process.wait(timeout=5)

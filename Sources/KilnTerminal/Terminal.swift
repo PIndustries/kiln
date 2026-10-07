@@ -5,13 +5,15 @@ public enum TerminalEffect: Equatable { case command(String), disconnect }
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
-    public static let enterScreen = "\u{1b}[?1049h\u{1b}[?2004h\u{1b}[?25l\u{1b}[2J"
-    public static let leaveScreen = "\u{1b}[0m\u{1b}[?2004l\u{1b}[?25h\u{1b}[?1049l"
+    public static let enterScreen = "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?2004h\u{1b}[?25l\u{1b}[2J"
+    public static let leaveScreen = "\u{1b}[0m\u{1b}[?1000l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[?25h\u{1b}[?1049l"
     public private(set) var modules: [ModuleSnapshot] = []
     public private(set) var drawer = false
     public private(set) var input = ""
     public private(set) var selected = 0
     public private(set) var busy = false
+    private var host: HostMetrics?
+    private var cpuHistory: [Double] = []
     private var width = 80
     private var height = 24
     private var page = 0
@@ -40,6 +42,15 @@ public struct KilnTerminal {
         self.modules = modules
         selected = id.flatMap { id in modules.firstIndex { $0.id == id } } ?? min(selected, max(0, modules.count - 1))
     }
+    public mutating func observe(_ observation: Observation) {
+        update(observation.modules)
+        if host?.timestamp != observation.host.timestamp, let cpu = observation.host.cpuPercent {
+            cpuHistory.append(cpu); cpuHistory = Array(cpuHistory.suffix(60))
+        }
+        host = observation.host
+    }
+    private enum Click { case key(TerminalKey), service(Int), action(Int), cursor(Int) }
+    private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
         busy = false
         let lines = text.components(separatedBy: "\n")
@@ -54,6 +65,21 @@ public struct KilnTerminal {
         return [.command(command)]
     }
     public mutating func handle(_ key: TerminalKey) -> [TerminalEffect] {
+        if case let .mouse(button, column, row, released) = key {
+            guard !released, column <= width, row <= height else { return [] }
+            if button == 64 { return handle(drawer ? .pageUp : .up) }
+            if button == 65 { return handle(drawer ? .pageDown : .down) }
+            guard button == 0 else { return [] }
+            guard let hit = layout().1.last(where: { $0.row == row && column >= $0.column && column < $0.column + $0.width }) else { return [] }
+            switch hit.click {
+            case .key(let key):
+                if row == 4 { drawer = false }
+                return handle(key)
+            case .service(let index): selected = index; drawer = false; return handle(.enter)
+            case .action(let index): menu = index; return handle(.enter)
+            case .cursor(let offset): cursor = min(input.count, max(0, offset + column - hit.column)); return []
+            }
+        }
         if key == .text("`") || key == .text("~") {
             drawer.toggle(); menu = nil; confirmation = nil; return []
         }
@@ -86,11 +112,12 @@ public struct KilnTerminal {
         switch key {
         case .text("1"): page = 0
         case .text("2"): page = 1
-        case .text("3"), .text("?"): page = 2
-        case .tab: page = (page + 1) % 3
+        case .text("3"): page = 2
+        case .text("4"), .text("?"): page = 3
+        case .tab: page = (page + 1) % 4
         case .up, .text("k"): selected = max(0, selected - 1)
         case .down, .text("j"): selected = min(max(0, modules.count - 1), selected + 1)
-        case .enter: if page != 2 && !modules.isEmpty && !busy { menu = 0 }
+        case .enter: if page < 2 && !modules.isEmpty && !busy { menu = 0 }
         default: break
         }
         return []
@@ -130,7 +157,7 @@ public struct KilnTerminal {
                 cursor = input.count
             }
         case .tab:
-            let fixed = ["help", "status", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "exit"]
+            let fixed = ["help", "status", "metrics", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "exit"]
             let expanded = ["start", "stop", "restart", "health", "logs"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
             let matches = (fixed + expanded).filter { $0.hasPrefix(input) && $0 != input }
             if matches.count == 1 { input = matches[0]; cursor = input.count }
@@ -142,6 +169,7 @@ public struct KilnTerminal {
             }
         case .pageUp: scroll = min(max(0, transcript.count - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
+        case .mouse: break
         case .enter:
             guard !busy else { return [] }
             let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -161,7 +189,9 @@ public struct KilnTerminal {
             return scalar.value == 9 ? " " : "?"
         })
     }
-    public func render() -> String {
+    public func render() -> String { layout().0 }
+    private func layout() -> (String, [Hit]) {
+        var hits: [Hit] = []
         let w = width - 1
         let bg = "\u{1b}[48;5;234m", fg = "\u{1b}[38;5;252m"
         let muted = "\u{1b}[38;5;245m", accent = "\u{1b}[38;5;215m"
@@ -177,22 +207,49 @@ public struct KilnTerminal {
         }
         if width < 50 || height < 16 {
             let lines = [row(" KILN / P.Industries", accent), row(" Terminal too small", accent), row(" Resize to at least 50 columns x 16 rows."), row(" Current: \(width) x \(height)", muted), row(" Ctrl-D disconnects", muted)]
-            return "\u{1b}[?25l\u{1b}[H" + (lines + Array(repeating: row(), count: max(0,height-lines.count))).prefix(height).joined(separator: "\r\n")
+            return ("\u{1b}[?25l\u{1b}[H" + (lines + Array(repeating: row(), count: max(0,height-lines.count))).prefix(height).joined(separator: "\r\n"), [])
         }
         let brand = "P.INDUSTRIES"
         var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
                      row("  LOCAL NODE  /  ONLINE  /  SSH SESSION", green), row()]
-        lines.append(row("  \(page == 0 ? "[1 Overview]" : " 1 Overview ")  \(page == 1 ? "[2 Services]" : " 2 Services ")  \(page == 2 ? "[3 Help]" : " 3 Help ")", accent))
+        let labels = width < 65 ? ["1 Home", "2 Apps", "3 Metrics", "4 Help"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help"]
+        var tabs = "  "
+        for (index,label) in labels.enumerated() {
+            let text = page == index ? "[" + label + "]" : " " + label + " "
+            hits.append(Hit(row: 4, column: tabs.count+1, width: text.count, click: .key(.text(String(index+1)))))
+            tabs += text + " "
+        }
+        lines.append(row(tabs, accent))
         lines.append(row("  " + String(repeating: "-", count: max(0,w-4)), muted))
         let bodyEnd = drawer ? max(8, height / 2) : height - 3
-        if page == 2 {
-            for text in ["  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3      Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
+        if page == 3 {
+            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
                 if lines.count < bodyEnd { lines.append(row(text, muted)) }
+            }
+        } else if page == 2 {
+            let summary = host?.summary.components(separatedBy: "\n") ?? ["Waiting for the first host sample..."]
+            for text in summary where lines.count < bodyEnd { lines.append(row("  " + text, fg)) }
+            if lines.count < bodyEnd {
+                let levels = Array("._-=+*#%@")
+                let chart = String(cpuHistory.suffix(max(1,w-10)).map { levels[min(levels.count-1,Int($0/100*Double(levels.count-1)))] })
+                lines.append(row("  CPU history (0-100%) " + chart, accent))
+            }
+            if lines.count < bodyEnd { lines.append(row("  " + fit("SERVICE",max(10,w-25)) + "  " + fit("CPU(ps)",9) + "RSS MiB", muted)) }
+            let processes = [("kiln supervisor", host?.supervisorPID)] + modules.map { ($0.id,$0.pid) }
+            for (name,pid) in processes where lines.count < bodyEnd {
+                let metric = pid.flatMap { host?.processes[$0] }
+                let cpu = metric.map { String(format: "%.1f%%", $0.cpuPercent) } ?? "--"
+                let rss = metric.map { String(format: "%.1f", Double($0.residentBytes)/1_048_576) } ?? "--"
+                lines.append(row("  " + fit(name,max(10,w-25)) + "  " + fit(cpu,9) + rss))
             }
         } else {
             let count = modules.filter { $0.state == "running" }.count
             lines.append(row("  \(modules.count) MODULES     \(count) RUNNING     \(modules.count-count) INACTIVE", fg))
-            lines.append(row())
+            if page == 0 && !drawer && bodyEnd >= 17, let host {
+                let cpu = host.cpuPercent.map { String(format: "%.1f%%",$0) } ?? "warming up"
+                lines.append(row("  CPU " + cpu + "   RAM " + HostMetrics.bytes(host.memoryResident) + " / " + HostMetrics.bytes(host.memoryTotal), accent))
+                lines.append(row("  Disk free " + HostMetrics.bytes(host.diskFree) + "   Up " + String(Int(host.uptime/3600)) + "h", muted))
+            } else { lines.append(row()) }
             let versionWidth = max("VERSION".count, modules.map { $0.version.count }.max() ?? 0)
             let stateWidth = max("STATE".count, modules.map { $0.state.count }.max() ?? 0)
             let pidWidth = max("PID".count, modules.map { $0.pid.map(String.init)?.count ?? 1 }.max() ?? 0)
@@ -209,6 +266,7 @@ public struct KilnTerminal {
                 let module = modules[index]
                 let marker = index == selected ? "> " : "  "
                 let text = marker + fit(module.id,nameWidth) + "  " + (wide ? fit(module.version,versionWidth) + "  " + fit(module.state,stateWidth) + "  " + fit(module.pid.map(String.init) ?? "-",pidWidth) : fit(module.state,stateWidth))
+                hits.append(Hit(row: lines.count+1, column: 1, width: w, click: .service(index)))
                 lines.append(row(text, module.state == "running" ? green : muted, selected: index == selected))
             }
             if page == 0 && !drawer && modules.indices.contains(selected) && bodyEnd - lines.count >= 7 {
@@ -226,6 +284,8 @@ public struct KilnTerminal {
         while lines.count < bodyEnd { lines.append(row()) }
         if drawer {
             lines.append(row("  " + String(repeating: "=", count: max(0, w - 4)), accent))
+            hits.append(Hit(row: lines.count, column: 1, width: w, click: .key(.text("`"))))
+            hits.append(Hit(row: lines.count+1, column: 1, width: w, click: .key(.text("`"))))
             lines.append(row("  COMMAND DRAWER   \(busy ? "[working]" : "[ready]")   Esc / ` to close", accent))
             let available = max(0, height - lines.count - 3)
             let end = max(0, transcript.count - scroll)
@@ -235,21 +295,33 @@ public struct KilnTerminal {
             let room = max(1,w-9)
             let offset = max(0, cursor - room + 1)
             let shown = String(Array(input).dropFirst(offset).prefix(room))
+            hits.append(Hit(row: height-2, column: 10, width: room, click: .cursor(offset)))
             lines.append(row("  kiln > " + shown, accent))
             lines.append(row("  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
             lines.append(row("  " + notice, muted))
             let cursorColumn = min(w, 10 + cursor - offset)
-            return "\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h"
+            return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)
         }
         lines.append(row("  " + notice, muted))
-        lines.append(row("  Enter manage  |  ` command drawer  |  ? help  |  q exit", accent))
-        lines.append(row("  Single node   /   refresh 2s   /   health checked on demand", muted))
+        lines.append(row("  Click/Enter manage | ` drawer | ? help | q exit", accent))
+        let sampled = host.map { String($0.timestamp.ISO8601Format().suffix(9)) } ?? "waiting"
+        lines.append(row("  LIVE 1s / " + sampled + " / process state != health", muted))
+        hits.append(Hit(row: height-1, column: 1, width: w, click: .key(.text("`"))))
         if let action = menu {
             let title = confirmation != nil ? "  Confirm: " + confirmation! + " ?" : "  Manage " + (modules.indices.contains(selected) ? modules[selected].id : "service")
             let top = max(5, (height - 9)/2)
             let panel = [row(title, accent, selected: true)] + (confirmation != nil ? [row("  Enter confirm   /   Esc cancel", fg, selected: true)] : actions.enumerated().map { i, name in row("  \(i == action ? ">" : " ") " + name, i == action ? accent : fg, selected: true) })
-            for (index,line) in panel.enumerated() where top+index < lines.count-2 { lines[top+index] = line }
+            hits = []
+            for (index,line) in panel.enumerated() where top+index < lines.count-2 {
+                lines[top+index] = line
+                if index > 0 {
+                    if confirmation != nil {
+                        hits.append(Hit(row: top+index+1, column: 3, width: 13, click: .key(.enter)))
+                        hits.append(Hit(row: top+index+1, column: 22, width: 10, click: .key(.escape)))
+                    } else { hits.append(Hit(row: top+index+1, column: 1, width: w, click: .action(index-1))) }
+                }
+            }
         }
-        return "\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n")
+        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n"), hits)
     }
 }

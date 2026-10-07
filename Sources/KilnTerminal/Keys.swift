@@ -4,6 +4,7 @@ public enum TerminalKey: Equatable {
     case text(String), up, down, left, right, home, end, delete, backspace, enter, escape, tab
     case pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
     case paste(String)
+    case mouse(button: Int, column: Int, row: Int, released: Bool)
 }
 
 /// Incremental decoder: escape sequences and UTF-8 may cross SSH packets.
@@ -36,6 +37,12 @@ public struct TerminalKeys {
                 if sequence.count == 2 { sequence = []; continue }
                 if (64...126).contains(byte) {
                     let tail = String(decoding: sequence.dropFirst(), as: UTF8.self)
+                    if tail.hasPrefix("[<"), tail.hasSuffix("M") || tail.hasSuffix("m") {
+                        let fields = tail.dropFirst(2).dropLast().split(separator: ";").compactMap { Int($0) }
+                        if fields.count == 3, fields[1] > 0, fields[2] > 0 {
+                            keys.append(.mouse(button: fields[0], column: fields[1], row: fields[2], released: tail.hasSuffix("m")))
+                        }
+                    }
                     let key: TerminalKey? = switch tail {
                     case "[A", "OA": .up
                     case "[B", "OB": .down

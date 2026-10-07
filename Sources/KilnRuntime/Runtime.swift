@@ -19,7 +19,7 @@ public actor KilnRuntime {
         var process: Process
         var log: FileHandle
     }
-    public let stateDirectory: URL
+    public nonisolated let stateDirectory: URL
     private var installed: [String: Installation] = [:]
     private var running: [String: Running] = [:]
     private var shuttingDown = false

@@ -7,6 +7,23 @@ import KilnCommands
 import KilnTerminal
 
 private enum SSHError: Error { case unsupportedChannel }
+private struct ServerShutdown: Sendable {}
+/// Lock protects only the registry; session state stays on its event loop.
+private final class Sessions: @unchecked Sendable {
+    private let lock = NSLock()
+    private var channels: [ObjectIdentifier: Channel] = [:]
+    private var closing = false
+    func insert(_ channel: Channel) -> Bool {
+        lock.withLock {
+            guard !closing else { return false }
+            channels[ObjectIdentifier(channel)] = channel
+            return true
+        }
+    }
+    func remove(_ channel: Channel) { _ = lock.withLock { channels.removeValue(forKey: ObjectIdentifier(channel)) } }
+    func drain() -> [Channel] { lock.withLock { closing = true; return Array(channels.values) } }
+}
+
 
 private final class KeyAuthentication: NIOSSHServerUserAuthenticationDelegate {
     let username: String
@@ -38,7 +55,7 @@ private final class ShellHandler: ChannelInboundHandler {
     var lastCR = false
     var terminal: KilnTerminal?
     var keys = TerminalKeys()
-    var refreshTask: RepeatedTask?
+    var refreshTask: Task<Void, Never>?
     var escapeTask: Scheduled<Void>?
     var refreshing = false
     var lastFrame = ""
@@ -58,7 +75,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(bytes)), promise: nil)
     }
     func paint(channel: Channel) {
-        guard let terminal, interactive else { return }
+        guard let terminal, interactive, channel.isWritable else { return }
         let frame = terminal.render()
         if frame != lastFrame { output(frame, channel: channel); lastFrame = frame }
     }
@@ -84,6 +101,7 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         switch event {
+        case is ServerShutdown: close(channel: context.channel, status: 0)
         case let request as SSHChannelRequestEvent.PseudoTerminalRequest:
             if !started {
                 pty = true
@@ -107,7 +125,17 @@ private final class ShellHandler: ChannelInboundHandler {
                 refresh(channel: context.channel)
                 let bound = NIOLoopBound(self, eventLoop: context.eventLoop)
                 let channel = context.channel
-                refreshTask = context.eventLoop.scheduleRepeatedTask(initialDelay: .seconds(2), delay: .seconds(2)) { _ in bound.value.refresh(channel: channel) }
+                let commands = self.commands
+                refreshTask = Task {
+                    for await observation in commands.observations() {
+                        guard !Task.isCancelled else { break }
+                        channel.eventLoop.execute {
+                            guard channel.isActive else { return }
+                            bound.value.terminal?.observe(observation)
+                            bound.value.paint(channel: channel)
+                        }
+                    }
+                }
             } else { output("Welcome to Kiln\r\nType help for commands.\r\nkiln> ", channel: context.channel) }
         case let request as SSHChannelRequestEvent.ExecRequest:
             guard !started, request.command.utf8.count <= 4096 else { reply(request.wantReply, accepted: false, channel: context.channel); return }
@@ -210,7 +238,8 @@ private final class ShellHandler: ChannelInboundHandler {
 public final class KilnSSHServer: Sendable {
     private let group: MultiThreadedEventLoopGroup
     private let channel: Channel
-    private init(group: MultiThreadedEventLoopGroup, channel: Channel) { self.group = group; self.channel = channel }
+    private let sessions: Sessions
+    private init(group: MultiThreadedEventLoopGroup, channel: Channel, sessions: Sessions) { self.group = group; self.channel = channel; self.sessions = sessions }
 
     public static func start(host: String, port: Int, username: String, authorizedKeys: URL, stateDirectory: URL, commands: KilnCommands) async throws -> KilnSSHServer {
         let lines = try String(contentsOf: authorizedKeys, encoding: .utf8).split(separator: "\n")
@@ -230,6 +259,7 @@ public final class KilnSSHServer: Sendable {
         let hostKey = NIOSSHPrivateKey(ed25519Key: privateKey)
         try (String(openSSHPublicKey: hostKey.publicKey) + "\n").write(to: stateDirectory.appendingPathComponent("ssh-host-ed25519.pub"), atomically: true, encoding: .utf8)
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+        let sessions = Sessions()
         do {
             let channel = try await ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -238,18 +268,29 @@ public final class KilnSSHServer: Sendable {
                         try channel.pipeline.syncOperations.addHandlers([
                             NIOSSHHandler(role: .server(.init(hostKeys: [hostKey], userAuthDelegate: KeyAuthentication(username: username, keys: keys))), allocator: channel.allocator, inboundChildChannelInitializer: { child, type in
                                 guard case .session = type else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
-                                return child.eventLoop.makeCompletedFuture { try child.pipeline.syncOperations.addHandler(ShellHandler(commands: commands)) }
+                                return child.eventLoop.makeCompletedFuture {
+                                    guard sessions.insert(child) else { throw SSHError.unsupportedChannel }
+                                    child.closeFuture.whenComplete { _ in sessions.remove(child) }
+                                    try child.pipeline.syncOperations.addHandler(ShellHandler(commands: commands))
+                                }
                             }),
                             CloseOnError(),
                         ])
                     }
                 }.bind(host: host, port: port).get()
-            return KilnSSHServer(group: group, channel: channel)
+            return KilnSSHServer(group: group, channel: channel, sessions: sessions)
         } catch { try? await group.shutdownGracefully(); throw error }
     }
 
     public func stop() async {
         try? await channel.close().get()
+        let active = sessions.drain()
+        for session in active {
+            session.eventLoop.execute { session.pipeline.fireUserInboundEventTriggered(ServerShutdown()) }
+        }
+        // Give terminal reset/exit packets time to flush, without allowing a stalled
+        // client to hold up runtime shutdown indefinitely.
+        try? await Task.sleep(for: .milliseconds(100))
         try? await group.shutdownGracefully()
     }
 }

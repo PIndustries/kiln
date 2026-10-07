@@ -1,5 +1,7 @@
 import KilnRuntime
 import KilnKit
+import KilnTelemetry
+import Foundation
 
 public struct CommandResult: Sendable {
     public let text: String
@@ -12,7 +14,22 @@ public struct CommandResult: Sendable {
 
 public struct KilnCommands: Sendable {
     private let runtime: KilnRuntime
-    public init(runtime: KilnRuntime) { self.runtime = runtime }
+    private let telemetry: KilnTelemetry
+    public init(runtime: KilnRuntime) { self.runtime = runtime; self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public func observations() -> AsyncStream<Observation> {
+        AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            let task = Task {
+                while !Task.isCancelled {
+                    let host = await telemetry.sample()
+                    let modules = await runtime.snapshot()
+                    continuation.yield(Observation(modules: modules, host: host))
+                    do { try await Task.sleep(for: .seconds(1)) } catch { break }
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
     public func snapshot() async -> [ModuleSnapshot] { await runtime.snapshot() }
     public func execute(_ line: String) async -> CommandResult {
         var parts: [String]
@@ -26,6 +43,7 @@ public struct KilnCommands: Sendable {
                 return CommandResult("""
                 Kiln 0.2 development shell
                 status                  Runtime status
+                metrics                 Host CPU, memory, disk, uptime and load
                 app list                Installed applications and process state
                 app install <manifest>  Install a trusted local executable release
                 app start <name>        Start a separate application process
@@ -36,6 +54,7 @@ public struct KilnCommands: Sendable {
                 exit                    Disconnect this session
                 Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
+            case ["metrics"]: return CommandResult(await telemetry.sample().summary)
             case ["status"]: return CommandResult("Kiln runtime running\nMode: single node\nApplication isolation: OS processes\nAutomatic restart and clustering: not implemented")
             case ["app", "list"]: return CommandResult(await runtime.list())
             case ["exit"], ["quit"]: return CommandResult("Goodbye.", disconnect: true)

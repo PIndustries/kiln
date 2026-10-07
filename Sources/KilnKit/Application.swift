@@ -49,3 +49,40 @@ public struct ModuleSnapshot: Sendable, Equatable {
         self.state = state; self.pid = pid
     }
 }
+
+public struct ProcessMetrics: Sendable {
+    public let cpuPercent: Double
+    public let residentBytes: UInt64
+    public init(cpuPercent: Double, residentBytes: UInt64) { self.cpuPercent = cpuPercent; self.residentBytes = residentBytes }
+}
+public struct HostMetrics: Sendable {
+    public let timestamp: Date
+    public let hostname: String
+    public let supervisorPID: Int32
+    public let cpuPercent: Double?
+    public let cores: Int
+    public let memoryResident: UInt64?
+    public let memoryTotal: UInt64
+    public let diskFree: UInt64?
+    public let diskTotal: UInt64?
+    public let uptime: TimeInterval
+    public let load: [Double]
+    public let processes: [Int32:ProcessMetrics]
+    public init(timestamp: Date, hostname: String, supervisorPID: Int32, cpuPercent: Double?, cores: Int, memoryResident: UInt64?, memoryTotal: UInt64, diskFree: UInt64?, diskTotal: UInt64?, uptime: TimeInterval, load: [Double], processes: [Int32:ProcessMetrics]) {
+        self.timestamp = timestamp; self.hostname = hostname; self.supervisorPID = supervisorPID; self.cpuPercent = cpuPercent; self.cores = cores
+        self.memoryResident = memoryResident; self.memoryTotal = memoryTotal; self.diskFree = diskFree; self.diskTotal = diskTotal
+        self.uptime = uptime; self.load = load; self.processes = processes
+    }
+    public static func bytes(_ value: UInt64?) -> String {
+        guard let value else { return "unavailable" }
+        return String(format: "%.1f GiB", Double(value)/1_073_741_824)
+    }
+    public var summary: String {
+        "Host: \(hostname)\nSample: \(timestamp.ISO8601Format())\nCPU: \(cpuPercent.map { String(format: "%.1f%%", $0) } ?? "warming up") / \(cores) cores\nMemory resident: \(Self.bytes(memoryResident)) / \(Self.bytes(memoryTotal))\nDisk free: \(Self.bytes(diskFree)) / \(Self.bytes(diskTotal))\nUptime: \(Int(uptime)/86400)d \(Int(uptime)/3600%24)h \(Int(uptime)/60%60)m\nLoad (1/5/15m): \(load.map { String(format: "%.2f",$0) }.joined(separator: " "))"
+    }
+}
+public struct Observation: Sendable {
+    public let modules: [ModuleSnapshot]
+    public let host: HostMetrics
+    public init(modules: [ModuleSnapshot], host: HostMetrics) { self.modules = modules; self.host = host }
+}
