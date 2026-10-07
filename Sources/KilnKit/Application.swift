@@ -8,10 +8,12 @@ public struct ApplicationManifest: Codable, Sendable {
     public var executable: String
     public let arguments: [String]
     public let healthURL: String?
+    /// Stable loopback TCP ingress. Each release must use a distinct worker port.
+    public let ingressPort: Int?
 
-    public init(application: String = "default", name: String, version: String, executable: String, arguments: [String] = [], healthURL: String? = nil) {
+    public init(application: String = "default", name: String, version: String, executable: String, arguments: [String] = [], healthURL: String? = nil, ingressPort: Int? = nil) {
         self.application = application; self.name = name; self.version = version; self.executable = executable
-        self.arguments = arguments; self.healthURL = healthURL
+        self.arguments = arguments; self.healthURL = healthURL; self.ingressPort = ingressPort
     }
 
     public func validate() throws {
@@ -23,6 +25,13 @@ public struct ApplicationManifest: Codable, Sendable {
             }
         }
         guard executable.hasPrefix("/") else { throw KilnError.message("Executable must be an absolute path") }
+        if let ingressPort {
+            guard (1024...65535).contains(ingressPort), let raw = healthURL, let url = URL(string: raw),
+                  let port = url.port, (1024...65535).contains(port), port != ingressPort,
+                  url.user == nil, url.password == nil else {
+                throw KilnError.message("Ingress requires a distinct loopback worker port and HTTP healthURL")
+            }
+        }
         if let healthURL {
             guard let url = URL(string: healthURL), url.scheme == "http", url.host == "127.0.0.1" else {
                 throw KilnError.message("Prototype health checks must use http://127.0.0.1")

@@ -46,7 +46,7 @@ public struct KilnTerminal {
     private var menu: Int? = nil
     private var confirmation: String? = nil
     private var notice = "Select a service and press Enter to manage it."
-    private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Back"]
+    private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Releases", "Rollback", "Back"]
     public init() {}
     public mutating func resize(width: Int, height: Int) {
         // SSH sends zero when a dimension is unknown: retain the last known value.
@@ -129,6 +129,8 @@ public struct KilnTerminal {
                 case 2: confirmation = "app restart " + id
                 case 3: menu = nil; return execute("app health " + id)
                 case 4: menu = nil; drawer = true; return execute("app logs " + id)
+                case 5: menu = nil; drawer = true; return execute("app releases " + id)
+                case 6: confirmation = "app rollback " + id
                 default: menu = nil
                 }
             default: break
@@ -209,9 +211,9 @@ public struct KilnTerminal {
                 cursor = input.count
             }
         case .tab:
-            let fixed = ["session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
+            let fixed = ["session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app deploy ", "app rollback ", "app releases ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
             let sessionCommands = sessions.flatMap { ["session attach " + $0.name, "session close " + $0.name] }
-            let expanded = ["start", "stop", "restart", "health", "logs"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
+            let expanded = ["start", "stop", "restart", "health", "logs", "rollback", "releases"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
             let matches = (fixed + expanded + sessionCommands).filter { $0.hasPrefix(input) && $0 != input }
             if matches.count == 1 { input = matches[0]; cursor = input.count }
             else if !matches.isEmpty {

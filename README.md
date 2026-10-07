@@ -14,11 +14,12 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Persistent Ed25519 host identity; only the configured administrator is accepted.
 - Optional local stdin console, including with SSH disabled.
 - Installation of a trusted, locally compiled executable from a JSON manifest.
-- Versioned local release directories, separate processes, start/stop/restart, health checks and log tail.
+- Versioned local releases, readiness-checked deployment, stable loopback TCP ingress, draining and rollback.
+- Separate processes, start/stop/restart, health checks and log tail.
 - Installed-module persistence and restoration of desired running modules after clean shutdown.
 - Independent REST and WebSocket example services.
 
-This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, ingress gateway, remote adoption, Git build pipeline, update/rollback operation, general-purpose secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
+This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, general-purpose secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
 
 ## Build
 
@@ -129,7 +130,9 @@ example executable
   +-- KilnWebSocket
 ```
 
-See [the loading architecture](docs/architecture.md) for the distinction between build-time libraries and runtime modules, and the planned ingress model.
+See [the loading architecture](docs/architecture.md) for the distinction between build-time libraries and runtime modules, and the planned cluster ingress model.
+
+See [health-checked deployments](docs/deployments.md) for stable ingress, encrypted SSH access, release updates and rollback.
 
 See [the ecosystem direction](docs/ecosystem.md) for source/prebuilt distribution, shared data, ingress, SSH interoperability and appliance requirements.
 

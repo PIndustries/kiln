@@ -11,7 +11,7 @@ struct Backend {
     static func main() throws {
         let args = CommandLine.arguments
         let websocket = args.contains("--websocket")
-        let port = args.firstIndex(of: "--port").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? (websocket ? 18081 : 18080)
+        let port = ProcessInfo.processInfo.environment["KILN_PORT"].flatMap(Int.init) ?? args.firstIndex(of: "--port").flatMap { $0 + 1 < args.count ? Int(args[$0 + 1]) : nil } ?? (websocket ? 18081 : 18080)
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         defer { try? group.syncShutdownGracefully() }
         let channel = try ServerBootstrap(group: group)

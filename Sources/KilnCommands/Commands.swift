@@ -19,7 +19,10 @@ public struct KilnCommands: Sendable {
     private let bastion: BastionClient
     private let telemetry: KilnTelemetry
     public init(runtime: KilnRuntime) { self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
-    public func allowForward(host: String, port: Int) async -> Bool { (try? await bastion.allowForward(host: host, port: port)) ?? false }
+    public func allowForward(host: String, port: Int) async -> Bool {
+        if await runtime.allowIngress(host: host, port: port) { return true }
+        return (try? await bastion.allowForward(host: host, port: port)) ?? false
+    }
     public func observations() -> AsyncStream<Observation> {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
@@ -78,6 +81,9 @@ public struct KilnCommands: Sendable {
                 metrics                 Host CPU, memory, disk, uptime and load
                 app list                Installed applications and process state
                 app install <manifest>  Install a trusted local executable release
+                app deploy <manifest>   Stage, health-check and switch ingress to a release
+                app rollback <name>     Health-check and restore the previous release
+                app releases <name>     Active/previous versions and ingress address
                 app start <name>        Start a separate application process
                 app stop <name>         Stop an application
                 app restart <name>      Stop and start an application
@@ -97,6 +103,9 @@ public struct KilnCommands: Sendable {
                 guard parts.count == 3, parts[0] == "app" else { return CommandResult("Unknown command. Run help.", status: 2) }
                 let name = parts[2]
                 switch parts[1] {
+                case "deploy": return CommandResult(try await runtime.deploy(path: name))
+                case "rollback": return CommandResult(try await runtime.rollback(name))
+                case "releases": return CommandResult(try await runtime.releases(name))
                 case "install": return CommandResult(try await runtime.install(path: name))
                 case "start": return CommandResult(try await runtime.start(name))
                 case "stop": return CommandResult(try await runtime.stop(name))

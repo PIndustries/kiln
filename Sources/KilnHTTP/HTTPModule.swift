@@ -1,3 +1,4 @@
+import Foundation
 import NIOCore
 import NIOHTTP1
 
@@ -18,6 +19,7 @@ public final class RESTHandler: ChannelInboundHandler, RemovableChannelHandler {
             if head.method != .GET { status = .methodNotAllowed; body = "{\"error\":\"method not allowed\"}" }
             else {
                 switch head.uri {
+                case "/api/version": status = .ok; body = String(decoding: try! JSONEncoder().encode(["version": ProcessInfo.processInfo.environment["KILN_RELEASE_VERSION"] ?? "development"]), as: UTF8.self)
                 case "/health": status = .ok; body = "{\"status\":\"ok\"}"
                 case "/api/hello": status = .ok; body = "{\"message\":\"Hello from a Kiln REST module\"}"
                 default: status = .notFound; body = "{\"error\":\"not found\"}"

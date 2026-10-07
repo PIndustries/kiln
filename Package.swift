@@ -7,6 +7,7 @@ let package = Package(
         .executable(name: "kiln", targets: ["Kiln"]),
         .executable(name: "kiln-example-backend", targets: ["ExampleBackend"]),
         .library(name: "KilnKit", targets: ["KilnKit"]),
+        .library(name: "KilnIngress", targets: ["KilnIngress"]),
         .library(name: "KilnRuntime", targets: ["KilnRuntime"]),
         .library(name: "KilnBastion", targets: ["KilnBastion"]),
         .library(name: "KilnTelemetry", targets: ["KilnTelemetry"]),
@@ -23,7 +24,8 @@ let package = Package(
     ],
     targets: [
         .target(name: "KilnKit"),
-        .target(name: "KilnRuntime", dependencies: ["KilnKit"]),
+        .target(name: "KilnIngress", dependencies: [.product(name: "NIOPosix", package: "swift-nio"), .product(name: "NIOConcurrencyHelpers", package: "swift-nio")]),
+        .target(name: "KilnRuntime", dependencies: ["KilnKit", "KilnIngress"]),
         .target(name: "KilnBastion", dependencies: ["KilnKit", .product(name: "SwiftTerm", package: "SwiftTerm"), .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnTelemetry", dependencies: ["KilnKit"]),
         .target(name: "KilnCommands", dependencies: ["KilnRuntime", "KilnKit", "KilnTelemetry", "KilnBastion"]),

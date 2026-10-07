@@ -1,6 +1,6 @@
 # Application composition and loading
 
-Status: the local process/SSH path is implemented. Cluster and ingress paths below are proposed contracts, not deployed features.
+Status: the local process/SSH path and per-module loopback TCP ingress are implemented. Public TLS, host/path routing and cluster paths below remain proposed contracts.
 
 ## Two kinds of module
 
@@ -57,7 +57,7 @@ A manifest:
 }
 ```
 
-Health checks are explicit requests, not automatic readiness or ingress admission. Current configuration uses fixed local ports. Releases are local copies; artifact signing/digests, architecture metadata, updates and rollback are future work. Applications must currently avoid spawning unmanaged descendant processes. Clean runtime shutdown stops direct children; persistent desired state starts them again on the next launch. A SIGKILL to the supervisor can leave children alive and requires operator reconciliation.
+Legacy `app install` uses explicit health checks. Managed `app deploy` adds readiness admission, stable loopback ingress, draining and rollback; see [deployments](deployments.md). Releases are local executable copies using distinct worker ports. Artifact signing, architecture metadata and cluster routing remain future work. Applications must currently avoid spawning unmanaged descendant processes. Clean runtime shutdown stops direct children; persistent desired state starts them again on the next launch. A SIGKILL to the supervisor can leave children alive and requires operator reconciliation.
 
 ## Optional interfaces
 
