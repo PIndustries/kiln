@@ -214,6 +214,7 @@ public struct KilnTerminal {
         lines = Array(lines.prefix(bodyEnd))
         while lines.count < bodyEnd { lines.append(row()) }
         if drawer {
+            lines.append(row("  " + String(repeating: "=", count: max(0, w - 4)), accent))
             lines.append(row("  COMMAND DRAWER   \(busy ? "[working]" : "[ready]")   Esc / ` to close", accent))
             let available = max(0, height - lines.count - 3)
             let end = max(0, transcript.count - scroll)
