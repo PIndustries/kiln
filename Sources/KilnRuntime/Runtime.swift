@@ -1,5 +1,6 @@
 import Foundation
 import KilnKit
+import KilnVault
 import KilnIngress
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -30,6 +31,7 @@ public actor KilnRuntime {
         var log: FileHandle
     }
     public nonisolated let stateDirectory: URL
+    public nonisolated var vault: KilnVault { KilnVault(directory: stateDirectory) }
     private var installed: [String: Installation] = [:]
     private var running: [String: Running] = [:]
     private var ingress: [String: KilnIngress] = [:]
@@ -96,6 +98,7 @@ public actor KilnRuntime {
 
     private func spawn(_ manifest: ApplicationManifest) throws -> Running {
         let name = "\(manifest.application)/\(manifest.name)"
+        let secrets = try vault.environment(for: name, bindings: manifest.secrets ?? [:])
         let logs = stateDirectory.appendingPathComponent("logs")
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let logURL = logs.appendingPathComponent("\(name).log")
@@ -111,6 +114,7 @@ public actor KilnRuntime {
         process.currentDirectoryURL = dataDirectory
         process.environment = ["PATH": "/usr/bin:/bin", "KILN_APP_NAME": name, "KILN_DATA_DIR": dataDirectory.path, "KILN_RELEASE_VERSION": manifest.version]
         if manifest.ingressPort != nil { process.environment?["KILN_PORT"] = String(workerPort(manifest)) }
+        process.environment?.merge(secrets) { _, secret in secret }
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = log; process.standardError = log
         do { try process.run() } catch { try? log.close(); throw error }

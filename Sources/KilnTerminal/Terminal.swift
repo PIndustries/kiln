@@ -211,7 +211,7 @@ public struct KilnTerminal {
                 cursor = input.count
             }
         case .tab:
-            let fixed = ["session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app deploy ", "app rollback ", "app releases ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
+            let fixed = ["vault help", "vault put ", "vault list", "vault grant ", "vault revoke ", "vault grants ", "vault delete ", "session help", "session list", "session open ", "session rename ", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app deploy ", "app rollback ", "app releases ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server edit ", "server generate-key ", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
             let sessionCommands = sessions.flatMap { ["session attach " + $0.name, "session close " + $0.name] }
             let expanded = ["start", "stop", "restart", "health", "logs", "rollback", "releases"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
             let matches = (fixed + expanded + sessionCommands).filter { $0.hasPrefix(input) && $0 != input }

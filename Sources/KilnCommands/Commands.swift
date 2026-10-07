@@ -1,4 +1,5 @@
 import KilnRuntime
+import KilnVault
 import KilnKit
 import KilnTelemetry
 import KilnBastion
@@ -48,6 +49,10 @@ public struct KilnCommands: Sendable {
     public func servers() async -> [ServerSnapshot] { (try? await bastion.serverSnapshots()) ?? [] }
     public func keyNames() async -> [String] { ((try? await bastion.keys()) ?? "").split(separator: "\n").map(String.init) }
     public func snapshot() async -> [ModuleSnapshot] { await runtime.snapshot() }
+    public func putSecret(name: String, value: String) -> CommandResult {
+        do { return CommandResult(try runtime.vault.put(name, value: value)) }
+        catch { return CommandResult("Vault write failed: \(error)", status: 1) }
+    }
     public func execute(_ line: String) async -> CommandResult {
         var parts: [String]
         do { parts = try Self.tokenize(line) }
@@ -56,6 +61,18 @@ public struct KilnCommands: Sendable {
         if parts.isEmpty { return CommandResult("") }
         do {
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
+            if parts.first == "vault" {
+                switch parts {
+                case ["vault", "help"]:
+                    return CommandResult("vault put <name>             Hidden input in the SSH dashboard (creates or replaces)\nvault list                   Secret names only\nvault grant <module> <name>   Allow this module to receive one named secret\nvault revoke <module> <name>  Block future delivery; existing processes retain values\nvault grants <module>        List explicit grants\nvault delete <name>          Delete an unassigned secret\nManifest secrets maps environment-variable names to secret names. Grants are checked on every process start. No reveal command. Headless import: kiln vault put NAME --state PATH < secret-file")
+                case ["vault", "list"]: return CommandResult(try runtime.vault.list())
+                case let p where p.count == 3 && p[1] == "grants": return CommandResult(try runtime.vault.grants(p[2]))
+                case let p where p.count == 3 && p[1] == "delete": return CommandResult(try runtime.vault.delete(p[2]))
+                case let p where p.count == 4 && p[1] == "grant": return CommandResult(try runtime.vault.grant(p[3], to: p[2]))
+                case let p where p.count == 4 && p[1] == "revoke": return CommandResult(try runtime.vault.revoke(p[3], from: p[2]))
+                default: return CommandResult("Use vault help. Secret entry requires vault put NAME in the SSH dashboard; never include a value in the command.", status: 2)
+                }
+            }
             switch parts {
             case let p where p.count == 4 && p[0] == "session" && p[1] == "open":
                 let text = try await bastion.createSession(name:p[2],server:p[3])
@@ -89,6 +106,7 @@ public struct KilnCommands: Sendable {
                 app restart <name>      Stop and start an application
                 app health <name>       Check its configured HTTP health endpoint
                 app logs <name>         Last 8 KiB of application logs
+                vault help              Encrypted credentials and per-module grants
                 server help             Saved servers, jump forwarding and managed SSH
                 key help                Keychain-backed Ed25519 keys
                 session help            Persistent remote terminals and switching

@@ -11,6 +11,7 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Public-key-only SSH authentication and noninteractive commands (default: `127.0.0.1:2222`).
 - Menu-driven server/key/trust setup, session actions, two-pane splits, and remote terminals that survive dashboard restarts in a separate session service.
 - Saved bastion destinations, allowlisted OpenSSH ProxyJump, and macOS Keychain-backed Ed25519 keys for pinned remote command execution.
+- Encrypted, headless Vault with hidden SSH entry, stdin import and explicit per-module secret grants.
 - Persistent Ed25519 host identity; only the configured administrator is accepted.
 - Optional local stdin console, including with SSH disabled.
 - Installation of a trusted, locally compiled executable from a JSON manifest.
@@ -19,7 +20,9 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Installed-module persistence and restoration of desired running modules after clean shutdown.
 - Independent REST and WebSocket example services.
 
-This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, general-purpose secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
+This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, cluster secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
+
+See [Vault setup and permissions](docs/vault.md) for server-side credential storage.
 
 ## Release numbering
 

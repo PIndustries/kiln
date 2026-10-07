@@ -48,6 +48,10 @@ private final class ShellHandler: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
     let commands: KilnCommands
     var input: [UInt8] = []
+    var secretName: String?
+    var secretValue = ""
+    var secretSaving = false
+    var secretInputRejected = false
     var started = false
     var interactive = false
     var pty = false
@@ -80,6 +84,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
+        secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
         releasePanes()
         context.fireChannelInactive()
@@ -91,7 +96,10 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func paint(channel: Channel) {
         guard remote == nil, !attaching, let terminal, interactive, channel.isWritable else { return }
-        let frame = terminal.render()
+        let frame: String
+        if secretName != nil || secretSaving {
+            frame = "\u{1B}[2J\u{1B}[H\u{1B}[33mKILN VAULT\u{1B}[0m\r\n\r\n" + (secretSaving ? "Saving credential..." : "Secret: \(secretName!)\r\nValue: [hidden]\r\n\r\nEnter saves. Escape/Ctrl-C cancels. Backspace edits. Maximum 16 KiB." + (secretInputRejected ? "\r\nInput rejected (size or newline). Ctrl-U clears the field; enter it again." : ""))
+        } else { frame = terminal.render() }
         if frame != lastFrame { output(frame, channel: channel); lastFrame = frame }
     }
     func refresh(channel: Channel) {
@@ -176,6 +184,37 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func apply(_ key: TerminalKey, channel: Channel) {
+        if secretSaving { return }
+        if let name = secretName {
+            switch key {
+            case .text(let value), .paste(let value):
+                if !value.contains("\n"), !value.contains("\r"), !value.utf8.contains(0), secretValue.utf8.count + value.utf8.count <= 16384 { secretValue += value } else { secretInputRejected = true }
+            case .backspace: if !secretValue.isEmpty { secretValue.removeLast() }
+            case .clearBefore: secretValue = ""; secretInputRejected = false
+            case .escape, .interrupt, .eof:
+                secretName = nil; secretValue = ""; secretSaving = true
+                let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+                channel.eventLoop.execute {
+                    bound.value.secretSaving = false
+                    bound.value.terminal?.finish(text: "Vault entry cancelled.", status: 0)
+                    bound.value.paint(channel: channel)
+                }
+            case .enter:
+                guard !secretInputRejected else { return }
+                let value = secretValue; secretValue = ""; secretName = nil; secretSaving = true
+                let bound = NIOLoopBound(self, eventLoop: channel.eventLoop); let commands = commands
+                Task {
+                    let result = commands.putSecret(name: name, value: value)
+                    channel.eventLoop.execute {
+                        let shell = bound.value; shell.secretSaving = false
+                        shell.terminal?.finish(text: result.text, status: result.status)
+                        shell.paint(channel: channel)
+                    }
+                }
+            default: break
+            }
+            return
+        }
         for effect in terminal?.handle(key) ?? [] {
             switch effect {
             case .command(let command): submit(command, channel: channel)
@@ -232,6 +271,18 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func submit(_ line: String, channel: Channel) {
+        if interactive, terminal != nil, !busy,
+           let parsed = try? KilnCommands.tokenize(line) {
+            let parts = parsed.first == "kiln" ? Array(parsed.dropFirst()) : parsed
+            if parts.count == 3, parts[0] == "vault", parts[1] == "put" {
+                let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+                if !parts[2].isEmpty, parts[2].count <= 80, parts[2] != ".", parts[2] != "..", parts[2].unicodeScalars.allSatisfy({ allowed.contains($0) }) {
+                    secretName = parts[2]; secretValue = ""; secretInputRejected = false
+                    terminal?.finish(text: "Vault secret entry opened.", status: 0)
+                    paint(channel: channel); return
+                }
+            }
+        }
         if busy {
             guard pending.count < 16 else { close(channel: channel, status: 2); return }
             pending.append(line); return

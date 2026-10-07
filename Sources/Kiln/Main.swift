@@ -2,6 +2,7 @@ import Foundation
 import Dispatch
 import KilnRuntime
 import KilnKit
+import KilnVault
 import KilnCommands
 import KilnSSH
 import KilnBastion
@@ -19,6 +20,22 @@ struct Kiln {
     }
     static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.count == 5, args[0] == "vault", args[1] == "put", args[3] == "--state" {
+            guard isatty(STDIN_FILENO) == 0 else { throw CLIError.invalid("Use the SSH dashboard for hidden entry, or redirect a secret file to stdin") }
+            var data = Data()
+            while let part = try FileHandle.standardInput.read(upToCount: 4096), !part.isEmpty {
+                data.append(part)
+                guard data.count <= 16384 else { throw CLIError.invalid("Secret exceeds 16 KiB") }
+            }
+            if data.last == 10 { data.removeLast(); if data.last == 13 { data.removeLast() } }
+            guard let value = String(data: data, encoding: .utf8) else { throw CLIError.invalid("Secret must be UTF-8") }
+            print(try KilnVault(directory: URL(fileURLWithPath: args[4]).standardizedFileURL).put(args[2], value: value))
+            return
+        }
+        if args.count == 6, Array(args.prefix(2)) == ["vault", "init"], args[2] == "--state", args[4] == "--key-file" {
+            print(try KilnVault(directory: URL(fileURLWithPath: args[3]).standardizedFileURL).initialize(keyFile: URL(fileURLWithPath: args[5])))
+            return
+        }
         if args == ["--version"] { print(KilnVersion.current); return }
         if args.count == 3, args[1] == "--state", ["session-service", "session-service-stop"].contains(args[0]) {
             let directory = URL(fileURLWithPath:args[2]).standardizedFileURL
@@ -31,6 +48,8 @@ struct Kiln {
             Kiln \(KilnVersion.current) development runtime
             kiln up [--state PATH] [--authorized-keys PATH] [--host 127.0.0.1] [--port 2222]
                     [--user admin] [--no-ssh] [--console]
+            kiln vault put NAME --state PATH < secret-file   Import without command-line values
+            kiln vault init --state PATH --key-file PATH   Initialize encrypted server Vault
             kiln session-service-stop --state PATH   End persistent remote terminals
             --console enables the same command engine on local stdin.
             SSH is optional. --no-ssh never reads keys or opens an SSH listener.

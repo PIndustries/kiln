@@ -10,10 +10,11 @@ public struct ApplicationManifest: Codable, Sendable {
     public let healthURL: String?
     /// Stable loopback TCP ingress. Each release must use a distinct worker port.
     public let ingressPort: Int?
+    public let secrets: [String: String]?
 
-    public init(application: String = "default", name: String, version: String, executable: String, arguments: [String] = [], healthURL: String? = nil, ingressPort: Int? = nil) {
+    public init(application: String = "default", name: String, version: String, executable: String, arguments: [String] = [], healthURL: String? = nil, ingressPort: Int? = nil, secrets: [String: String]? = nil) {
         self.application = application; self.name = name; self.version = version; self.executable = executable
-        self.arguments = arguments; self.healthURL = healthURL; self.ingressPort = ingressPort
+        self.arguments = arguments; self.healthURL = healthURL; self.ingressPort = ingressPort; self.secrets = secrets
     }
 
     public func validate() throws {
@@ -25,6 +26,15 @@ public struct ApplicationManifest: Codable, Sendable {
             }
         }
         guard executable.hasPrefix("/") else { throw KilnError.message("Executable must be an absolute path") }
+        for (variable, secret) in secrets ?? [:] {
+            guard variable.range(of: "^[A-Z][A-Z0-9_]{0,79}$", options: .regularExpression) != nil,
+                  !["PATH", "HOME", "TMPDIR", "SHELL"].contains(variable),
+                  !["KILN_", "DYLD_", "LD_", "SWIFT_", "XPC_"].contains(where: variable.hasPrefix),
+                  !secret.isEmpty, secret.count <= 80, secret != ".", secret != "..",
+                  secret.unicodeScalars.allSatisfy({ allowed.contains($0) }) else {
+                throw KilnError.message("Invalid secret binding or reserved environment variable")
+            }
+        }
         if let ingressPort {
             guard (1024...65535).contains(ingressPort), let raw = healthURL, let url = URL(string: raw),
                   let port = url.port, (1024...65535).contains(port), port != ingressPort,
