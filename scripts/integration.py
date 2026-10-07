@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
     known = tmp/'known_hosts'
     def ssh(command, identity=key, check=True, shell=False):
         args=['ssh','-F','/dev/null','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o',f'UserKnownHostsFile={known}','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=2','-i',str(identity),'-p',str(ssh_port)]
-        if shell: args += ['-tt']
+        if shell: args += ['-T']
         args += ['admin@127.0.0.1']
         if not shell: args += [command]
         result = subprocess.run(args, input=command if shell else None, capture_output=True, text=True, timeout=12)
@@ -82,8 +82,8 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
         path = tmp/f'{name}.json'; path.write_text(json.dumps(manifest))
         ssh(f'app install {path}'); ssh(f'app start storefront/{name}')
     def pid(name):
-        line = next(x for x in ssh('app list').stdout.splitlines() if f'\t{name}\t' in x)
-        return int(line.split('\t')[-1])
+        line = next(x for x in ssh('app list').stdout.splitlines() if len(x.split()) == 5 and x.split()[1] == name)
+        return int(line.split()[-1])
     try:
         process=launch(); first=wait_for(scan); known.write_text(first)
         assert 'runtime running' in ssh('status').stdout
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
         assert ssh('does-not-exist',check=False).returncode == 2
         shell=ssh('status\nhelp\nexit\n',shell=True)
         assert 'Welcome to Kiln' in shell.stdout and 'runtime running' in shell.stdout
-        print('PASS: public-key SSH, negative authentication, exec status and interactive PTY shell', flush=True)
+        print('PASS: public-key SSH, negative authentication, exec status and plain interactive shell', flush=True)
         install('rest',rest_port); wait_for(lambda: http(rest_port)); old_pid=pid('rest')
         install('websocket',ws_port,True); wait_for(lambda: ws(ws_port))
         assert pid('rest') == old_pid

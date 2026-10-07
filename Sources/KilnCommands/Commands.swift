@@ -1,4 +1,5 @@
 import KilnRuntime
+import KilnKit
 
 public struct CommandResult: Sendable {
     public let text: String
@@ -12,15 +13,18 @@ public struct CommandResult: Sendable {
 public struct KilnCommands: Sendable {
     private let runtime: KilnRuntime
     public init(runtime: KilnRuntime) { self.runtime = runtime }
+    public func snapshot() async -> [ModuleSnapshot] { await runtime.snapshot() }
     public func execute(_ line: String) async -> CommandResult {
-        var parts = line.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var parts: [String]
+        do { parts = try Self.tokenize(line) }
+        catch { return CommandResult("Unclosed quote or trailing escape", status: 2) }
         if parts.first == "kiln" { parts.removeFirst() }
         if parts.isEmpty { return CommandResult("") }
         do {
             switch parts {
             case ["help"]:
                 return CommandResult("""
-                Kiln 0.1 development shell
+                Kiln 0.2 development shell
                 status                  Runtime status
                 app list                Installed applications and process state
                 app install <manifest>  Install a trusted local executable release
@@ -30,7 +34,7 @@ public struct KilnCommands: Sendable {
                 app health <name>       Check its configured HTTP health endpoint
                 app logs <name>         Last 8 KiB of application logs
                 exit                    Disconnect this session
-                Paths containing spaces are not supported in this prototype shell.
+                Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
             case ["status"]: return CommandResult("Kiln runtime running\nMode: single node\nApplication isolation: OS processes\nAutomatic restart and clustering: not implemented")
             case ["app", "list"]: return CommandResult(await runtime.list())
@@ -51,5 +55,27 @@ public struct KilnCommands: Sendable {
                 }
             }
         } catch { return CommandResult("Error: \(error)", status: 1) }
+    }
+}
+
+extension KilnCommands {
+    /// Quotes and escapes are parsed as arguments only. Never invokes a host shell.
+    public static func tokenize(_ line: String) throws -> [String] {
+        var result: [String] = []; var word = ""; var quote: Character?; var escape = false; var active = false
+        for character in line {
+            if escape { word.append(character); escape = false; active = true; continue }
+            if character == "\\" && quote != "'" { escape = true; active = true; continue }
+            if let current = quote {
+                if character == current { quote = nil } else { word.append(character) }
+                continue
+            }
+            if character == "\"" || character == "'" { quote = character; active = true }
+            else if character.isWhitespace {
+                if active { result.append(word); word = ""; active = false }
+            } else { word.append(character); active = true }
+        }
+        guard quote == nil, !escape else { throw KilnError.message("Invalid quoting") }
+        if active { result.append(word) }
+        return result
     }
 }

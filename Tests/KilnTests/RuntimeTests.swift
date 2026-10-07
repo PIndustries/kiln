@@ -29,7 +29,7 @@ import KilnCommands
     await runtime.shutdown()
     let restored = try KilnRuntime(stateDirectory: directory)
     try await restored.restore()
-    #expect(await restored.list().contains("sample\tworker"))
+    #expect(await restored.snapshot().first?.id == "sample/worker")
     #expect(await restored.list().contains("running"))
     _ = try await restored.stop("sample/worker")
     #expect(await restored.list().contains("stopped"))

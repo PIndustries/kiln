@@ -8,6 +8,7 @@ let package = Package(
         .executable(name: "kiln-example-backend", targets: ["ExampleBackend"]),
         .library(name: "KilnKit", targets: ["KilnKit"]),
         .library(name: "KilnRuntime", targets: ["KilnRuntime"]),
+        .library(name: "KilnTerminal", targets: ["KilnTerminal"]),
         .library(name: "KilnSSH", targets: ["KilnSSH"]),
         .library(name: "KilnHTTP", targets: ["KilnHTTP"]),
         .library(name: "KilnWebSocket", targets: ["KilnWebSocket"]),
@@ -21,11 +22,12 @@ let package = Package(
         .target(name: "KilnKit"),
         .target(name: "KilnRuntime", dependencies: ["KilnKit"]),
         .target(name: "KilnCommands", dependencies: ["KilnRuntime", "KilnKit"]),
-        .target(name: "KilnSSH", dependencies: ["KilnCommands", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
+        .target(name: "KilnTerminal", dependencies: ["KilnKit"]),
+        .target(name: "KilnSSH", dependencies: ["KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnHTTP", dependencies: [.product(name: "NIOHTTP1", package: "swift-nio")]),
         .target(name: "KilnWebSocket", dependencies: [.product(name: "NIOWebSocket", package: "swift-nio")]),
         .executableTarget(name: "Kiln", dependencies: ["KilnCommands", "KilnSSH", "KilnRuntime"]),
         .executableTarget(name: "ExampleBackend", dependencies: ["KilnKit", "KilnHTTP", "KilnWebSocket", .product(name: "NIOPosix", package: "swift-nio")]),
-        .testTarget(name: "KilnTests", dependencies: ["KilnKit", "KilnRuntime", "KilnCommands"]),
+        .testTarget(name: "KilnTests", dependencies: ["KilnKit", "KilnRuntime", "KilnCommands", "KilnTerminal"]),
     ]
 )

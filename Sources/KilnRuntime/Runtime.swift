@@ -124,14 +124,28 @@ public actor KilnRuntime {
         try? entry.log.close()
     }
 
+    public func snapshot() -> [ModuleSnapshot] {
+        installed.keys.sorted().map { id in
+            let manifest = installed[id]!.manifest
+            let process = running[id]?.process
+            let alive = process?.isRunning == true
+            return ModuleSnapshot(application: manifest.application, name: manifest.name,
+                version: manifest.version,
+                state: stopping.contains(id) ? "stopping" : alive ? "running" : installed[id]!.desiredRunning ? "exited" : "stopped",
+                pid: alive ? process?.processIdentifier : nil)
+        }
+    }
+
     public func list() -> String {
-        guard !installed.isEmpty else { return "No applications installed." }
-        return (["APPLICATION\tMODULE\tVERSION\tSTATE\tPID"] + installed.keys.sorted().map { name in
-            let entry = running[name]
-            let alive = entry?.process.isRunning == true
-            let status = alive ? "running" : (installed[name]!.desiredRunning ? "exited" : "stopped")
-            return "\(installed[name]!.manifest.application)\t\(installed[name]!.manifest.name)\t\(installed[name]!.manifest.version)\t\(status)\t\(alive ? String(entry!.process.processIdentifier) : "-")"
-        }).joined(separator: "\n")
+        let modules = snapshot()
+        guard !modules.isEmpty else { return "No applications installed." }
+        let rows = [["APPLICATION", "MODULE", "VERSION", "STATE", "PID"]] + modules.map {
+            [$0.application, $0.name, $0.version, $0.state, $0.pid.map(String.init) ?? "-"]
+        }
+        let widths = (0..<5).map { column in min(40, rows.map { $0[column].count }.max() ?? 0) }
+        return rows.map { row in row.enumerated().map { column, value in
+            String(value.prefix(widths[column])).padding(toLength: widths[column], withPad: " ", startingAt: 0)
+        }.joined(separator: "  ") }.joined(separator: "\n")
     }
 
     public func health(_ name: String) async throws -> String {

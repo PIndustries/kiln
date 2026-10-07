@@ -6,7 +6,8 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 
 ## What works
 
-- Public-key-only SSH shell and noninteractive commands (default: `127.0.0.1:2222`).
+- Full-screen SSH dashboard with colors, aligned service rows, action menus and a command drawer.
+- Public-key-only SSH authentication and noninteractive commands (default: `127.0.0.1:2222`).
 - Persistent Ed25519 host identity; only the configured administrator is accepted.
 - Optional local stdin console, including with SSH disabled.
 - Installation of a trusted, locally compiled executable from a JSON manifest.
@@ -37,7 +38,7 @@ Use an authorized public key file (plain OpenSSH keys; authorized_keys options a
 From another terminal:
 
 ```sh
-ssh -p 2222 admin@127.0.0.1
+ssh -e none -p 2222 admin@127.0.0.1
 ```
 
 Verify the first connection's fingerprint against:
@@ -46,7 +47,20 @@ Verify the first connection's fingerprint against:
 ssh-keygen -lf .kiln/ssh-host-ed25519.pub
 ```
 
-Within the shell:
+Interactive SSH opens the dashboard by default:
+
+- Up/Down or j/k selects a service; Enter opens start/stop/restart/health/log actions.
+- Stop and restart require confirmation. Escape cancels.
+- Backtick or `~` opens/closes the command drawer. The `-e none` client option above prevents OpenSSH from intercepting tilde as a local escape prefix; backtick works with the default SSH configuration too.
+- Tab completes commands and service IDs; Up/Down recalls session history.
+- Left/Right, Home/End, Ctrl-A/E/U/K and Backspace/Delete edit a command.
+- Page Up/Down scrolls output. Ctrl-C clears input; it does not cancel an operation already executing.
+- Tab or 1/2/3 switches views. q disconnects from the dashboard.
+- Resize adapts the layout; screens below 50x16 show a resize prompt.
+
+The dashboard refreshes process state every two seconds. Running is not a health claim; use Check health to query an endpoint. New service IDs appear in the dashboard and completion automatically.
+
+Commands in the drawer:
 
 ```text
 help
@@ -60,7 +74,9 @@ app stop storefront/rest
 exit
 ```
 
-The shell does not execute host shell commands. Admins can, however, install arbitrary trusted local executables, so SSH access is privileged administrative access. Paths with spaces and full terminal line editing are not implemented. `exit` disconnects the session; Ctrl-C in the runtime's host terminal shuts down Kiln and its modules.
+Non-PTY sessions and TERM=dumb use a plain shell. `ssh ... "app list"` returns aligned plain text without color or full-screen controls.
+
+The shell does not execute host shell commands. Admins can, however, install arbitrary trusted local executables, so SSH access is privileged administrative access. Paths with spaces can be quoted. The full-screen renderer uses printable ASCII cells; non-ASCII output is displayed as question marks, and terminal control sequences from logs are neutralized. `exit` disconnects the session; Ctrl-C in the runtime's host terminal shuts down Kiln and its modules.
 
 Run without SSH:
 
@@ -99,6 +115,7 @@ kiln executable (composition root)
   +-- KilnRuntime ----> KilnKit (release contract)
   +-- KilnCommands --> KilnRuntime
   +-- KilnSSH -------> KilnCommands
+  |     +-- KilnTerminal (UI state, input decoder, ANSI renderer)
   +-- local console -> KilnCommands
 
 example executable
@@ -115,3 +132,15 @@ See [the ecosystem direction](docs/ecosystem.md) for source/prebuilt distributio
 `scripts/integration.py` uses real OpenSSH, HTTP requests and WebSocket frames. It checks rejected keys, interactive PTY sessions, command exit codes, independent module addition, process crash isolation, manual recovery, stable host keys, restart persistence, and operation without SSH. It creates temporary credentials and state and removes them afterward.
 
 No open-source license has been selected yet.
+
+### Terminal regression tests
+
+`swift test` covers fragmented key sequences, paste safety, menu confirmations, editing, quoted arguments and layout bounds. The real PTY test also exercises SSH window changes and alternate-screen cleanup:
+
+```sh
+python3 -m venv /tmp/kiln-terminal-tests
+/tmp/kiln-terminal-tests/bin/pip install pyte
+/tmp/kiln-terminal-tests/bin/python scripts/terminal-integration.py
+```
+
+For optional image previews on macOS, install Pillow in the test environment and pass `--preview /tmp/kiln-previews`. These are development-only dependencies; the shipped terminal is native Swift.

@@ -1,0 +1,68 @@
+import Foundation
+import Testing
+import KilnKit
+import KilnTerminal
+import KilnCommands
+
+private let sample = ModuleSnapshot(application: "storefront", name: "rest", version: "0.1.0", state: "running", pid: 123)
+
+@Test func fragmentedKeysAndPasteAreSafe() {
+    var decoder = TerminalKeys()
+    #expect(decoder.feed([27,91]).isEmpty)
+    #expect(decoder.feed([65]) == [.up])
+    #expect(decoder.feed([27]).isEmpty)
+    #expect(decoder.expireEscape() == [.escape])
+    #expect(decoder.feed([27,91,50,48,48,126]).isEmpty)
+    #expect(decoder.feed(Array("app stop\nrest".utf8)).isEmpty)
+    #expect(decoder.feed([27,91,50,48,49,126]) == [.paste("app stop\nrest")])
+    #expect(decoder.feed([0xC3]).isEmpty)
+    #expect(decoder.feed([0xA9]) == [.text("é")])
+}
+
+@Test func menuConfirmsDisruptiveActionsAndDrawerEdits() {
+    var ui = KilnTerminal(); ui.update([sample])
+    #expect(ui.handle(.enter).isEmpty)
+    #expect(ui.handle(.down).isEmpty)
+    #expect(ui.handle(.enter).isEmpty) // Stop requires confirmation.
+    #expect(ui.render().contains("Confirm: app stop storefront/rest"))
+    #expect(ui.handle(.escape).isEmpty)
+    _ = ui.handle(.text("`"))
+    _ = ui.handle(.text("statu")); _ = ui.handle(.tab)
+    #expect(ui.input == "status")
+    #expect(ui.handle(.enter) == [.command("status")])
+    #expect(ui.busy)
+    ui.finish(text: "ok", status: 0)
+    _ = ui.handle(.up)
+    #expect(ui.input == "status")
+    _ = ui.handle(.home); _ = ui.handle(.delete); _ = ui.handle(.text("s"))
+    #expect(ui.input == "status")
+    _ = ui.handle(.interrupt)
+    _ = ui.handle(.paste("status\nexit"))
+    #expect(ui.input == "status exit")
+    #expect(!ui.busy)
+}
+
+@Test func layoutFitsAndUntrustedOutputCannotInjectANSI() throws {
+    var ui = KilnTerminal(); ui.update([sample])
+    for (width,height) in [(50,16),(80,24),(120,35)] {
+        ui.resize(width: width,height: height)
+        let ansi = try NSRegularExpression(pattern: "\u{1b}\\[[0-9;?]*[A-Za-z]")
+        for drawer in [false,true] {
+            if drawer { _ = ui.handle(.text("`")) }
+            let frame = ui.render()
+            let plain = ansi.stringByReplacingMatches(in: frame, range: NSRange(frame.startIndex...,in:frame),withTemplate: "")
+            #expect(plain.components(separatedBy: "\r\n").count == height)
+            #expect(plain.components(separatedBy: "\r\n").allSatisfy { $0.count <= width-1 })
+            if drawer { _ = ui.handle(.escape) }
+        }
+    }
+    #expect(!KilnTerminal.safe("\u{1b}]52;c;evil\u{7}").contains("\u{1b}"))
+    ui.resize(width: 30,height: 10)
+    #expect(ui.render().contains("Terminal too small"))
+}
+
+@Test func quotedPathsAreArgumentsNotShellCode() throws {
+    #expect(try KilnCommands.tokenize("app install '/tmp/my manifest.json'") == ["app","install","/tmp/my manifest.json"])
+    #expect(try KilnCommands.tokenize("app install \"/tmp/$(touch evil).json\"") == ["app","install","/tmp/$(touch evil).json"])
+    #expect(throws: (any Error).self) { try KilnCommands.tokenize("app install 'unfinished") }
+}

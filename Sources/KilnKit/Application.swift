@@ -35,3 +35,17 @@ public enum KilnError: Error, CustomStringConvertible {
     case message(String)
     public var description: String { switch self { case .message(let text): return text } }
 }
+
+/// Transport-independent observation; process state does not imply application health.
+public struct ModuleSnapshot: Sendable, Equatable {
+    public let application: String
+    public let name: String
+    public let version: String
+    public let state: String
+    public let pid: Int32?
+    public var id: String { "\(application)/\(name)" }
+    public init(application: String, name: String, version: String, state: String, pid: Int32?) {
+        self.application = application; self.name = name; self.version = version
+        self.state = state; self.pid = pid
+    }
+}

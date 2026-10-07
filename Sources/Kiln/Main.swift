@@ -19,7 +19,7 @@ struct Kiln {
         let args = Array(CommandLine.arguments.dropFirst())
         if args.contains("--help") || args.isEmpty {
             print("""
-            Kiln 0.1 development runtime
+            Kiln 0.2 development runtime
             kiln up [--state PATH] [--authorized-keys PATH] [--host 127.0.0.1] [--port 2222]
                     [--user admin] [--no-ssh] [--console]
             --console enables the same command engine on local stdin.

@@ -4,6 +4,7 @@ import NIOCore
 import NIOPosix
 import NIOSSH
 import KilnCommands
+import KilnTerminal
 
 private enum SSHError: Error { case unsupportedChannel }
 
@@ -24,7 +25,7 @@ private final class CloseOnError: ChannelInboundHandler, Sendable {
     func errorCaught(context: ChannelHandlerContext, error: Error) { context.close(promise: nil) }
 }
 
-/// All mutable shell state is confined to the channel's event loop.
+/// Mutable session state is confined to the channel event loop.
 private final class ShellHandler: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
     let commands: KilnCommands
@@ -35,16 +36,45 @@ private final class ShellHandler: ChannelInboundHandler {
     var busy = false
     var pending: [String] = []
     var lastCR = false
+    var terminal: KilnTerminal?
+    var keys = TerminalKeys()
+    var refreshTask: RepeatedTask?
+    var escapeTask: Scheduled<Void>?
+    var refreshing = false
+    var lastFrame = ""
 
     init(commands: KilnCommands) { self.commands = commands }
     func handlerAdded(context: ChannelHandlerContext) {
         let channel = context.channel
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
+    func channelInactive(context: ChannelHandlerContext) {
+        refreshTask?.cancel(); escapeTask?.cancel()
+        context.fireChannelInactive()
+    }
     func output(_ text: String, channel: Channel) {
         var bytes = channel.allocator.buffer(capacity: text.utf8.count)
         bytes.writeString(text)
         channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(bytes)), promise: nil)
+    }
+    func paint(channel: Channel) {
+        guard let terminal, interactive else { return }
+        let frame = terminal.render()
+        if frame != lastFrame { output(frame, channel: channel); lastFrame = frame }
+    }
+    func refresh(channel: Channel) {
+        guard !refreshing, channel.isActive else { return }
+        refreshing = true
+        let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+        let commands = commands
+        Task {
+            let modules = await commands.snapshot()
+            channel.eventLoop.execute {
+                let shell = bound.value; shell.refreshing = false
+                guard channel.isActive else { return }
+                shell.terminal?.update(modules); shell.paint(channel: channel)
+            }
+        }
     }
     func reply(_ wanted: Bool, accepted: Bool, channel: Channel) {
         if wanted {
@@ -55,16 +85,33 @@ private final class ShellHandler: ChannelInboundHandler {
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         switch event {
         case let request as SSHChannelRequestEvent.PseudoTerminalRequest:
-            pty = !started
+            if !started {
+                pty = true
+                if request.term != "dumb" {
+                    terminal = KilnTerminal()
+                    terminal?.resize(width: request.terminalCharacterWidth, height: request.terminalRowHeight)
+                }
+            }
             reply(request.wantReply, accepted: !started, channel: context.channel)
+        case let request as SSHChannelRequestEvent.WindowChangeRequest:
+            if terminal != nil {
+                terminal?.resize(width: request.terminalCharacterWidth, height: request.terminalRowHeight)
+                lastFrame = ""; output("\u{1b}[2J", channel: context.channel); paint(channel: context.channel)
+            }
         case let request as SSHChannelRequestEvent.ShellRequest:
             guard !started else { reply(request.wantReply, accepted: false, channel: context.channel); return }
             started = true; interactive = true
             reply(request.wantReply, accepted: true, channel: context.channel)
-            output("Welcome to Kiln\r\nP.Industries | development runtime\r\nType help for commands.\r\n\r\nkiln> ", channel: context.channel)
+            if terminal != nil {
+                output(KilnTerminal.enterScreen, channel: context.channel); paint(channel: context.channel)
+                refresh(channel: context.channel)
+                let bound = NIOLoopBound(self, eventLoop: context.eventLoop)
+                let channel = context.channel
+                refreshTask = context.eventLoop.scheduleRepeatedTask(initialDelay: .seconds(2), delay: .seconds(2)) { _ in bound.value.refresh(channel: channel) }
+            } else { output("Welcome to Kiln\r\nType help for commands.\r\nkiln> ", channel: context.channel) }
         case let request as SSHChannelRequestEvent.ExecRequest:
             guard !started, request.command.utf8.count <= 4096 else { reply(request.wantReply, accepted: false, channel: context.channel); return }
-            started = true
+            started = true; terminal = nil
             reply(request.wantReply, accepted: true, channel: context.channel)
             submit(request.command, channel: context.channel)
         case let request as SSHChannelRequestEvent.EnvironmentRequest:
@@ -74,10 +121,37 @@ private final class ShellHandler: ChannelInboundHandler {
         default: context.fireUserInboundEventTriggered(event)
         }
     }
+    func apply(_ key: TerminalKey, channel: Channel) {
+        for effect in terminal?.handle(key) ?? [] {
+            switch effect {
+            case .command(let command): submit(command, channel: channel)
+            case .disconnect: close(channel: channel, status: 0)
+            }
+        }
+    }
+    func close(channel: Channel, status: Int) {
+        refreshTask?.cancel(); escapeTask?.cancel()
+        if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
+        interactive = false
+        channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExitStatus(exitStatus: status)).whenComplete { _ in channel.close(promise: nil) }
+    }
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         guard interactive else { return }
         let packet = unwrapInboundIn(data)
         guard packet.type == .channel, case .byteBuffer(let bytes) = packet.data else { return }
+        if terminal != nil {
+            escapeTask?.cancel()
+            for key in keys.feed(Array(bytes.readableBytesView)) { apply(key, channel: context.channel) }
+            if keys.awaitingEscape {
+                let bound = NIOLoopBound(self, eventLoop: context.eventLoop)
+                let channel = context.channel
+                escapeTask = context.eventLoop.scheduleTask(in: .milliseconds(150)) {
+                    for key in bound.value.keys.expireEscape() { bound.value.apply(key, channel: channel) }
+                    bound.value.paint(channel: channel)
+                }
+            }
+            paint(channel: context.channel); return
+        }
         for byte in bytes.readableBytesView {
             if byte == 10 && lastCR { lastCR = false; continue }
             lastCR = byte == 13
@@ -88,12 +162,10 @@ private final class ShellHandler: ChannelInboundHandler {
                 submit(line, channel: context.channel)
             case 127, 8:
                 if !input.isEmpty { input.removeLast(); if pty { output("\u{8} \u{8}", channel: context.channel) } }
-            case 3:
-                input.removeAll(); output("^C\r\nkiln> ", channel: context.channel)
-            case 4:
-                if input.isEmpty { context.close(promise: nil); return }
+            case 3: input.removeAll(); output("^C\r\nkiln> ", channel: context.channel)
+            case 4: if input.isEmpty { close(channel: context.channel, status: 0); return }
             case 32...126, 128...255:
-                guard input.count < 4096 else { context.close(promise: nil); return }
+                guard input.count < 4096 else { close(channel: context.channel, status: 2); return }
                 input.append(byte)
                 if pty { output(String(decoding: [byte], as: UTF8.self), channel: context.channel) }
             default: break
@@ -102,7 +174,7 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func submit(_ line: String, channel: Channel) {
         if busy {
-            guard pending.count < 16 else { channel.close(promise: nil); return }
+            guard pending.count < 16 else { close(channel: channel, status: 2); return }
             pending.append(line); return
         }
         busy = true
@@ -110,21 +182,28 @@ private final class ShellHandler: ChannelInboundHandler {
         let commands = self.commands
         Task {
             let result = await commands.execute(line)
+            let modules = await commands.snapshot()
             channel.eventLoop.execute {
                 let shell = bound.value
                 guard channel.isActive else { return }
-                shell.output(result.text.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n", channel: channel)
-                if result.disconnect || !shell.interactive {
-                    channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExitStatus(exitStatus: result.status)).whenComplete { _ in channel.close(promise: nil) }
+                shell.busy = false
+                if shell.terminal != nil {
+                    shell.terminal?.update(modules)
+                    shell.terminal?.finish(text: result.text, status: result.status)
+                    if result.disconnect { shell.close(channel: channel, status: result.status) }
+                    else { shell.paint(channel: channel) }
                 } else {
-                    shell.busy = false
-                    shell.output("kiln> ", channel: channel)
-                    if !shell.pending.isEmpty { let next = shell.pending.removeFirst(); shell.submit(next, channel: channel) }
+                    shell.output(result.text.replacingOccurrences(of: "\n", with: "\r\n") + "\r\n", channel: channel)
+                    if result.disconnect || !shell.interactive { shell.close(channel: channel, status: result.status) }
+                    else {
+                        shell.output("kiln> ", channel: channel)
+                        if !shell.pending.isEmpty { let next = shell.pending.removeFirst(); shell.submit(next, channel: channel) }
+                    }
                 }
             }
         }
     }
-    func errorCaught(context: ChannelHandlerContext, error: Error) { context.close(promise: nil) }
+    func errorCaught(context: ChannelHandlerContext, error: Error) { close(channel: context.channel, status: 1) }
 }
 
 /// Optional transport. The runtime and command engine do not depend on this target.
