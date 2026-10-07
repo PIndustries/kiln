@@ -20,6 +20,9 @@ private struct Configuration: Codable {
 }
 
 public actor KilnBastion {
+    private var terminals: [String: RemoteTerminal] = [:]
+    private var creating: Set<String> = []
+    private var closing = false
     private let directory: URL
     private var configuration: Configuration?
     public init(directory: URL) { self.directory = directory }
@@ -134,4 +137,41 @@ public actor KilnBastion {
         let privateKey=try Curve25519.Signing.PrivateKey(rawRepresentation:raw)
         return try await RemoteSSH.execute(server:server,key:NIOSSHPrivateKey(ed25519Key:privateKey),hostKey:NIOSSHPublicKey(openSSHPublicKey:pin),command:command)
     }
+    public func createSession(name: String, server nameOfServer: String) async throws -> String {
+        try Self.validate(name: name, host: "localhost", user: "admin", port: 22)
+        guard !closing, terminals[name] == nil, !creating.contains(name), terminals.count + creating.count < 16 else {
+            throw KilnError.message("Session name is in use, runtime is closing, or 16-session limit reached")
+        }
+        let server = try profile(nameOfServer)
+        guard let keyName = server.key, let pin = server.trustedHostKey else {
+            throw KilnError.message("Assign a key and verify/pin the server host key first")
+        }
+        let raw = try KeyVault(namespace: configuration!.namespace).read(name: keyName)
+        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: raw)
+        creating.insert(name); defer { creating.remove(name) }
+        let terminal = try await RemoteTerminal.open(name: name, server: server, key: NIOSSHPrivateKey(ed25519Key: key), hostKey: NIOSSHPublicKey(openSSHPublicKey: pin))
+        guard !closing else { await terminal.close(); throw KilnError.message("Runtime is closing") }
+        terminals[name] = terminal
+        return "Created session \(name) on \(nameOfServer). Use session attach \(name). It survives client disconnects, not Kiln restarts."
+    }
+    public func session(_ name: String) throws -> RemoteTerminal {
+        guard let terminal = terminals[name] else { throw KilnError.message("Unknown session") }
+        return terminal
+    }
+    public func sessionSnapshots() async -> [TerminalSessionSnapshot] {
+        let current = terminals.values.sorted { $0.name < $1.name }
+        var result: [TerminalSessionSnapshot] = []
+        for terminal in current { result.append(await terminal.snapshot()) }
+        return result
+    }
+    public func closeSession(_ name: String) async throws -> String {
+        guard let terminal = terminals.removeValue(forKey: name) else { throw KilnError.message("Unknown session") }
+        await terminal.close(); return "Closed session \(name)"
+    }
+    public func shutdownSessions() async {
+        closing = true
+        let current = Array(terminals.values); terminals.removeAll()
+        for terminal in current { await terminal.close() }
+    }
+
 }

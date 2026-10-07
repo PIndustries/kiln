@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "KilnWebSocket", targets: ["KilnWebSocket"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.20.0"),
         .package(url: "https://github.com/apple/swift-nio-ssh.git", from: "0.13.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.81.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"5.0.0"),
@@ -23,11 +24,11 @@ let package = Package(
     targets: [
         .target(name: "KilnKit"),
         .target(name: "KilnRuntime", dependencies: ["KilnKit"]),
-        .target(name: "KilnBastion", dependencies: ["KilnKit", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
+        .target(name: "KilnBastion", dependencies: ["KilnKit", .product(name: "SwiftTerm", package: "SwiftTerm"), .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnTelemetry", dependencies: ["KilnKit"]),
         .target(name: "KilnCommands", dependencies: ["KilnRuntime", "KilnKit", "KilnTelemetry", "KilnBastion"]),
         .target(name: "KilnTerminal", dependencies: ["KilnKit"]),
-        .target(name: "KilnSSH", dependencies: ["KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
+        .target(name: "KilnSSH", dependencies: ["KilnBastion", "KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnHTTP", dependencies: [.product(name: "NIOHTTP1", package: "swift-nio")]),
         .target(name: "KilnWebSocket", dependencies: [.product(name: "NIOWebSocket", package: "swift-nio")]),
         .executableTarget(name: "Kiln", dependencies: ["KilnCommands", "KilnSSH", "KilnRuntime"]),

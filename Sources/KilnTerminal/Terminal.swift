@@ -12,6 +12,14 @@ public struct KilnTerminal {
     public private(set) var input = ""
     public private(set) var selected = 0
     public private(set) var busy = false
+    private var sessions: [TerminalSessionSnapshot] = []
+    private var selectedSession = 0
+    public mutating func updateSessions(_ sessions: [TerminalSessionSnapshot]) {
+        let name = self.sessions.indices.contains(selectedSession) ? self.sessions[selectedSession].name : nil
+        self.sessions = sessions
+        selectedSession = name.flatMap { name in sessions.firstIndex { $0.name == name } } ?? min(selectedSession, max(0, sessions.count - 1))
+    }
+    public mutating func showSessions() { drawer = false; menu = nil; confirmation = nil; page = 4 }
     private var host: HostMetrics?
     private var cpuHistory: [Double] = []
     private var width = 80
@@ -49,7 +57,7 @@ public struct KilnTerminal {
         }
         host = observation.host
     }
-    private enum Click { case key(TerminalKey), service(Int), action(Int), cursor(Int) }
+    private enum Click { case key(TerminalKey), service(Int), session(Int), action(Int), cursor(Int) }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
         busy = false
@@ -76,6 +84,7 @@ public struct KilnTerminal {
                 if row == 4 { drawer = false }
                 return handle(key)
             case .service(let index): selected = index; drawer = false; return handle(.enter)
+            case .session(let index): selectedSession = index; drawer = false; return handle(.enter)
             case .action(let index): menu = index; return handle(.enter)
             case .cursor(let offset): cursor = min(input.count, max(0, offset + column - hit.column)); return []
             }
@@ -109,12 +118,23 @@ public struct KilnTerminal {
             }
             return []
         }
+        if page == 4 {
+            switch key {
+            case .up, .text("k"): selectedSession = max(0, selectedSession - 1); return []
+            case .down, .text("j"): selectedSession = min(max(0, sessions.count - 1), selectedSession + 1); return []
+            case .enter:
+                guard sessions.indices.contains(selectedSession) else { return [] }
+                return execute("session attach " + sessions[selectedSession].name)
+            default: break
+            }
+        }
         switch key {
+        case .text("5"): page = 4
         case .text("1"): page = 0
         case .text("2"): page = 1
         case .text("3"): page = 2
         case .text("4"), .text("?"): page = 3
-        case .tab: page = (page + 1) % 4
+        case .tab: page = (page + 1) % 5
         case .up, .text("k"): selected = max(0, selected - 1)
         case .down, .text("j"): selected = min(max(0, modules.count - 1), selected + 1)
         case .enter: if page < 2 && !modules.isEmpty && !busy { menu = 0 }
@@ -157,9 +177,10 @@ public struct KilnTerminal {
                 cursor = input.count
             }
         case .tab:
-            let fixed = ["help", "status", "metrics", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
+            let fixed = ["session help", "session list", "session new ", "session attach ", "session close ", "help", "status", "metrics", "app list", "app install ", "app start ", "app stop ", "app restart ", "app health ", "app logs ", "server help", "server list", "server add ", "server scan ", "server trust ", "server key ", "server exec ", "server config ", "server remove ", "key create ", "key list", "key public ", "key delete ", "exit"]
+            let sessionCommands = sessions.flatMap { ["session attach " + $0.name, "session close " + $0.name] }
             let expanded = ["start", "stop", "restart", "health", "logs"].flatMap { operation in modules.map { "app \(operation) \($0.id)" } }
-            let matches = (fixed + expanded).filter { $0.hasPrefix(input) && $0 != input }
+            let matches = (fixed + expanded + sessionCommands).filter { $0.hasPrefix(input) && $0 != input }
             if matches.count == 1 { input = matches[0]; cursor = input.count }
             else if !matches.isEmpty {
                 var common = matches[0]
@@ -212,7 +233,7 @@ public struct KilnTerminal {
         let brand = "P.INDUSTRIES"
         var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
                      row("  LOCAL NODE  /  ONLINE  /  SSH SESSION", green), row()]
-        let labels = width < 65 ? ["1 Home", "2 Apps", "3 Metrics", "4 Help"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help"]
+        let labels = width < 65 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions"]
         var tabs = "  "
         for (index,label) in labels.enumerated() {
             let text = page == index ? "[" + label + "]" : " " + label + " "
@@ -222,8 +243,20 @@ public struct KilnTerminal {
         lines.append(row(tabs, accent))
         lines.append(row("  " + String(repeating: "-", count: max(0,w-4)), muted))
         let bodyEnd = drawer ? max(8, height / 2) : height - 3
-        if page == 3 {
-            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
+        if page == 4 {
+            lines.append(row("  TERMINAL SESSIONS / survive client disconnects", accent))
+            lines.append(row("  Enter/click attach | ` then session new <name> <server>", muted))
+            lines.append(row("  " + fit("NAME", max(10,w/3)) + fit("SERVER", max(8,w/4)) + "STATE / VIEWER", muted))
+            let capacity = max(1, bodyEnd - lines.count)
+            let offset = max(0, selectedSession - capacity + 1)
+            for index in offset..<min(sessions.count, offset + capacity) {
+                let session = sessions[index]
+                hits.append(Hit(row: lines.count+1, column: 1, width: w, click: .session(index)))
+                lines.append(row((index == selectedSession ? "> " : "  ") + fit(session.name,max(10,w/3)) + fit(session.server,max(8,w/4)) + session.state + (session.attached ? " / attached" : " / detached"), fg, selected: index == selectedSession))
+            }
+            if sessions.isEmpty { lines.append(row("  No sessions yet. Use session help in the drawer.", muted)) }
+        } else if page == 3 {
+            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
                 if lines.count < bodyEnd { lines.append(row(text, muted)) }
             }
         } else if page == 2 {
@@ -303,7 +336,7 @@ public struct KilnTerminal {
             return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)
         }
         lines.append(row("  " + notice, muted))
-        lines.append(row("  Click/Enter manage | ` drawer | ? help | q exit", accent))
+        lines.append(row(page == 4 ? "  Click/Enter attach | ` drawer | ? help | q exit" : "  Click/Enter manage | ` drawer | ? help | q exit", accent))
         let sampled = host.map { String($0.timestamp.ISO8601Format().suffix(9)) } ?? "waiting"
         lines.append(row("  LIVE 1s / " + sampled + " / process state != health", muted))
         hits.append(Hit(row: height-1, column: 1, width: w, click: .key(.text("`"))))

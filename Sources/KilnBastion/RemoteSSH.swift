@@ -5,7 +5,7 @@ import NIOSSH
 import KilnKit
 
 public struct RemoteResult: Sendable { public let output:String; public let status:Int }
-private final class Authentication: NIOSSHClientUserAuthenticationDelegate {
+final class Authentication: NIOSSHClientUserAuthenticationDelegate {
     let user:String;let key:NIOSSHPrivateKey;var offered=false
     init(user:String,key:NIOSSHPrivateKey){self.user=user;self.key=key}
     func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods, nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
@@ -14,7 +14,7 @@ private final class Authentication: NIOSSHClientUserAuthenticationDelegate {
         nextChallengePromise.succeed(.init(username:user,serviceName:"ssh-connection",offer:.privateKey(.init(privateKey:key))))
     }
 }
-private final class HostPin: NIOSSHClientServerAuthenticationDelegate {
+final class HostPin: NIOSSHClientServerAuthenticationDelegate {
     let key:NIOSSHPublicKey
     init(_ key:NIOSSHPublicKey){self.key=key}
     func validateHostKey(hostKey:NIOSSHPublicKey,validationCompletePromise:EventLoopPromise<Void>){

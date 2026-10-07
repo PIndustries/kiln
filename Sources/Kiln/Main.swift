@@ -77,6 +77,7 @@ struct Kiln {
         }
         for await _ in signals { break }
         print("Kiln shutting down")
+        await commands.shutdownSessions()
         await runtime.shutdown()
         await ssh?.stop()
     }

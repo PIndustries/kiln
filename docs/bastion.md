@@ -53,7 +53,7 @@ server trust staging SHA256:<verified-fingerprint>
 server exec staging 'uname -a'
 ```
 
-The native Swift SSH client requires the pinned host key and uses the assigned private key from macOS Keychain. A mismatch fails closed. Commands have a 15-second deadline and a combined stdout/stderr limit of 64 KiB. The quoted command is executed by the destination's SSH service under the saved user. This is command execution, not an embedded interactive terminal or file-transfer client.
+The native Swift SSH client requires the pinned host key and uses the assigned private key from macOS Keychain. A mismatch fails closed. Commands have a 15-second deadline and a combined stdout/stderr limit of 64 KiB. The quoted command is executed by the destination's SSH service under the saved user. For an embedded interactive terminal, use the separate [persistent sessions](sessions.md) workflow. File transfer is not implemented.
 
 Keys are non-synchronizing Keychain items; only public keys, server profiles and host pins are written to `bastion.json`. Keychain access failures return an error without falling back to plaintext files or prompting through a remote session. Private material is retrieved into process memory for authentication. macOS Keychain may require local authorization after a binary replacement; unattended access while locked and signed release upgrades have not been verified. Linux managed key storage is unavailable and fails closed.
 

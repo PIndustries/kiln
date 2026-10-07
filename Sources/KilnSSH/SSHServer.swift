@@ -5,6 +5,7 @@ import NIOPosix
 import NIOSSH
 import KilnCommands
 import KilnTerminal
+import KilnBastion
 
 private enum SSHError: Error { case unsupportedChannel }
 struct ServerShutdown: Sendable {}
@@ -59,6 +60,13 @@ private final class ShellHandler: ChannelInboundHandler {
     var escapeTask: Scheduled<Void>?
     var refreshing = false
     var lastFrame = ""
+    var remote: RemoteTerminal?
+    var remoteTask: Task<Void, Never>?
+    let owner = UUID()
+    var remotePrefix = false
+    var columns = 80
+    var rows = 24
+    var attaching = false
 
     init(commands: KilnCommands) { self.commands = commands }
     func handlerAdded(context: ChannelHandlerContext) {
@@ -66,7 +74,8 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
-        refreshTask?.cancel(); escapeTask?.cancel()
+        refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
+        remote?.detach(owner: owner); remote = nil
         context.fireChannelInactive()
     }
     func output(_ text: String, channel: Channel) {
@@ -75,7 +84,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(bytes)), promise: nil)
     }
     func paint(channel: Channel) {
-        guard let terminal, interactive, channel.isWritable else { return }
+        guard remote == nil, !attaching, let terminal, interactive, channel.isWritable else { return }
         let frame = terminal.render()
         if frame != lastFrame { output(frame, channel: channel); lastFrame = frame }
     }
@@ -86,10 +95,11 @@ private final class ShellHandler: ChannelInboundHandler {
         let commands = commands
         Task {
             let modules = await commands.snapshot()
+            let sessions = await commands.sessions()
             channel.eventLoop.execute {
                 let shell = bound.value; shell.refreshing = false
                 guard channel.isActive else { return }
-                shell.terminal?.update(modules); shell.paint(channel: channel)
+                shell.terminal?.update(modules); shell.terminal?.updateSessions(sessions); shell.paint(channel: channel)
             }
         }
     }
@@ -105,6 +115,7 @@ private final class ShellHandler: ChannelInboundHandler {
         case let request as SSHChannelRequestEvent.PseudoTerminalRequest:
             if !started {
                 pty = true
+                columns = max(10, request.terminalCharacterWidth); rows = max(3, request.terminalRowHeight)
                 if request.term != "dumb" {
                     terminal = KilnTerminal()
                     terminal?.resize(width: request.terminalCharacterWidth, height: request.terminalRowHeight)
@@ -112,6 +123,13 @@ private final class ShellHandler: ChannelInboundHandler {
             }
             reply(request.wantReply, accepted: !started, channel: context.channel)
         case let request as SSHChannelRequestEvent.WindowChangeRequest:
+            if request.terminalCharacterWidth > 0 { columns = request.terminalCharacterWidth }
+            if request.terminalRowHeight > 0 { rows = request.terminalRowHeight }
+            if let remote {
+                remote.resize(width: columns, height: rows, owner: owner)
+                terminal?.resize(width: columns, height: rows)
+                return
+            }
             if terminal != nil {
                 terminal?.resize(width: request.terminalCharacterWidth, height: request.terminalRowHeight)
                 lastFrame = ""; output("\u{1b}[2J", channel: context.channel); paint(channel: context.channel)
@@ -129,9 +147,11 @@ private final class ShellHandler: ChannelInboundHandler {
                 refreshTask = Task {
                     for await observation in commands.observations() {
                         guard !Task.isCancelled else { break }
+                        let sessions = await commands.sessions()
                         channel.eventLoop.execute {
                             guard channel.isActive else { return }
                             bound.value.terminal?.observe(observation)
+                            bound.value.terminal?.updateSessions(sessions)
                             bound.value.paint(channel: channel)
                         }
                     }
@@ -158,6 +178,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func close(channel: Channel, status: Int) {
+        remoteTask?.cancel(); remote?.detach(owner: owner); remote = nil
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
         interactive = false
@@ -167,6 +188,10 @@ private final class ShellHandler: ChannelInboundHandler {
         guard interactive else { return }
         let packet = unwrapInboundIn(data)
         guard packet.type == .channel, case .byteBuffer(let bytes) = packet.data else { return }
+        if remote != nil {
+            remoteInput(Array(bytes.readableBytesView), channel: context.channel); return
+        }
+        if attaching { return }
         if terminal != nil {
             escapeTask?.cancel()
             for key in keys.feed(Array(bytes.readableBytesView)) { apply(key, channel: context.channel) }
@@ -215,6 +240,14 @@ private final class ShellHandler: ChannelInboundHandler {
                 let shell = bound.value
                 guard channel.isActive else { return }
                 shell.busy = false
+                if let name = result.attachSession, shell.interactive, shell.terminal != nil {
+                    shell.terminal?.finish(text: result.text, status: 0)
+                    shell.attach(name, channel: channel); return
+                }
+                if result.attachSession != nil {
+                    shell.output("Attach requires the interactive Kiln dashboard (TERM other than dumb).\r\n", channel: channel)
+                    if !shell.interactive { shell.close(channel: channel, status: 2); return }
+                }
                 if shell.terminal != nil {
                     shell.terminal?.update(modules)
                     shell.terminal?.finish(text: result.text, status: result.status)
@@ -230,6 +263,90 @@ private final class ShellHandler: ChannelInboundHandler {
                 }
             }
         }
+    }
+
+    func detach(channel: Channel) {
+        let name = remote?.name ?? "terminal"
+        remoteTask?.cancel(); remoteTask = nil
+        remote?.detach(owner: owner); remote = nil; remotePrefix = false
+        keys = TerminalKeys(); lastFrame = ""
+        // Restore Kiln's input modes after viewing a remote screen.
+        output("\u{1b}[?1l\u{1b}[?7h" + KilnTerminal.enterScreen, channel: channel)
+        terminal?.showSessions()
+        terminal?.finish(text: "Detached " + name + ". Use the picker to reattach.", status: 0)
+        paint(channel: channel); refresh(channel: channel)
+    }
+    func attach(_ name: String, channel: Channel) {
+        guard !attaching else { return }
+        attaching = true
+        let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+        let commands = commands, owner = owner, width = columns, height = rows
+        Task {
+            do {
+                let remote = try await commands.session(name)
+                try await remote.attach(owner: owner, width: width, height: height)
+                channel.eventLoop.execute {
+                    let shell = bound.value; shell.attaching = false
+                    guard channel.isActive else { remote.detach(owner: owner); return }
+                    shell.remoteTask?.cancel(); shell.remote?.detach(owner: owner)
+                    shell.remote = remote; shell.remotePrefix = false
+                    shell.output("\u{1b}[?1000l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[0m\u{1b}[2J\u{1b}[H", channel: channel)
+                    shell.remoteTask = Task {
+                        var revision: UInt64?
+                        while !Task.isCancelled {
+                            if let frame = await remote.frame(owner: owner, after: revision) {
+                                let painted = try? await channel.eventLoop.submit {
+                                    guard channel.isActive, channel.isWritable, bound.value.remote === remote else { return false }
+                                    if frame.revision == .max {
+                                        bound.value.detach(channel: channel)
+                                        bound.value.terminal?.finish(text: "Session closed", status: 0)
+                                        bound.value.paint(channel: channel)
+                                    } else { bound.value.output(frame.text, channel: channel) }
+                                    return true
+                                }.get()
+                                if painted == true { revision = frame.revision }
+                            }
+                            do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+                        }
+                    }
+                }
+            } catch {
+                let message = "Error: \(error)"
+                channel.eventLoop.execute {
+                    let shell = bound.value; shell.attaching = false
+                    guard channel.isActive else { return }
+                    shell.terminal?.finish(text: message, status: 1)
+                    if shell.remote == nil { shell.paint(channel: channel) }
+                }
+            }
+        }
+    }
+    func remoteInput(_ bytes: [UInt8], channel: Channel) {
+        var forwarded: [UInt8] = []
+        for byte in bytes {
+            if remotePrefix {
+                remotePrefix = false
+                if !forwarded.isEmpty { remote?.send(forwarded, owner: owner); forwarded.removeAll() }
+                switch byte {
+                case 100, 119: detach(channel: channel); return // d / w
+                case 110, 112: // n / p
+                    let current = remote?.name, commands = commands
+                    let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+                    Task {
+                        let sessions = await commands.sessions()
+                        let names = sessions.filter { !$0.attached || $0.name == current }.map(\.name)
+                        guard let current, let index = names.firstIndex(of: current), names.count > 1 else { return }
+                        let next = names[(index + (byte == 110 ? 1 : names.count - 1)) % names.count]
+                        channel.eventLoop.execute { if channel.isActive { bound.value.attach(next, channel: channel) } }
+                    }
+                    return
+                case 2: forwarded.append(2)
+                default: forwarded += [2, byte]
+                }
+            } else if byte == 2 { remotePrefix = true }
+            else { forwarded.append(byte) }
+        }
+        if !forwarded.isEmpty { remote?.send(forwarded, owner: owner) }
     }
     func errorCaught(context: ChannelHandlerContext, error: Error) { close(channel: context.channel, status: 1) }
 }

@@ -8,8 +8,9 @@ public struct CommandResult: Sendable {
     public let text: String
     public let status: Int
     public let disconnect: Bool
-    public init(_ text: String, status: Int = 0, disconnect: Bool = false) {
-        self.text = text; self.status = status; self.disconnect = disconnect
+    public let attachSession: String?
+    public init(_ text: String, status: Int = 0, disconnect: Bool = false, attachSession: String? = nil) {
+        self.text = text; self.status = status; self.disconnect = disconnect; self.attachSession = attachSession
     }
 }
 
@@ -33,6 +34,9 @@ public struct KilnCommands: Sendable {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+    public func sessions() async -> [TerminalSessionSnapshot] { await bastion.sessionSnapshots() }
+    public func session(_ name: String) async throws -> RemoteTerminal { try await bastion.session(name) }
+    public func shutdownSessions() async { await bastion.shutdownSessions() }
     public func snapshot() async -> [ModuleSnapshot] { await runtime.snapshot() }
     public func execute(_ line: String) async -> CommandResult {
         var parts: [String]
@@ -43,6 +47,18 @@ public struct KilnCommands: Sendable {
         do {
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
             switch parts {
+            case ["session", "help"]:
+                return CommandResult("session new <name> <server>  Create a persistent remote terminal\nsession list                 List terminals\nsession attach <name>        Attach from an interactive SSH PTY\nsession close <name>         End a terminal and its remote connection\nCtrl-B then d/w detaches to Kiln; n/p switches sessions; Ctrl-B twice sends Ctrl-B.\nSessions survive client disconnects, not Kiln restart or destination/network loss.")
+            case ["session", "list"]:
+                let list = await sessions()
+                return CommandResult(list.isEmpty ? "No sessions. Use session new <name> <server>" : (["NAME  SERVER  STATE  VIEWER"] + list.map { "\($0.name)  \($0.server)  \($0.state)  \($0.attached ? "attached" : "detached")" }).joined(separator: "\n"))
+            case let p where p.count == 4 && p[0] == "session" && p[1] == "new":
+                return CommandResult(try await bastion.createSession(name: p[2], server: p[3]))
+            case let p where p.count == 3 && p[0] == "session" && p[1] == "attach":
+                _ = try await bastion.session(p[2])
+                return CommandResult("Attaching \(p[2])", attachSession: p[2])
+            case let p where p.count == 3 && p[0] == "session" && p[1] == "close":
+                return CommandResult(try await bastion.closeSession(p[2]))
             case ["help"]:
                 return CommandResult("""
                 Kiln 0.2 development shell
@@ -57,6 +73,7 @@ public struct KilnCommands: Sendable {
                 app logs <name>         Last 8 KiB of application logs
                 server help             Saved servers, jump forwarding and managed SSH
                 key help                Keychain-backed Ed25519 keys
+                session help            Persistent remote terminals and switching
                 exit                    Disconnect this session
                 Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
