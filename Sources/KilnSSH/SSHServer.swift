@@ -7,7 +7,7 @@ import KilnCommands
 import KilnTerminal
 
 private enum SSHError: Error { case unsupportedChannel }
-private struct ServerShutdown: Sendable {}
+struct ServerShutdown: Sendable {}
 /// Lock protects only the registry; session state stays on its event loop.
 private final class Sessions: @unchecked Sendable {
     private let lock = NSLock()
@@ -267,6 +267,11 @@ public final class KilnSSHServer: Sendable {
                     channel.eventLoop.makeCompletedFuture {
                         try channel.pipeline.syncOperations.addHandlers([
                             NIOSSHHandler(role: .server(.init(hostKeys: [hostKey], userAuthDelegate: KeyAuthentication(username: username, keys: keys))), allocator: channel.allocator, inboundChildChannelInitializer: { child, type in
+                                if case .directTCPIP(let destination) = type {
+                                    guard sessions.insert(child) else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
+                                    child.closeFuture.whenComplete { _ in sessions.remove(child) }
+                                    return openTunnel(channel: child, host: destination.targetHost, port: destination.targetPort, commands: commands)
+                                }
                                 guard case .session = type else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
                                 return child.eventLoop.makeCompletedFuture {
                                     guard sessions.insert(child) else { throw SSHError.unsupportedChannel }

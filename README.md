@@ -9,6 +9,7 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Full-screen SSH dashboard with colors, aligned service rows, clickable tabs/actions, mouse-wheel navigation and a command drawer.
 - Shared host telemetry sampler and bounded one-second observation streams, with host CPU/memory/disk/load/uptime and supervisor/service CPU/RSS.
 - Public-key-only SSH authentication and noninteractive commands (default: `127.0.0.1:2222`).
+- Saved bastion destinations, allowlisted OpenSSH ProxyJump, and macOS Keychain-backed Ed25519 keys for pinned remote command execution.
 - Persistent Ed25519 host identity; only the configured administrator is accepted.
 - Optional local stdin console, including with SSH disabled.
 - Installation of a trusted, locally compiled executable from a JSON manifest.
@@ -16,7 +17,7 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Installed-module persistence and restoration of desired running modules after clean shutdown.
 - Independent REST and WebSocket example services.
 
-This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, ingress gateway, remote adoption, Git build pipeline, update/rollback operation, secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
+This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, ingress gateway, remote adoption, Git build pipeline, update/rollback operation, general-purpose secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
 
 ## Build
 
@@ -114,7 +115,8 @@ The sample uses the same compiled example executable with separate mode argument
 ```text
 kiln executable (composition root)
   +-- KilnRuntime ----> KilnKit (release contract)
-  +-- KilnCommands --> KilnRuntime
+  +-- KilnCommands --> KilnRuntime + KilnBastion
+  |     +-- KilnBastion (server registry, Keychain, native SSH client)
   +-- KilnSSH -------> KilnCommands
   |     +-- KilnTerminal (UI state, input decoder, ANSI renderer)
   +-- local console -> KilnCommands
@@ -161,3 +163,7 @@ Metric definitions:
 - Process CPU is the OS `ps` percentage (its averaging differs from host CPU and may exceed 100%); RSS is resident memory. Samples do not include process command lines or environments.
 
 The implementation is verified on macOS. Linux collection code remains unverified. This is local, ephemeral observability: no retained time-series database, alerting, distributed tracing, network counters, HTTP latency/error instrumentation or Prometheus endpoint yet. Existing service log commands return a bounded tail rather than a continuous log stream. Running process state is not an application-health guarantee.
+
+## Bastion and managed SSH
+
+See [bastion setup](docs/bastion.md) for saved destinations, ProxyJump and Keychain-managed credentials. Run `python3 scripts/bastion-integration.py` on macOS to test real forwarding, authentication, persistence and changed-host-key rejection. This test creates and deletes a temporary Keychain item.

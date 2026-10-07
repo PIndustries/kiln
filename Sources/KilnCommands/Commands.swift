@@ -1,6 +1,7 @@
 import KilnRuntime
 import KilnKit
 import KilnTelemetry
+import KilnBastion
 import Foundation
 
 public struct CommandResult: Sendable {
@@ -14,8 +15,10 @@ public struct CommandResult: Sendable {
 
 public struct KilnCommands: Sendable {
     private let runtime: KilnRuntime
+    private let bastion: KilnBastion
     private let telemetry: KilnTelemetry
-    public init(runtime: KilnRuntime) { self.runtime = runtime; self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public init(runtime: KilnRuntime) { self.runtime = runtime; self.bastion = KilnBastion(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public func allowForward(host: String, port: Int) async -> Bool { (try? await bastion.allowForward(host: host, port: port)) ?? false }
     public func observations() -> AsyncStream<Observation> {
         AsyncStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let task = Task {
@@ -38,6 +41,7 @@ public struct KilnCommands: Sendable {
         if parts.first == "kiln" { parts.removeFirst() }
         if parts.isEmpty { return CommandResult("") }
         do {
+            if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
             switch parts {
             case ["help"]:
                 return CommandResult("""
@@ -51,6 +55,8 @@ public struct KilnCommands: Sendable {
                 app restart <name>      Stop and start an application
                 app health <name>       Check its configured HTTP health endpoint
                 app logs <name>         Last 8 KiB of application logs
+                server help             Saved servers, jump forwarding and managed SSH
+                key help                Keychain-backed Ed25519 keys
                 exit                    Disconnect this session
                 Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
@@ -96,5 +102,57 @@ extension KilnCommands {
         guard quote == nil, !escape else { throw KilnError.message("Invalid quoting") }
         if active { result.append(word) }
         return result
+    }
+}
+
+private extension KilnCommands {
+    func bastionCommand(_ p: [String]) async throws -> CommandResult {
+        switch p {
+        case ["server", "help"], ["key", "help"]:
+            return CommandResult("""
+            server add <name> <host> <user> [port]   Allow forwarding to a saved destination
+            server list                             List saved servers
+            server remove <name>                    Block new tunnels to that destination
+            server key <name> <key-name>             Assign a Keychain key
+            server scan <name>                      Show an UNVERIFIED host fingerprint
+            server trust <name> <fingerprint>        Pin after out-of-band verification
+            server exec <name> '<command>'           Execute using pinned identity and Keychain key
+            server config <name>                    Print a client-side ProxyJump config
+            key create <name>                       Generate Ed25519 directly into Keychain
+            key list                                List key names (no secrets)
+            key public <name>                       Show the public key for installation
+            key delete <name>                       Delete an unassigned Keychain key
+            ProxyJump uses your client-held destination identity; it does not forward your agent.
+            Managed execution runs the explicitly supplied command on the remote server (15s / 64 KiB limit).
+            """)
+        case ["server", "list"]: return CommandResult(try await bastion.list())
+        case ["key", "list"]: return CommandResult(try await bastion.keys())
+        default: break
+        }
+        if p.count == 3 {
+            switch (p[0],p[1]) {
+            case ("key","create"): return CommandResult(try await bastion.createKey(p[2]))
+            case ("key","public"): return CommandResult(try await bastion.publicKey(p[2]))
+            case ("key","delete"): return CommandResult(try await bastion.deleteKey(p[2]))
+            case ("server","remove"): return CommandResult(try await bastion.remove(p[2]))
+            case ("server","scan"): return CommandResult(try await bastion.scan(p[2]))
+            case ("server","config"):
+                let server=try await bastion.profile(p[2])
+                return CommandResult("Host \(server.name)\n  HostName \(server.host)\n  User \(server.user)\n  Port \(server.port)\n  ProxyJump kiln\n\nDefine Host kiln in your LOCAL SSH config with this Kiln host, port, admin username and identity. Destination host verification remains enabled in your SSH client.")
+            default: break
+            }
+        }
+        if p.count == 4, p[0] == "server" {
+            if p[1] == "key" { return CommandResult(try await bastion.assign(server:p[2],key:p[3])) }
+            if p[1] == "trust" { return CommandResult(try await bastion.trust(p[2],fingerprint:p[3])) }
+            if p[1] == "exec" {
+                let result=try await bastion.execute(p[2],command:p[3]);return CommandResult(result.output,status:result.status)
+            }
+        }
+        if (p.count == 5 || p.count == 6), p[0] == "server", p[1] == "add" {
+            guard let port=Int(p.count == 6 ? p[5] : "22") else { return CommandResult("Invalid port",status:2) }
+            return CommandResult(try await bastion.add(name:p[2],host:p[3],user:p[4],port:port))
+        }
+        return CommandResult("Invalid bastion command; run server help",status:2)
     }
 }
