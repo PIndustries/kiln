@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-live-') as td:
   raise AssertionError('Timed out waiting for '+marker)
  def command(text):
   server.stdin.write(text+'\nstatus\n');server.stdin.flush()
-  return until('Automatic restart and clustering:')
+  return until('Clustering: not implemented')
  try:
   until('Kiln runtime ready')
   assert 'Installed' in command(f'app install {manifest}')
