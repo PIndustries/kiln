@@ -5,6 +5,17 @@ import KilnCommands
 
 private struct ForwardDenied: Error {}
 private final class TunnelCodec: ChannelDuplexHandler {
+    let commands: KilnCommands
+    var permissionTimer: RepeatedTask?
+    init(commands: KilnCommands) { self.commands = commands }
+    func handlerAdded(context: ChannelHandlerContext) {
+        let channel = context.channel, commands = commands
+        permissionTimer = context.eventLoop.scheduleRepeatedTask(initialDelay: .seconds(1), delay: .seconds(1)) { task in
+            if (try? commands.authorizeAdmin()) == nil { task.cancel(); channel.close(promise: nil) }
+        }
+    }
+    func handlerRemoved(context: ChannelHandlerContext) { permissionTimer?.cancel() }
+
     typealias InboundIn=SSHChannelData
     typealias InboundOut=ByteBuffer
     typealias OutboundIn=ByteBuffer
@@ -33,7 +44,7 @@ func openTunnel(channel:Channel,host:String,port:Int,commands:KilnCommands)->Eve
         let remote=NIOLoopBound(pair.1,eventLoop:channel.eventLoop)
         return channel.setOption(ChannelOptions.allowRemoteHalfClosure,value:true).flatMap {
             channel.eventLoop.makeCompletedFuture {
-                try channel.pipeline.syncOperations.addHandlers(TunnelCodec(),local.value)
+                try channel.pipeline.syncOperations.addHandlers(TunnelCodec(commands:commands),local.value)
             }
         }.flatMap {
             ClientBootstrap(group:channel.eventLoop)

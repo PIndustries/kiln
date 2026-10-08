@@ -26,14 +26,18 @@ private final class Sessions: @unchecked Sendable {
 }
 
 
-private final class KeyAuthentication: NIOSSHServerUserAuthenticationDelegate {
-    let username: String
-    let keys: [NIOSSHPublicKey]
-    init(username: String, keys: [NIOSSHPublicKey]) { self.username = username; self.keys = keys }
+private final class KeyAuthentication: NIOSSHServerUserAuthenticationDelegate, @unchecked Sendable {
+    private let commands: KilnCommands
+    private let lock = NSLock()
+    private var authenticated: KilnCommands?
+    init(commands: KilnCommands) { self.commands = commands }
+    var sessionCommands: KilnCommands? { lock.withLock { authenticated } }
     var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods { .publicKey }
     func requestReceived(request: NIOSSHUserAuthenticationRequest, responsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>) {
-        guard request.username == username, case .publicKey(let supplied) = request.request,
-              keys.contains(supplied.publicKey) else { responsePromise.succeed(.failure); return }
+        guard case .publicKey(let supplied) = request.request else { responsePromise.succeed(.failure); return }
+        let bound = commands.forIdentity(name: request.username, publicKey: String(openSSHPublicKey: supplied.publicKey))
+        guard bound.isAuthorized() else { responsePromise.succeed(.failure); return }
+        lock.withLock { authenticated = bound }
         responsePromise.succeed(.success)
     }
 }
@@ -185,6 +189,7 @@ private final class ShellHandler: ChannelInboundHandler {
                 refreshTask = Task {
                     for await observation in commands.observations() {
                         guard !Task.isCancelled else { break }
+                        guard commands.isAuthorized() else { channel.close(promise: nil); break }
                         let management = await commands.management()
                         channel.eventLoop.execute {
                             guard channel.isActive else { return }
@@ -208,6 +213,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func apply(_ key: TerminalKey, channel: Channel) {
+        guard commands.isAuthorized() else { channel.close(promise: nil); return }
         if key == .interrupt, busy, secretName == nil, !secretSaving { commandTask?.cancel(); return }
         if secretSaving { return }
         if let name = secretName {
@@ -304,7 +310,7 @@ private final class ShellHandler: ChannelInboundHandler {
         if interactive, terminal != nil, !busy,
            let parsed = try? KilnCommands.tokenize(line) {
             let parts = parsed.first == "kiln" ? Array(parsed.dropFirst()) : parsed
-            if parts.count == 3, parts[0] == "vault", parts[1] == "put" {
+            if parts.count == 3, parts[0] == "vault", parts[1] == "put", (try? commands.authorizeAdmin()) != nil {
                 let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
                 if !parts[2].isEmpty, parts[2].count <= 80, parts[2] != ".", parts[2] != "..", parts[2].unicodeScalars.allSatisfy({ allowed.contains($0) }) {
                     secretName = parts[2]; secretValue = ""; secretInputRejected = false
@@ -448,9 +454,11 @@ private final class ShellHandler: ChannelInboundHandler {
     func startPanePump(channel:Channel) {
         remoteTask?.cancel()
         let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), owner = owner
+        let commands = self.commands
         remoteTask = Task { @Sendable [bound, owner, channel] in
             var frames: [String:RemoteTerminalFrame] = [:], generation = -1
             while !Task.isCancelled {
+                guard (try? commands.authorizeAdmin()) != nil else { channel.close(promise:nil); break }
                 guard let snapshot = try? await channel.eventLoop.submit({ (bound.value.panes,bound.value.paneRects(),bound.value.paneGeneration,bound.value.focusedPane) }).get(), !snapshot.0.isEmpty else { break }
                 var changed = generation != snapshot.2
                 if changed { frames = [:] }; generation = snapshot.2
@@ -512,6 +520,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func remoteInput(_ bytes:[UInt8],channel:Channel) {
+        guard (try? commands.authorizeAdmin()) != nil else { releasePanes(); channel.close(promise:nil); return }
         escapeTask?.cancel()
         var forwarded: [UInt8] = []
         for byte in bytes {
@@ -574,6 +583,7 @@ public final class KilnSSHServer: Sendable {
         let keys = try lines.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { try NIOSSHPublicKey(openSSHPublicKey: String($0)) }
         guard !keys.isEmpty else { throw NSError(domain: "KilnSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "No authorized keys"]) }
+        try commands.bootstrapIdentity(username: username, keys: keys.map { String(openSSHPublicKey: $0) })
         let keyURL = stateDirectory.appendingPathComponent("ssh-host-ed25519")
         let privateKey: Curve25519.Signing.PrivateKey
         if FileManager.default.fileExists(atPath: keyURL.path) {
@@ -593,8 +603,10 @@ public final class KilnSSHServer: Sendable {
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
                     channel.eventLoop.makeCompletedFuture {
+                        let authentication = KeyAuthentication(commands: commands)
                         try channel.pipeline.syncOperations.addHandlers([
-                            NIOSSHHandler(role: .server(.init(hostKeys: [hostKey], userAuthDelegate: KeyAuthentication(username: username, keys: keys))), allocator: channel.allocator, inboundChildChannelInitializer: { child, type in
+                            NIOSSHHandler(role: .server(.init(hostKeys: [hostKey], userAuthDelegate: authentication)), allocator: channel.allocator, inboundChildChannelInitializer: { child, type in
+                                guard let commands = authentication.sessionCommands, commands.isAuthorized() else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
                                 if case .directTCPIP(let destination) = type {
                                     guard sessions.insert(child) else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
                                     child.closeFuture.whenComplete { _ in sessions.remove(child) }

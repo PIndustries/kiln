@@ -28,11 +28,18 @@ public actor KilnRuntime {
         var desiredRunning: Bool
         var previous: ApplicationManifest? = nil
     }
+    private struct IndexEnvelope: Codable {
+        let formatVersion: Int
+        let applications: [String: Installation]
+    }
+    private struct IndexHeader: Decodable { let formatVersion: Int? }
+    private var versionedIndex = false
     private struct Running {
         var process: Process
         var log: FileHandle
         var lifetime: FileHandle
         var workerPID: Int32
+        var resourceID: String?
     }
     public nonisolated let stateDirectory: URL
     public nonisolated var vault: KilnVault { KilnVault(directory: stateDirectory) }
@@ -96,7 +103,15 @@ public actor KilnRuntime {
         try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let index = stateDirectory.appendingPathComponent("applications.json")
         if FileManager.default.fileExists(atPath: index.path) {
-            installed = try JSONDecoder().decode([String: Installation].self, from: Data(contentsOf: index))
+            let data = try Data(contentsOf: index)
+            let decoder = JSONDecoder()
+            if let version = try decoder.decode(IndexHeader.self, from: data).formatVersion {
+                guard version == 2 else { throw KilnError.message("Unsupported application state format; use a compatible Kiln version") }
+                installed = try decoder.decode(IndexEnvelope.self, from: data).applications
+                versionedIndex = true
+            } else {
+                installed = try decoder.decode([String: Installation].self, from: data)
+            }
             for installation in installed.values {
                 try installation.manifest.validate()
                 try installation.previous?.validate()
@@ -106,8 +121,20 @@ public actor KilnRuntime {
 
     private func save() throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        do { try KilnStateFile.write(encoder.encode(installed), to: stateDirectory.appendingPathComponent("applications.json")) }
-        catch let error as KilnStateFile.CommitUncertain { persistenceFault = true; throw error }
+        let needsEnvelope = versionedIndex || installed.values.contains {
+            $0.manifest.resources != nil || $0.previous?.resources != nil
+        }
+        let data: Data
+        if needsEnvelope { data = try encoder.encode(IndexEnvelope(formatVersion: 2, applications: installed)) }
+        else { data = try encoder.encode(installed) }
+        do {
+            try KilnStateFile.write(data, to: stateDirectory.appendingPathComponent("applications.json"))
+            versionedIndex = needsEnvelope
+        } catch let error as KilnStateFile.CommitUncertain {
+            versionedIndex = needsEnvelope
+            persistenceFault = true
+            throw error
+        }
     }
 
     private func flushRelease(_ executable: URL) throws {
@@ -168,6 +195,7 @@ public actor KilnRuntime {
 
     public func restore() async throws {
         try KilnWorkerGuardian.reconcile(directory: stateDirectory)
+        try ResourceController.reconcile(state: stateDirectory)
         try removeInterruptedReleases()
         beginSupervision()
         // A broken worker must not prevent other installations or the management plane starting.
@@ -180,6 +208,7 @@ public actor KilnRuntime {
         guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
         var manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         try manifest.validate()
+        try ResourceController.ensureSupported(manifest.resources)
         let id = "\(manifest.application)/\(manifest.name)"
         guard !deploying.contains(id) else { throw KilnError.message("Deployment in progress") }
         guard installed[id] == nil else { throw KilnError.message("Application already installed; use app deploy for managed ingress releases") }
@@ -212,12 +241,22 @@ public actor KilnRuntime {
         guard !shuttingDown, !persistenceFault, let installation = installed[name] else { throw KilnError.message("Unknown application: \(name)") }
         guard !stopping.contains(name) else { throw KilnError.message("Application is stopping") }
         if running[name]?.process.isRunning == true { throw KilnError.message("Application is already running") }
-        if let old = running.removeValue(forKey: name) { try? old.lifetime.close(); try? old.log.close() }
+        if let old = running[name] {
+            if let id = old.resourceID { try ResourceController.finish(id: id, state: stateDirectory) }
+            running.removeValue(forKey: name)
+            try? old.lifetime.close(); try? old.log.close()
+        }
         running[name] = try spawn(installation.manifest)
     }
 
     private func spawn(_ manifest: ApplicationManifest) throws -> Running {
         let name = "\(manifest.application)/\(manifest.name)"
+        guard FileManager.default.isExecutableFile(atPath: manifest.executable) else {
+            throw KilnError.message("Worker executable is missing or not executable")
+        }
+        try ResourceController.ensureSupported(manifest.resources)
+        let resourceID = manifest.resources.map { _ in UUID().uuidString }
+        let resourceRoot = manifest.resources == nil ? nil : try ResourceController.prepare(required: true)
         let secrets = try vault.environment(for: name, bindings: manifest.secrets ?? [:])
         let logs = stateDirectory.appendingPathComponent("logs")
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
@@ -254,6 +293,11 @@ public actor KilnRuntime {
         process.environment = ["PATH": "/usr/bin:/bin", "KILN_APP_NAME": name, "KILN_DATA_DIR": dataDirectory.path, "KILN_RELEASE_VERSION": manifest.version]
         if manifest.ingressPort != nil { process.environment?["KILN_PORT"] = String(workerPort(manifest)) }
         process.environment?.merge(secrets) { _, secret in secret }
+        if let resourceID, let resourceRoot {
+            process.environment?["KILN_RESOURCE_ROOT"] = resourceRoot.path
+            process.environment?["KILN_RESOURCE_ID"] = resourceID
+            process.environment?["KILN_RESOURCE_MANIFEST"] = try JSONEncoder().encode(manifest).base64EncodedString()
+        }
         let lifetime = Pipe(), acknowledgement = Pipe()
         // Explicitly prevent another child inheriting a writer and delaying EOF.
         _ = fcntl(lifetime.fileHandleForWriting.fileDescriptor, F_SETFD, FD_CLOEXEC)
@@ -286,7 +330,7 @@ public actor KilnRuntime {
             guard let pid = Int32(String(decoding: response, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else {
                 throw KilnError.message("Worker guardian did not acknowledge launch")
             }
-            return Running(process: process, log: log, lifetime: lifetime.fileHandleForWriting, workerPID: pid)
+            return Running(process: process, log: log, lifetime: lifetime.fileHandleForWriting, workerPID: pid, resourceID: resourceID)
         } catch {
             try? lifetime.fileHandleForWriting.close()
             try? lifetime.fileHandleForReading.close()
@@ -294,6 +338,7 @@ public actor KilnRuntime {
             // Acknowledgement failure must not discard a still-owning guardian:
             // another start could otherwise overlap its not-yet-reaped child.
             if process.isRunning { process.waitUntilExit() }
+            if let resourceID { try ResourceController.finish(id: resourceID, state: stateDirectory) }
             try? log.close()
             throw error
         }
@@ -343,6 +388,7 @@ public actor KilnRuntime {
         recovery.removeValue(forKey: name)
         ingress[name]?.switchTo(nil)
         await terminate(name)
+        guard !persistenceFault else { throw KilnError.message("Resource descendant cleanup is unconfirmed; runtime requires recovery") }
         return "Stopped \(name)"
     }
 
@@ -377,6 +423,10 @@ public actor KilnRuntime {
             // Cancellation may stop a caller waiting for an operation, but must
             // not discard ownership or turn cleanup into a hot spin.
             await Task.detached { try? await Task.sleep(for: .milliseconds(50)) }.value
+        }
+        if let id = entry.resourceID {
+            do { try ResourceController.finish(id: id, state: stateDirectory) }
+            catch { persistenceFault = true }
         }
         try? entry.log.close()
     }
@@ -417,6 +467,19 @@ public actor KilnRuntime {
         let (_, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw KilnError.message("Health check failed") }
         return "\(name): healthy (HTTP 200)"
+    }
+
+    public func resourceStatus(_ name: String) throws -> String {
+        guard let installation = installed[name] else { throw KilnError.message("Unknown application") }
+        guard let limits = installation.manifest.resources else {
+            return "\(name): legacy trusted worker; no per-module hard resource limits configured"
+        }
+        if let id = running[name]?.resourceID, running[name]?.process.isRunning == true {
+            return try ResourceController.status(id: id, state: stateDirectory)
+        }
+        let previous = stateDirectory.appendingPathComponent("resource-reports/" + name + ".txt")
+        if let report = try? String(contentsOf: previous, encoding: .utf8) { return report }
+        return "\(name): limits configured; no active enforcement (worker stopped or launch failed)\nmemoryBytes: \(limits.memoryBytes)\ncpuMillis: \(limits.cpuMillis)\nmaxProcesses: \(limits.maxProcesses)"
     }
 
     public func logs(_ name: String) throws -> String {
@@ -494,6 +557,7 @@ extension KilnRuntime {
     public func deploy(path: String) async throws -> String {
         var manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         try manifest.validate()
+        try ResourceController.ensureSupported(manifest.resources)
         guard manifest.ingressPort != nil else { throw KilnError.message("app deploy requires ingressPort") }
         let name = "\(manifest.application)/\(manifest.name)"
         guard !shuttingDown, !persistenceFault, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
@@ -579,6 +643,7 @@ extension KilnRuntime {
             if let old, old.manifest.ingressPort != nil { await ingress[name]!.drain(workerPort(old.manifest)) }
             await terminateEntry(previousProcess)
         }
+        guard !persistenceFault else { throw KilnError.message("Release committed but previous resource cleanup is unconfirmed; runtime requires recovery") }
         return "Active \(name)@\(manifest.version) via 127.0.0.1:\(manifest.ingressPort!) (healthy; previous connections drained)"
     }
 }

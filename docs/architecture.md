@@ -1,6 +1,6 @@
 # Application composition and loading
 
-Status: the local process/SSH path and per-module loopback TCP ingress are implemented. Public TLS, host/path routing and cluster paths below remain proposed contracts.
+Status: the local process/SSH path and per-module loopback TCP ingress are implemented. Explicit peer adoption and typed remote management are implemented separately; public TLS, host/path routing, cluster placement and cross-node ingress below remain proposed contracts.
 
 ## Two kinds of module
 
@@ -57,7 +57,7 @@ A manifest:
 }
 ```
 
-Legacy `app install` uses explicit health checks. Managed `app deploy` adds readiness admission, stable loopback ingress, draining and rollback; see [deployments](deployments.md). Releases are local executable copies using distinct worker ports. Artifact signing, architecture metadata and cluster routing remain future work. Applications must currently avoid spawning unmanaged descendant processes. Clean runtime shutdown stops direct children; persistent desired state starts them again on the next launch. A SIGKILL to the supervisor can leave children alive and requires operator reconciliation.
+Legacy `app install` uses explicit health checks. Managed `app deploy` adds readiness admission, stable loopback ingress, draining and rollback; see [deployments](deployments.md). Releases are local executable copies using distinct worker ports. Artifact signing, architecture metadata and cluster routing remain future work. Applications must currently avoid spawning unmanaged descendant processes. Clean runtime shutdown stops direct children; persistent desired state starts them again on the next launch. Supervisor-lifetime guardians terminate and reap direct workers after supervisor SIGKILL; startup reconciles their ownership locks before restoration. See [supervision](supervision.md) for the boundaries.
 
 ## Optional interfaces
 
@@ -87,7 +87,7 @@ Nodes discover candidates, but join only after administrator-approved identity v
 
 - KilnIngress: routing, TLS, limits and connection draining.
 - KilnDirectory: stable service names and health-aware instance resolution.
-- KilnCluster: node identity, adoption, membership and control-state agreement.
+- KilnCluster: node identity, explicit adoption and typed peer management are implemented; automatic placement, control-state agreement and fencing remain future work.
 - KilnPackages: Git/catalog resolution and verified immutable artifacts.
 - KilnBuild: isolated compiler/test workers with scoped credentials.
 - KilnSecrets: scoped provider interface and key lifecycle.

@@ -77,7 +77,7 @@ Values are delivered at startup. Rotation applies on the next start/deployment. 
 
 ## Boundaries
 
-- All configured SSH administrators can manage Vault. Per-user roles and audit trails are not implemented.
+- Only administrator identities can manage Vault, including hidden TUI entry. Named roles, live revocation and bounded metadata audits are described in [identity permissions](identities.md).
 - Grants control supervisor delivery between trusted modules. Same-UID processes and host administrators can access the master key or process data; OS isolation is still required for hostile modules.
 - A receiving module can print or transmit a secret. Kiln's Vault commands do not log values, but application logs are not automatically redacted.
 - This is single-node storage, with a file lock coordinating local processes. No cluster replication, leases, dynamic credentials, provider integrations or HSM integration is implemented.

@@ -19,3 +19,29 @@ jobs:
         run: python3 scripts/integration.py
       - name: Supervisor SIGKILL and interrupted deployment recovery
         run: python3 scripts/crash-recovery-integration.py
+      - name: Named identities and permission boundaries
+        run: python3 scripts/identity-integration.py
+      - name: Explicit node adoption and durable peer operations
+        run: KILN_TEST_MULTICAST=1 python3 scripts/cluster-integration.py
+      - name: Managed deployment and rollback
+        run: python3 scripts/deployment-integration.py
+  linux-resources:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build native Linux runtime
+        run: |
+          sudo mkdir -p /opt/kiln-test/bin /opt/kiln-test/lib
+          docker run --rm --cpus=2 --memory=6g --pids-limit=512 \
+            -v "$PWD:/workspace" -v /opt/kiln-test/lib:/runtime -w /workspace swift:6.2.3 \
+            bash -c 'swift build --jobs 2 && cp -a /usr/lib/swift/linux/*.so* /runtime/'
+          sudo install -m 0755 .build/debug/kiln /opt/kiln-test/bin/kiln
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqlite3-0 libzstd1 libstdc++6 libncurses6 openssh-client python3
+          echo /opt/kiln-test/lib | sudo tee /etc/ld.so.conf.d/kiln-test.conf
+          sudo ldconfig
+      - name: Kernel-enforced budgets and descendant recovery
+        run: sudo env KILN_BIN_DIR=/opt/kiln-test/bin python3 scripts/resource-integration.py

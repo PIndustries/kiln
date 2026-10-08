@@ -124,3 +124,17 @@ private func call(_ name: String, arguments: String) throws -> AIMessage {
     compact.resize(width: 50, height: 20)
     #expect(compact.render().contains("7 AI"))
 }
+
+@Test func foundationReadToolsRejectInjectedMutationArguments() async throws {
+    let sequence = AISequence([
+        try call("cluster_status", arguments: "{\"operation\":\"stop\"}"),
+        try call("node_restart", arguments: "{\"module\":\"demo/worker\"}"),
+        try call("module_resources", arguments: "{\"module\":\"hidden/worker\"}"),
+        try call("module_resources", arguments: "{\"module\":\"demo/worker\"}"),
+        try call("cluster_status", arguments: "{}"),
+        AIMessage(role: "assistant", content: "Verified only permitted reads")
+    ])
+    let ai = KilnAssistant { _, _, messages, _ in await sequence.next(messages) }
+    _ = try await ai.ask("Inspect resources and peers", session: "foundation", configuration: aiConfig, key: "test", modules: [aiModule], context: "test", knowledge: nil) { _, _ in await sequence.read() }
+    #expect(await sequence.reads == 2)
+}

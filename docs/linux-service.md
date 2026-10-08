@@ -20,7 +20,7 @@ sudo journalctl -u kiln
 
 Initialize Vault with its master key outside `/var/lib/kiln`, readable only by the `kiln` user. A state backup without that external key cannot restore secrets. Preserve both using separate protected backup procedures.
 
-The service's control-group shutdown terminates all its children, including remote terminal sessions. A supervisor failure or host reboot interrupts network connections; recovery restores desired applications, not open client sockets. The unit does not provide application sandboxing or per-module resource quotas.
+The service's control-group shutdown terminates all its children, including remote terminal sessions. A supervisor failure or host reboot interrupts network connections; recovery restores desired applications, not open client sockets. The unit delegates cgroup v2 controllers for opt-in [per-worker resource quotas](resources.md). It does not provide an application security sandbox.
 
 Upgrade by staging a new binary, stopping the service cleanly, replacing the binary, and starting the service. Never overwrite an executable being used by the runtime or its guardians. Preserve the state directory and matching guardian binary. Check SSH status, application readiness and committed release versions after upgrade.
 

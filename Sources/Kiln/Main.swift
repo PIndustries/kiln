@@ -1,6 +1,7 @@
 import Foundation
 // Linux Dispatch lacks Sendable annotations; signal-source cancellation is thread-safe.
 @preconcurrency import Dispatch
+import KilnCluster
 import KilnRuntime
 import KilnKit
 import KilnVault
@@ -21,6 +22,10 @@ struct Kiln {
     }
     static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.first == "worker-exec" {
+            try KilnWorkerGuardian.execWorker(arguments: Array(args.dropFirst()))
+            return
+        }
         if args.first == "worker-guardian" {
             try KilnWorkerGuardian.run(arguments: Array(args.dropFirst()))
             return
@@ -53,6 +58,7 @@ struct Kiln {
             Kiln \(KilnVersion.current) development runtime
             kiln up [--state PATH] [--authorized-keys PATH] [--host 127.0.0.1] [--port 2222]
                     [--user admin] [--no-ssh] [--console]
+                    [--cluster-host 127.0.0.1 --cluster-port PORT] [--discovery-port UDPPORT]
             kiln vault put NAME --state PATH < secret-file   Import without command-line values
             kiln vault init --state PATH --key-file PATH   Initialize encrypted server Vault
             kiln session-service-stop --state PATH   End persistent remote terminals
@@ -61,7 +67,7 @@ struct Kiln {
             """); return
         }
         guard args.first == "up" else { throw CLIError.invalid("Expected: kiln up") }
-        let valueFlags: Set<String> = ["--state", "--authorized-keys", "--host", "--port", "--user"]
+        let valueFlags: Set<String> = ["--state", "--authorized-keys", "--host", "--port", "--user", "--cluster-host", "--cluster-port", "--discovery-port"]
         let booleanFlags: Set<String> = ["--no-ssh", "--console"]
         var values: [String: String] = [:]; var flags: Set<String> = []
         var index = 1
@@ -87,12 +93,47 @@ struct Kiln {
             interrupt.resume(); terminate.resume()
         }
         let runtime = try KilnRuntime(stateDirectory: state)
-        let commands = KilnCommands(runtime: runtime)
+        let cluster: KilnCluster?
+        if values["--cluster-port"] != nil {
+            cluster = try KilnCluster(directory: state) { operation, module in
+                switch operation {
+                case .status: return "Kiln \(KilnVersion.current)\n" + (await runtime.list())
+                case .start:
+                    guard let module else { throw KilnError.message("Missing module identity") }
+                    return try await runtime.start(module)
+                case .stop:
+                    guard let module else { throw KilnError.message("Missing module identity") }
+                    return try await runtime.stop(module)
+                case .restart:
+                    guard let module else { throw KilnError.message("Missing module identity") }
+                    return try await runtime.restart(module)
+                }
+            }
+        } else {
+            guard values["--cluster-host"] == nil, values["--discovery-port"] == nil else {
+                throw CLIError.invalid("Cluster host/discovery requires --cluster-port")
+            }
+            cluster = nil
+        }
+        let commands = KilnCommands(runtime: runtime, cluster: cluster)
         // Complete ownership recovery before exposing any management mutations.
         try await runtime.restore()
         try await commands.startSessionService()
         var ssh: KilnSSHServer?
         do {
+            if let cluster {
+                guard let port = Int(values["--cluster-port"]!), (1...65535).contains(port) else {
+                    throw CLIError.invalid("Invalid cluster port")
+                }
+                var discoveryPort: Int?
+                if let raw = values["--discovery-port"] {
+                    guard let number = Int(raw), (1...65535).contains(number) else { throw CLIError.invalid("Invalid discovery port") }
+                    discoveryPort = number
+                }
+                let host = values["--cluster-host"] ?? "127.0.0.1"
+                try await cluster.start(host: host, port: port, discoveryPort: discoveryPort)
+                print("KilnCluster enabled at \(host):\(port); identity \(cluster.identity.fingerprint)")
+            }
             if !flags.contains("--no-ssh") {
                 guard let keyPath = values["--authorized-keys"] else { throw CLIError.invalid("Provide --authorized-keys PATH, or --no-ssh") }
                 guard let port = Int(values["--port"] ?? "2222"), (1...65535).contains(port) else { throw CLIError.invalid("Invalid port") }
@@ -100,7 +141,7 @@ struct Kiln {
                 ssh = try await KilnSSHServer.start(host: host, port: port, username: values["--user"] ?? "admin", authorizedKeys: URL(fileURLWithPath: keyPath), stateDirectory: state, commands: commands)
                 print("KilnSSH enabled at \(host):\(port)")
             } else { print("KilnSSH disabled") }
-        } catch { await ssh?.stop(); await runtime.shutdown(); throw error }
+        } catch { await cluster?.stop(); await ssh?.stop(); await runtime.shutdown(); throw error }
         print("Kiln runtime ready. State: \(state.path)")
         fflush(nil)
         let console = flags.contains("--console") ? ConsoleInput() : nil
@@ -117,6 +158,7 @@ struct Kiln {
         for await _ in signals { break }
         consoleTask?.cancel(); console?.stop()
         print("Kiln shutting down")
+        await cluster?.stop()
         await runtime.shutdown()
         await ssh?.stop()
     }

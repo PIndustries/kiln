@@ -13,14 +13,16 @@ public struct ApplicationManifest: Codable, Sendable {
     public let secrets: [String: String]?
     /// Omitted policies preserve manual restart behavior.
     public let restartPolicy: RestartPolicy?
+    public let resources: ModuleResourceLimits?
     public enum RestartPolicy: String, Codable, Sendable { case never, always }
 
-    public init(application: String = "default", name: String, version: String, executable: String, arguments: [String] = [], healthURL: String? = nil, ingressPort: Int? = nil, secrets: [String: String]? = nil, restartPolicy: RestartPolicy? = nil) {
+    public init(application: String = "default", name: String, version: String, executable: String, arguments: [String] = [], healthURL: String? = nil, ingressPort: Int? = nil, secrets: [String: String]? = nil, restartPolicy: RestartPolicy? = nil, resources: ModuleResourceLimits? = nil) {
         self.application = application; self.name = name; self.version = version; self.executable = executable
-        self.arguments = arguments; self.healthURL = healthURL; self.ingressPort = ingressPort; self.secrets = secrets; self.restartPolicy = restartPolicy
+        self.arguments = arguments; self.healthURL = healthURL; self.ingressPort = ingressPort; self.secrets = secrets; self.restartPolicy = restartPolicy; self.resources = resources
     }
 
     public func validate() throws {
+        try resources?.validate()
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
         for value in [application, name, version] {
             guard !value.isEmpty, value.count <= 80, value != ".", value != "..",

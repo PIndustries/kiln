@@ -15,16 +15,20 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Persistent background AI investigation tasks, live watch/cancel controls and configurable concurrency up to 48 (default 4; provider quotas apply).
 - Ctrl-S selection mode freezes terminal redraws and releases mouse capture for native text selection/copy.
 - Encrypted, headless Vault with hidden SSH entry, stdin import and explicit per-module secret grants.
-- Persistent Ed25519 host identity; only the configured administrator is accepted.
+- Persistent Ed25519 host identity; named public-key users with administrator, operator and viewer roles, exact module scopes, live revocation and bounded audit records.
 - Optional local stdin console, including with SSH disabled.
 - Installation of a trusted, locally compiled executable from a JSON manifest.
 - Versioned local releases, readiness-checked deployment, stable loopback TCP ingress, draining and rollback.
 - Separate processes, start/stop/restart, health checks, log tail and opt-in bounded crash recovery.
 - Persistent approved-AI operation receipts, inspectable with `ai operations`.
 - Installed-module persistence, guardian cleanup after supervisor death, and restoration of desired running modules.
+- Optional Linux cgroup v2 memory/CPU/task quotas, pre-exec attachment and descendant cleanup; unsupported hard limits fail closed.
+- Optional mutually adopted peer nodes with pinned encrypted SSH transport, typed operations, durable request receipts and explicit reconciliation.
 - Independent REST and WebSocket example services.
 
-This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. Optional bounded crash recovery is available via `restartPolicy: always` (see [supervision](docs/supervision.md)). There is no resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, cluster secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Direct workers now use supervisor-lifetime guardians and ownership-lock reconciliation after abrupt supervisor death; see [recovery boundaries](docs/supervision.md).
+This is **not a production sandbox or a consensus-based cluster**. Modules run as the same OS user as Kiln. Optional bounded crash recovery is available via `restartPolicy: always` (see [supervision](docs/supervision.md)). Linux resource quotas and explicit peer adoption are available. Automatic placement/failover, public TLS/cluster ingress, Git build pipelines, cluster secrets, an installer and appliance remain unimplemented. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Direct workers now use supervisor-lifetime guardians and ownership-lock reconciliation after abrupt supervisor death; see [recovery boundaries](docs/supervision.md).
+
+See [identity and permissions](docs/identities.md), [module resource limits](docs/resources.md), [peer-node management](docs/clustering.md), and [foundation acceptance](docs/foundation.md).
 
 See [Linux boot service setup](docs/linux-service.md) for systemd startup and recovery boundaries.
 
@@ -38,7 +42,7 @@ Kiln releases use `YY.MM.DD.BUILD`, starting with `26.10.07.1`. The build counte
 
 ## Build
 
-Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: 38 unit/policy tests plus real SSH, REST/WebSocket, supervisor SIGKILL, interrupted deployment and restore checks. A disposable Ubuntu VM also verifies startup and application restoration after a real reboot. Bastion credential storage remains macOS Keychain-specific.
+Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: unit/policy tests plus real SSH, REST/WebSocket, supervisor SIGKILL, interrupted deployment and restore checks. A disposable Ubuntu VM also verifies startup and application restoration after a real reboot. Bastion credential storage remains macOS Keychain-specific.
 
 ```sh
 swift build
@@ -74,7 +78,7 @@ Interactive SSH opens the dashboard by default:
 - Tab completes commands and service IDs; Up/Down recalls session history.
 - Left/Right, Home/End, Ctrl-A/E/U/K and Backspace/Delete edit a command.
 - Page Up/Down scrolls output. Ctrl-C clears input; it does not cancel an operation already executing.
-- Tab or 1/2/3/4/5/6 switches views (Overview, Services, Metrics, Help, Sessions, Servers). q disconnects from the dashboard.
+- Tab or 1/2/3/4/5/6/7 switches views (Overview, Services, Metrics, Help, Sessions, Servers, AI Chat). q disconnects from the dashboard.
 - The layout follows SSH-reported dimensions, including live window changes. The divider spans the viewport, the drawer uses half the height, and service columns size from their content and available width. Unknown dimensions retain the last known size; only an excessive total cell count is rejected to bound untrusted rendering work. Screens below 50x16 show a resize prompt.
 
 The dashboard receives observation frames about once per second. Click tabs, service rows, action choices or the drawer divider; the wheel navigates services or scrolls command output. Standard xterm SGR mouse reporting is required. Mouse modes are disabled on normal exit; use your terminal's mouse-selection override (often Option or Shift) to select text while reporting is active. Running is not a health claim; use Check health to query an endpoint. New service IDs appear in the dashboard and completion automatically.
@@ -95,7 +99,7 @@ exit
 
 Non-PTY sessions and TERM=dumb use a plain shell. `ssh ... "app list"` returns aligned plain text without color or full-screen controls.
 
-The shell does not execute host shell commands. Admins can, however, install arbitrary trusted local executables, so SSH access is privileged administrative access. Paths with spaces can be quoted. The full-screen renderer uses printable ASCII cells; non-ASCII output is displayed as question marks, and terminal control sequences from logs are neutralized. `exit` disconnects the session; Ctrl-C in the runtime's host terminal shuts down Kiln and its modules.
+The shell does not execute host shell commands. Admins can, however, install arbitrary trusted local executables, so administrator SSH access is privileged host-level access. Viewer/operator identities have narrower management permissions. Paths with spaces can be quoted. The full-screen renderer uses printable ASCII cells; non-ASCII output is displayed as question marks, and terminal control sequences from logs are neutralized. `exit` disconnects the session; Ctrl-C in the runtime's host terminal shuts down Kiln and its modules.
 
 Run without SSH:
 
@@ -131,7 +135,8 @@ The sample uses the same compiled example executable with separate mode argument
 
 ```text
 kiln executable (composition root)
-  +-- KilnRuntime ----> KilnKit (release contract)
+  +-- KilnRuntime ----> KilnKit (release and identity contracts)
+  +-- KilnCluster ----> optional pinned SSH peer transport and durable receipts
   +-- KilnCommands --> KilnRuntime + KilnBastion
   |     +-- KilnBastion IPC client -> separate session-service process
   |           +-- server registry, Keychain, native SSH sessions

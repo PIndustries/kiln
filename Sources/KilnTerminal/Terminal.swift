@@ -13,6 +13,7 @@ public struct KilnTerminal {
     public private(set) var selected = 0
     public private(set) var busy = false
     private var management = ManagementUI()
+    private var accessLabel: String?
     private var servers: [ServerSnapshot] = []
     private var selectedServer = 0
     public mutating func updateServers(_ servers: [ServerSnapshot], keys: [String]) {
@@ -21,7 +22,13 @@ public struct KilnTerminal {
         selectedServer = name.flatMap { name in servers.firstIndex { $0.name == name } } ?? min(selectedServer,max(0,servers.count-1))
     }
     public mutating func updateManagement(_ snapshot: ManagementSnapshot) {
-        if let error = snapshot.error { notice = error; return }
+        accessLabel = snapshot.access
+        if let error = snapshot.error {
+            // Permission revocation must also remove stale management inventory.
+            updateSessions([]); updateServers([], keys: [])
+            if page == 4 || page == 5 { notice = error }
+            return
+        }
         updateSessions(snapshot.sessions); updateServers(snapshot.servers,keys:snapshot.keys)
     }
     private var sessions: [TerminalSessionSnapshot] = []
@@ -388,7 +395,7 @@ public struct KilnTerminal {
         }
         let brand = "P.INDUSTRIES"
         var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
-                     row("  LOCAL NODE  /  ONLINE  /  SSH SESSION", green), row()]
+                     row("  LOCAL NODE  /  ONLINE  /  " + (accessLabel ?? "SSH SESSION"), green), row()]
         let labels = width < 65 ? ["1", "2", "3", "4", "5", "6", "7 AI"] : width < 100 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY", "6 SSH", "7 AI"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions", "6 Servers", "7 AI Chat"]
         var tabs = "  "
         for (index,label) in labels.enumerated() {

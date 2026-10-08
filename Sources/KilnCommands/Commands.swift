@@ -1,3 +1,5 @@
+import NIOSSH
+import KilnCluster
 import KilnRuntime
 import KilnAI
 import KilnVault
@@ -5,6 +7,8 @@ import KilnKit
 import KilnTelemetry
 import KilnBastion
 import Foundation
+
+private enum CommandSyntaxError: Error { case unknown }
 
 public struct CommandResult: Sendable {
     public let text: String
@@ -17,13 +21,21 @@ public struct CommandResult: Sendable {
 }
 
 public struct KilnCommands: Sendable {
+    private let cluster: KilnCluster?
     private let runtime: KilnRuntime
     private let bastion: BastionClient
     private let telemetry: KilnTelemetry
     private let assistant = KilnAssistant()
     private let aiTasks: AITasks
-    public init(runtime: KilnRuntime) { self.aiTasks = AITasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public let identities: KilnIdentityStore
+    public private(set) var principal: KilnPrincipal? = nil
+    public func forIdentity(name: String, publicKey: String) -> KilnCommands { var copy = self; copy.principal = KilnPrincipal(name: name, publicKey: (try? KilnIdentityStore.canonicalKey(publicKey)) ?? "invalid"); return copy }
+    public func bootstrapIdentity(username: String, keys: [String]) throws { try identities.bootstrap(name: username, keys: keys) }
+    public func isAuthorized() -> Bool { (try? identities.resolve(principal)) != nil }
+    public func authorizeAdmin() throws { try identities.require(principal, admin: true) }
+    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     public func allowForward(host: String, port: Int) async -> Bool {
+        guard (try? authorizeAdmin()) != nil else { return false }
         if await runtime.allowIngress(host: host, port: port) { return true }
         return (try? await bastion.allowForward(host: host, port: port)) ?? false
     }
@@ -32,7 +44,7 @@ public struct KilnCommands: Sendable {
             let task = Task {
                 while !Task.isCancelled {
                     let host = await telemetry.sample()
-                    let modules = await runtime.snapshot()
+                    let modules = await snapshot()
                     continuation.yield(Observation(modules: modules, host: host))
                     do { try await Task.sleep(for: .seconds(1)) } catch { break }
                 }
@@ -42,29 +54,63 @@ public struct KilnCommands: Sendable {
         }
     }
     public func management() async -> ManagementSnapshot {
+        guard let identity = try? identities.resolve(principal) else { return ManagementSnapshot(error: "Identity revoked or unauthorized", access: "ACCESS REVOKED") }
+        let access = identity.name + " / " + identity.role
+        guard identity.role == "admin" else { return ManagementSnapshot(error: "Server, key and remote terminal management requires administrator access.", access: access) }
         do {
-            return ManagementSnapshot(servers:try await bastion.serverSnapshots(),sessions:try await bastion.sessionSnapshots(),keys:try await bastion.keys().split(separator:"\n").map(String.init))
-        } catch { return ManagementSnapshot(error:"Session service unavailable; terminal state is unknown. \(error)") }
+            return ManagementSnapshot(servers:try await bastion.serverSnapshots(),sessions:try await bastion.sessionSnapshots(),keys:try await bastion.keys().split(separator:"\n").map(String.init), access: access)
+        } catch { return ManagementSnapshot(error:"Session service unavailable; terminal state is unknown. \(error)", access: access) }
     }
-    public func sessions() async -> [TerminalSessionSnapshot] { (try? await bastion.sessionSnapshots()) ?? [] }
-    public func session(_ name: String) async throws -> RemoteTerminalClient { try await bastion.session(name) }
+    public func sessions() async -> [TerminalSessionSnapshot] { guard (try? authorizeAdmin()) != nil else { return [] }; return (try? await bastion.sessionSnapshots()) ?? [] }
+    public func session(_ name: String) async throws -> RemoteTerminalClient { try authorizeAdmin(); return try await bastion.session(name) }
     public func startSessionService() async throws { try await bastion.start() }
-    public func servers() async -> [ServerSnapshot] { (try? await bastion.serverSnapshots()) ?? [] }
-    public func keyNames() async -> [String] { ((try? await bastion.keys()) ?? "").split(separator: "\n").map(String.init) }
-    public func snapshot() async -> [ModuleSnapshot] { await runtime.snapshot() }
+    public func servers() async -> [ServerSnapshot] { guard (try? authorizeAdmin()) != nil else { return [] }; return (try? await bastion.serverSnapshots()) ?? [] }
+    public func keyNames() async -> [String] { guard (try? authorizeAdmin()) != nil else { return [] }; return ((try? await bastion.keys()) ?? "").split(separator: "\n").map(String.init) }
+    public func snapshot() async -> [ModuleSnapshot] { guard let identity = try? identities.resolve(principal) else { return [] }; return await runtime.snapshot().filter { identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.id) } }
     public func putSecret(name: String, value: String) -> CommandResult {
-        do { return CommandResult(try runtime.vault.put(name, value: value)) }
-        catch { return CommandResult("Vault write failed: \(error)", status: 1) }
+        let requestID = UUID().uuidString.lowercased()
+        var admitted = false
+        do {
+            try authorizeAdmin()
+            admitted = true
+            try identities.audit(principal, verb: "vault put", outcome: "authorized", requestID: requestID)
+            let result = try runtime.vault.put(name, value: value)
+            do { try identities.audit(principal, verb: "vault put", outcome: "returned", requestID: requestID) }
+            catch { return CommandResult("Vault write returned but its audit outcome could not be recorded. Inspect state before retrying.", status: 1) }
+            return CommandResult(result)
+        } catch {
+            try? identities.audit(principal, verb: "vault put", outcome: admitted ? "failed" : "denied", requestID: requestID)
+            return CommandResult("Vault write failed: \(error)", status: 1)
+        }
     }
     public func execute(_ line: String, sessionID: String = "console", progress: @escaping @Sendable (AIProgress) -> Void = { _ in }) async -> CommandResult {
+        let requestID = UUID().uuidString.lowercased()
+        var parsed = (try? Self.tokenize(line)) ?? []
+        if parsed.first == "kiln" { parsed.removeFirst() }
+        let auditCompletion = !parsed.isEmpty && auditsMutation(parsed) && (try? authorize(parsed)) != nil
+        let result = await executeCommand(line, sessionID: sessionID, progress: progress, auditID: requestID)
+        guard auditCompletion else { return result }
+        let metadata = auditMetadata(parsed)
+        do { try identities.audit(principal, verb: metadata.0, outcome: result.status == 0 ? "returned" : "failed", target: metadata.1, requestID: requestID) }
+        catch { return CommandResult(result.text + "\nCompletion audit unavailable. Inspect state before retrying. Request: " + requestID, status: 1) }
+        return result
+    }
+    private func executeCommand(_ line: String, sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void, auditID: String) async -> CommandResult {
         var parts: [String]
         do { parts = try Self.tokenize(line) }
         catch { return CommandResult("Unclosed quote or trailing escape", status: 2) }
         if parts.first == "kiln" { parts.removeFirst() }
         if parts.isEmpty { return CommandResult("") }
+        let (verb, target) = auditMetadata(parts)
+        var authorized = false
         do {
+            try authorize(parts)
+            authorized = true
+            if auditsMutation(parts) { try identities.audit(principal, verb: verb, outcome: "authorized", target: target, requestID: auditID) }
+            if parts.first == "node" || parts.first == "cluster" { return try await nodeCommand(parts, requestID: auditID) }
+            if parts.first == "identity" { return try identityCommand(parts) }
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
-            if parts.first == "ai" { return try await aiCommand(parts, sessionID: sessionID, progress: progress) }
+            if parts.first == "ai" { return try await aiCommand(parts, sessionID: (principal?.name ?? "local-console") + ":" + sessionID, progress: progress) }
             if parts.first == "vault" {
                 switch parts {
                 case ["vault", "help"]:
@@ -98,6 +144,9 @@ public struct KilnCommands: Sendable {
             case ["help"]:
                 return CommandResult("""
                 Kiln \(KilnVersion.current) development shell
+                identity help           Named SSH users, roles and module scopes
+                node help               Explicit peer discovery and adoption
+                app resources <name>    Worker resource policy and usage
                 status                  Runtime status
                 metrics                 Host CPU, memory, disk, uptime and load
                 app list                Installed applications and process state
@@ -119,8 +168,8 @@ public struct KilnCommands: Sendable {
                 Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
             case ["metrics"]: return CommandResult(await telemetry.sample().summary)
-            case ["status"]: return CommandResult("Kiln runtime running\nRelease: \(KilnVersion.current)\nMode: single node\nApplication isolation: OS processes\nAutomatic restart: opt-in, bounded retries\nClustering: not implemented")
-            case ["app", "list"]: return CommandResult(await runtime.list())
+            case ["status"]: return CommandResult("Kiln runtime running\nRelease: \(KilnVersion.current)\nMode: single node\nApplication isolation: OS processes\nAutomatic restart: opt-in, bounded retries\nClustering: \(cluster == nil ? "disabled" : "explicit peer adoption and typed remote operations; no scheduler or automatic failover")")
+            case ["app", "list"]: return CommandResult(await visibleModules())
             case ["exit"], ["quit"]: return CommandResult("Goodbye.", disconnect: true)
             default:
                 guard parts.count == 3, parts[0] == "app" else { return CommandResult("Unknown command. Run help.", status: 2) }
@@ -128,6 +177,7 @@ public struct KilnCommands: Sendable {
                 switch parts[1] {
                 case "deploy": return CommandResult(try await runtime.deploy(path: name))
                 case "rollback": return CommandResult(try await runtime.rollback(name))
+                case "resources": return CommandResult(try await runtime.resourceStatus(name))
                 case "releases": return CommandResult(try await runtime.releases(name))
                 case "install": return CommandResult(try await runtime.install(path: name))
                 case "start": return CommandResult(try await runtime.start(name))
@@ -138,8 +188,9 @@ public struct KilnCommands: Sendable {
                 default: return CommandResult("Unknown app operation", status: 2)
                 }
             }
-        } catch is CancellationError { return CommandResult("Stopped waiting. Background tasks continue unless explicitly cancelled.", status: 1) }
-        catch { return CommandResult("Error: \(error)", status: 1) }
+        } catch is CommandSyntaxError { return CommandResult("Unknown command. Run help.", status: 2) }
+        catch is CancellationError { return CommandResult("Stopped waiting. Background tasks continue unless explicitly cancelled.", status: 1) }
+        catch { if !authorized { try? identities.audit(principal, verb: verb, outcome: "denied", target: target, requestID: auditID) }; return CommandResult("Error: \(error)", status: 1) }
     }
 }
 
@@ -224,11 +275,18 @@ private extension KilnCommands {
 
 private extension KilnCommands {
     func createAITask(_ prompt: String) async throws -> String {
-        try await aiTasks.submit(prompt) { id, request, progress in
+        try authorizeAdmin()
+        let requestID = UUID().uuidString.lowercased()
+        try identities.audit(principal, verb: "ai task new", outcome: "authorized", requestID: requestID)
+        let result = try await aiTasks.submit(prompt) { id, request, progress in
+            try authorizeAdmin()
             let result = try await aiCommand(["ai", "ask", request], sessionID: "task:" + id, progress: progress)
             guard result.status == 0 else { throw AIError.message("Task failed") }
             return result.text
         }
+        do { try identities.audit(principal, verb: "ai task new", outcome: "returned", requestID: requestID) }
+        catch { throw AIError.message("Task was created but completion audit failed. Inspect ai task list before retrying.") }
+        return result
     }
     func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }) async throws -> CommandResult {
         if parts.count >= 3, parts[1] == "task" {
@@ -273,6 +331,7 @@ private extension KilnCommands {
         if parts.count == 3, parts[1] == "deny" { return CommandResult(try await assistant.deny(parts[2], session: sessionID)) }
         if parts.count == 3, parts[1] == "approve" {
             let action = try await assistant.takeApproval(parts[2], session: sessionID)
+            try identities.require(principal, mutation: true, module: action.module)
             do {
                 let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint)
                 await assistant.record(result, session: sessionID)
@@ -291,26 +350,121 @@ private extension KilnCommands {
             knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
         } else { knowledge = nil }
         if parts == ["ai", "status"] {
-            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 3\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 4\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
         }
         guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
         let values = try runtime.vault.environment(for: "kiln/ai", bindings: ["API_KEY": configuration.secret])
         guard let key = values["API_KEY"] else { throw AIError.message("AI credential unavailable") }
-        let modules = await runtime.snapshot()
-        let context = "Kiln release \(KilnVersion.current)\n" + (await runtime.list())
+        let modules = await snapshot()
+        let context = "Kiln release \(KilnVersion.current)\n" + (await visibleModules())
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
-            modules: modules, context: context, knowledge: knowledge, progress: progress, allowProposals: !sessionID.hasPrefix("task:")) { name, module in
+            modules: modules, context: context, knowledge: knowledge, progress: progress, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer")) { name, module in
+                try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources"].contains(name) ? $0 : nil })
                 switch name {
-                case "create_task": return try await createAITask(module!)
-                case "list_tasks": return try await aiTasks.list()
-                case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; opt-in bounded worker restart; no cluster."
-                case "list_modules": return await runtime.list()
+                case "create_task": try authorizeAdmin(); return try await createAITask(module!)
+                case "list_tasks": try authorizeAdmin(); return try await aiTasks.list()
+                case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; opt-in bounded worker restart; cluster \(cluster == nil ? "disabled" : "enabled for explicit peer adoption and typed operations; no scheduling/failover")."
+                case "list_modules": return await visibleModules()
                 case "host_metrics": return await telemetry.sample().summary
+                case "cluster_status": try authorizeAdmin(); return await cluster?.inventory() ?? "Cluster listener disabled"
+                case "module_resources": return try await runtime.resourceStatus(module!)
                 case "module_health": return try await runtime.health(module!)
                 case "release_info": return try await runtime.releases(module!)
                 default: throw AIError.message("Unsupported read tool")
                 }
             }
         return CommandResult(text)
+    }
+}
+
+private extension KilnCommands {
+    func auditsMutation(_ p: [String]) -> Bool {
+        guard p.count > 1 else { return false }
+        switch p[0] {
+        case "app": return ["install", "deploy", "start", "stop", "restart", "rollback"].contains(p[1])
+        case "identity": return ["add", "set", "revoke"].contains(p[1])
+        case "vault": return ["put", "grant", "revoke", "delete"].contains(p[1])
+        case "key": return ["create", "delete"].contains(p[1])
+        case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
+        case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
+        case "ai": return ["configure", "knowledge", "approve"].contains(p[1]) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
+        case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
+        default: return false
+        }
+    }
+    func auditMetadata(_ p: [String]) -> (String, String?) {
+        let families = ["app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
+        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "concurrency", "configure", "knowledge", "operations", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
+        let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
+        return (verb, target)
+    }
+    func visibleModules() async -> String {
+        if (try? identities.resolve(principal).role) == "admin" { return await runtime.list() }
+        let modules = await snapshot()
+        return modules.isEmpty ? "No visible modules." : modules.map { "\($0.id)  \($0.version)  \($0.state)  \($0.pid.map(String.init) ?? "-")" }.joined(separator: "\n")
+    }
+    func authorize(_ p: [String]) throws {
+        try identities.require(principal)
+        if p == ["help"] || p == ["status"] || p == ["metrics"] || p == ["exit"] || p == ["quit"] || p == ["app", "list"] { return }
+        if p.first == "app", p.count == 3 {
+            if ["health", "logs", "releases", "resources"].contains(p[1]) { try identities.require(principal, module: p[2]); return }
+            if ["start", "stop", "restart", "rollback"].contains(p[1]) { try identities.require(principal, mutation: true, module: p[2]); return }
+            if ["install", "deploy"].contains(p[1]) { try authorizeAdmin(); return }
+        }
+        if p.first == "ai" {
+            if p.count == 1 || ["help", "status", "ask", "reset", "deny"].contains(p[1]) { return }
+            if p[1] == "approve" { try identities.require(principal, mutation: true); return }
+            if ["task", "concurrency", "configure", "knowledge", "operations"].contains(p[1]) { try authorizeAdmin(); return }
+        }
+        if ["identity", "vault", "server", "key", "session", "node", "cluster"].contains(p[0]) { try authorizeAdmin(); return }
+        throw CommandSyntaxError.unknown
+    }
+    func identityCommand(_ p: [String]) throws -> CommandResult {
+        switch p {
+        case ["identity", "list"]: return CommandResult(try identities.list())
+        case let p where p.count == 3 && p[1] == "revoke": return CommandResult(try identities.set(name: p[2], role: "viewer", key: nil, modules: [], revoke: true))
+        case let p where (p.count == 5 || p.count == 6) && p[1] == "add":
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: p[4]))
+            guard bytes.count <= 16384, let key = String(data: bytes, encoding: .utf8) else { throw KilnError.message("Invalid public key file") }
+            let parsed = try NIOSSHPublicKey(openSSHPublicKey: key)
+            return CommandResult(try identities.set(name: p[2], role: p[3], key: String(openSSHPublicKey: parsed), modules: p.count == 6 ? p[5].split(separator: ",").map(String.init) : []))
+        case let p where (p.count == 4 || p.count == 5) && p[1] == "set": return CommandResult(try identities.set(name: p[2], role: p[3], key: nil, modules: p.count == 5 ? p[4].split(separator: ",").map(String.init) : []))
+        default: return CommandResult("identity list\nidentity add <name> <admin|operator|viewer> <public-key-file> [app/module,...]\nidentity set <name> <role> [app/module,...]\nidentity revoke <name>\nEmpty scopes grant all modules. Vault, bastion, AI tasks and cluster administration require admin.")
+        }
+    }
+}
+
+private extension KilnCommands {
+    func nodeCommand(_ input: [String], requestID: String) async throws -> CommandResult {
+        var p = input
+        if p.count == 4, p[1] == "adoption", ["accept", "revoke"].contains(p[2]) { p.remove(at: 1) }
+        try authorizeAdmin()
+        guard let cluster else { return CommandResult("Cluster listener disabled. Start Kiln with --cluster-port PORT to enable explicit peer discovery and adoption.", status: 1) }
+        if p.count == 2 && p[1] == "identity" { return CommandResult("Node fingerprint: \(cluster.identity.fingerprint)\nPublic key: \(cluster.identity.publicKey)") }
+        if p.count == 2 && p[1] == "list" { return CommandResult(await cluster.inventory()) }
+        if p.count == 2 && p[1] == "operations" { return CommandResult(try await cluster.operations()) }
+        if p.count == 4 && p[1] == "receipt" {
+            let result = try await cluster.receipt(peer: p[2], requestID: p[3])
+            return CommandResult("\(result.state): \(result.output)\nRequest: \(result.id)", status: result.state == "completed" ? 0 : 1)
+        }
+        if p.count == 3 && p[1] == "adoption" && p[2] == "list" {
+            return CommandResult(await cluster.candidates().map { "\($0.fingerprint)  \($0.host):\($0.port)" }.joined(separator: "\n"))
+        }
+        if p.count == 4 && p[1] == "discover", let port = Int(p[3]) {
+            let peer = try await cluster.discover(host: p[2], port: port)
+            return CommandResult("Untrusted candidate: \(peer.fingerprint) at \(peer.host):\(peer.port). Verify fingerprint independently before node accept.")
+        }
+        if p.count == 3 && p[1] == "accept" { return CommandResult(try await cluster.accept(p[2])) }
+        if p.count == 3 && p[1] == "revoke" { return CommandResult(try await cluster.revoke(p[2])) }
+        if p.count == 3 && p[1] == "status" {
+            let result = try await cluster.operate(peer: p[2], operation: .status, requestID: requestID)
+            return CommandResult("\(result.state): \(result.output)\nRequest: \(result.id)" + (result.state == "completed" ? "" : "\nInspect peer state before retrying; do not blindly repeat an uncertain operation."), status: result.state == "completed" ? 0 : 1)
+        }
+        if p.count == 4, let operation = ClusterOperation(rawValue: p[1]), ["start", "stop", "restart"].contains(p[1]) {
+            let result = try await cluster.operate(peer: p[2], operation: operation, module: p[3], requestID: requestID)
+            return CommandResult("\(result.state): \(result.output)\nRequest: \(result.id)" + (result.state == "completed" ? "" : "\nInspect peer state before retrying; do not blindly repeat an uncertain operation."), status: result.state == "completed" ? 0 : 1)
+        }
+        return CommandResult("node identity | list | operations\nnode receipt <fingerprint> <request-id>\nnode discover <host> <port>\nnode adoption list\nnode accept <fingerprint>\nnode revoke <fingerprint>\nnode status <fingerprint>\nnode start|stop|restart <fingerprint> <app/module>\nAdoption grants administrative node operations. Both peers must explicitly trust each other.")
     }
 }

@@ -2,7 +2,7 @@
 
 Kiln can deploy a trusted local executable, admit it through a health check, switch a stable loopback ingress port, and roll back to the previous release. REST, static pages, server-rendered pages and WebSockets can use the same TCP forwarding path. The bundled example serves REST and WebSocket echo; it is not a full website framework.
 
-This path is implemented on one macOS host. Remote installation, public HTTPS certificates, Git builds, artifact downloads/signatures and cluster placement are not implemented by this command. A saved bastion server is not automatically a Kiln worker.
+This path is implemented for local workers and validated on macOS and Linux. Remote installation, public HTTPS certificates, Git builds, artifact downloads/signatures and cluster placement are not implemented by this command. A saved bastion server is not automatically a Kiln worker.
 
 ## Try a complete release cycle
 
@@ -90,8 +90,8 @@ client -> stable loopback ingress -> new connections: candidate
 - `app deploy` returns after draining. The active version may already be visible while the command waits. Concurrent lifecycle changes for the same app are rejected. Disconnecting the SSH client does not cancel an accepted deployment.
 - Health admission is a point-in-time check. Runtime metrics stream in the dashboard; `app health` probes health on demand. Opt-in bounded crash restart is described in [supervision](supervision.md). Continuous health-based eviction and multi-instance failover are not provided.
 - Releases share `KILN_DATA_DIR`. Database/schema changes must remain compatible while both versions run. Code rollback does **not** undo writes or migrations.
-- Workers use Kiln's OS account. Only deploy trusted programs. Environment inheritance is restricted, but this is not a sandbox or resource quota system.
-- Clean supervisor restart briefly stops application traffic. Abrupt supervisor death may orphan app processes; reconcile those before restarting. Remote terminal sessions have their separate service lifecycle.
+- Workers use Kiln's OS account. Only deploy trusted programs. Environment inheritance is restricted. Optional [Linux cgroup quotas](resources.md) apply separately to each active/candidate/draining worker generation; they are not an aggregate application budget or security sandbox.
+- Clean supervisor restart briefly stops application traffic. Supervisor-lifetime guardians clean up direct workers after abrupt death, and startup reconciles their ownership. Limited Linux workers also use a cgroup ownership ledger for descendant cleanup. Remote terminal sessions have their separate service lifecycle.
 - Packaging currently copies one executable. Bundle resources, architecture compatibility checks, signing and release garbage collection remain future work.
 
 ## Validation

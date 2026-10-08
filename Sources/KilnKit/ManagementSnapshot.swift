@@ -3,7 +3,8 @@ public struct ManagementSnapshot: Sendable {
     public let sessions: [TerminalSessionSnapshot]
     public let keys: [String]
     public let error: String?
-    public init(servers: [ServerSnapshot] = [], sessions: [TerminalSessionSnapshot] = [], keys: [String] = [], error: String? = nil) {
-        self.servers = servers; self.sessions = sessions; self.keys = keys; self.error = error
+    public let access: String?
+    public init(servers: [ServerSnapshot] = [], sessions: [TerminalSessionSnapshot] = [], keys: [String] = [], error: String? = nil, access: String? = nil) {
+        self.servers = servers; self.sessions = sessions; self.keys = keys; self.error = error; self.access = access
     }
 }

@@ -17,6 +17,8 @@ Restart=on-failure
 RestartSec=2
 TimeoutStopSec=45
 KillMode=control-group
+Delegate=cpu memory pids
+Environment=KILN_CGROUP_ROOT=auto
 UMask=0077
 NoNewPrivileges=true
 LimitNOFILE=65536

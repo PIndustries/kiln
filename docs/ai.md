@@ -19,7 +19,7 @@ AI opens a dedicated conversation screen. Ask naturally, for example:
 
 Responses use a centered reading column of up to 96 characters, adapting to smaller terminals. Incoming and completed answers preserve line breaks and render common Markdown markers as readable terminal text. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. Answers now stream through native SSE as they arrive, alongside a compact tool-call count. Provider reasoning is shown transiently only when Erebine sends it; Kiln does not fabricate a thinking trace. Ctrl-C cancels a foreground response or stops watching a task. Ctrl-S freezes the display and disables mouse capture for native terminal selection/copy; press Ctrl-S again to resume.
 
-Read-only tools run automatically. A requested change produces an exact `app start`, `stop`, `restart` or `rollback` proposal. It does not execute based on model prose. Review the module/action, then use `/approve ID` or `/deny ID`. Approvals belong to the originating SSH session, expire after five minutes, and can be consumed only once. If the module's process state, PID or version changed since the proposal, execution is refused. A consumed proposal is not automatically retried after failure.
+Read-only tools run automatically within the signed-in identity's permissions. `module_resources` reports scoped module limits and enforcement; `cluster_status` reports peer inventory for administrators. Peer mutations are currently available through administrator CLI commands, not AI tools. A requested change produces an exact `app start`, `stop`, `restart` or `rollback` proposal. It does not execute based on model prose. Review the module/action, then use `/approve ID` or `/deny ID`. Approvals belong to the originating SSH session, expire after five minutes, and can be consumed only once. If the module's process state, PID or version changed since the proposal, execution is refused. A consumed proposal is not automatically retried after failure.
 
 Other command interfaces support:
 
@@ -78,7 +78,7 @@ Knowledge is reference data, not executable policy. A pack cannot register tools
 
 ## Tool boundary
 
-Available reads: runtime status, module list, host metrics, per-module health, active/previous releases and ingress address.
+Available reads: runtime status, module list, host metrics, per-module health, resource limits and enforcement, active/previous releases, ingress address and task inventory. Administrators can also inspect adopted peer-node inventory with `cluster_status`; this does not execute remote operations.
 
 Available proposed changes: start, stop, restart and rollback of an already-installed module. The supervisor checks the module generation before execution. No model-produced string is passed to a host shell or general-purpose command dispatcher.
 
@@ -117,7 +117,7 @@ Ask the chat to create a background investigation, or use:
 
 The command drawer also accepts `ai task new <request>`, `ai task list`, `ai task show <id>`, `ai task watch <id>`, `ai task cancel <id>`, `ai task remove <id>` and `ai concurrency [1-48]`. Lowering concurrency affects admission of subsequent jobs; it does not terminate active jobs. The cap is Kiln's scheduling limit, not a claim about provider quotas or a 48-agent performance benchmark.
 
-Task workers may inspect status, modules, host metrics, health, releases and task inventory. They cannot mutate the runtime, propose operations, create more tasks, run shell commands, or change their own concurrency. Interactive chat retains the existing approval flow for mutations. These are bounded investigation tasks, not general coding agents or a workflow DAG engine.
+Task workers may inspect status, modules, host metrics, health, resource limits and enforcement, releases and task inventory within the initiating identity's permissions. Administrator tasks may also inspect adopted peer-node inventory. They cannot mutate the runtime, propose operations, create more tasks, run shell commands, or change their own concurrency. Interactive chat retains the existing approval flow for mutations. These are bounded investigation tasks, not general coding agents or a workflow DAG engine.
 
 Task IDs, requests, status and final results persist in private `ai-tasks.json` (0600). Do not place credentials in prompts; task records are not Vault-encrypted. Provider reasoning is transient and excluded from task records. History is capped at 200 tasks; remove finished entries when full. Interrupted/queued work is marked interrupted after a runtime restart and is never automatically replayed. A viewer disconnect does not stop the task. Results can be inspected from a new SSH connection using the same configured administrator identity.
 

@@ -6,7 +6,7 @@ Kiln checks desired workers every 250 ms. After an exit, an opted-in worker gets
 
 The dashboard and AI module inventory report `recovering`, then `failed` if the budget is exhausted. Sixty seconds of continuous process uptime resets the budget; this is not an application health guarantee. An explicit `app start app/module` resets the budget. An explicit stop persists the stopped intent and prevents recovery. Failed restoration of one application no longer prevents restoration of other applications or startup of the management plane.
 
-Restart counters are currently in memory and reset on runtime restart. Worker crash retries apply while the supervisor is alive. Supervisor death is handled separately by worker guardians and startup reconciliation, described below. Resource limits and cluster failover are not implemented.
+Restart counters are currently in memory and reset on runtime restart. Worker crash retries apply while the supervisor is alive. Supervisor death is handled separately by worker guardians and startup reconciliation, described below. Optional Linux cgroup resource limits are described in [resource controls](resources.md). Automatic cluster failover is not implemented.
 
 Approved AI start/stop/restart/rollback operations record a receipt in `state/operations` before execution. If that initial write fails, the operation is not executed. Completion records success or failure without saving prompts, credentials, or raw error output. `ai operations` lists the latest 50 receipts, available even without provider configuration.
 
@@ -43,7 +43,7 @@ Background AI tasks left queued/running become interrupted and are not automatic
 
 ## Boundaries
 
-The guardian owns a direct worker, not an arbitrary process tree. Deliberately daemonized descendants and external SIGKILL of the guardian itself are outside this mechanism. Modules remain trusted programs sharing Kiln's OS user. Resource limits and malicious-code isolation are separate work.
+The guardian owns a direct worker, not an arbitrary process tree. For legacy unconstrained workers, deliberately daemonized descendants and external SIGKILL of the guardian itself are outside this mechanism. Linux resource-constrained workers also use an owned cgroup and generation ledger for descendant cleanup and guardian-loss recovery. Modules remain trusted programs sharing Kiln's OS user. Resource quotas do not provide malicious-code isolation.
 
 Upgrade a pre-guardian release with one graceful shutdown; this release does not discover or kill unknown processes left by older releases. Embedded users of `KilnRuntime` must distribute the matching `kiln` guardian executable beside their host executable.
 

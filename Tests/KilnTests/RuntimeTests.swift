@@ -94,3 +94,55 @@ import Glibc
     #expect(await restored.snapshot().first(where: { $0.name == "healthy" })?.state == "running")
     await restored.shutdown()
 }
+
+@Test func legacyWorkerExitIsObservedWhenItsChildKeepsRunning() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer {
+        // These short-lived descendants deliberately have no resource policy.
+        // They belong solely to this test; limited-worker tree cleanup is covered
+        // by the real cgroup integration suite.
+        let file = directory.appendingPathComponent("data/default/forker/children")
+        if let contents = try? String(contentsOf: file, encoding: .utf8) {
+            for line in contents.split(separator: "\n") {
+                if let pid = Int32(line), pid > 0 { _ = kill(pid, SIGTERM) }
+            }
+        }
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let runtime = try KilnRuntime(stateDirectory: directory)
+    let fixture = directory.appendingPathComponent("forker.sh")
+    try Data("#!/bin/sh\n/bin/sleep 20 &\nprintf '%s\\n' $! >> \"$KILN_DATA_DIR/children\"\nexit 0\n".utf8).write(to: fixture)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fixture.path)
+    let manifest = ApplicationManifest(name: "forker", version: "1", executable: fixture.path)
+    let path = directory.appendingPathComponent("manifest.json")
+    try JSONEncoder().encode(manifest).write(to: path)
+    _ = try await runtime.install(path: path.path)
+    for _ in 0..<2 {
+        _ = try await runtime.start("default/forker")
+        for _ in 0..<60 {
+            if await runtime.snapshot().first?.state == "exited" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await runtime.snapshot().first?.state == "exited")
+    }
+    await runtime.shutdown()
+}
+
+@Test func workerExecFailureIsRejectedBeforeReportingStarted() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = try KilnRuntime(stateDirectory: directory)
+    let executable = directory.appendingPathComponent("invalid-executable")
+    try Data("This file has execute permission but no executable format.\n".utf8).write(to: executable)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+    let manifest = ApplicationManifest(name: "invalid", version: "1", executable: executable.path)
+    let path = directory.appendingPathComponent("manifest.json")
+    try JSONEncoder().encode(manifest).write(to: path)
+    _ = try await runtime.install(path: path.path)
+    var rejected = false
+    do { _ = try await runtime.start("default/invalid") }
+    catch { rejected = true }
+    #expect(rejected)
+    #expect(await runtime.snapshot().first?.state == "stopped")
+    await runtime.shutdown()
+}
