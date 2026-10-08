@@ -137,16 +137,48 @@ private actor PeerCounter {
 
 private actor ClusterWorkGate {
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var observers: [UUID: (Int, CheckedContinuation<Bool, Never>)] = [:]
     private var released = false
     func execute() async -> String {
-        if !released { await withCheckedContinuation { waiters.append($0) } }
+        if !released {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+                let ready = observers.filter { waiters.count >= $0.value.0 }
+                for (id, observer) in ready { observers.removeValue(forKey: id); observer.1.resume(returning: true) }
+            }
+        }
         return "completed fixture work"
     }
     func count() -> Int { waiters.count }
+    func waitForCount(_ expected: Int) async -> Bool {
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled || released { continuation.resume(returning: false) }
+                else if waiters.count >= expected { continuation.resume(returning: true) }
+                else { observers[id] = (expected, continuation) }
+            }
+        } onCancel: { Task { await self.cancelObserver(id) } }
+    }
+    private func cancelObserver(_ id: UUID) { observers.removeValue(forKey: id)?.1.resume(returning: false) }
     func release() {
         released = true
         let pending = waiters; waiters = []
+        let watching = observers; observers = [:]
         for waiter in pending { waiter.resume() }
+        for observer in watching.values { observer.1.resume(returning: false) }
+    }
+}
+
+/// Wait for the executor-entry handshake, not an assumed fsync/scheduler speed.
+/// Cancellation removes the observation so timeout cannot strand a task group.
+private func clusterWorkReady(_ gate: ClusterWorkGate, count: Int) async -> Bool {
+    await withTaskGroup(of: Bool.self, returning: Bool.self) { group in
+        group.addTask { await gate.waitForCount(count) }
+        group.addTask { do { try await Task.sleep(for: .seconds(30)) } catch {}; return false }
+        let ready = await group.next() ?? false
+        group.cancelAll()
+        return ready
     }
 }
 
@@ -160,7 +192,12 @@ private actor ClusterWorkGate {
     _ = try await b.accept(a.identity.fingerprint)
     // These represent already-dispatched operations, independent of any socket.
     let work = (0..<32).map { _ in Task { try await b.receive(ClusterRequest(operation: .restart, module: "demo/api"), from: a.identity.fingerprint) } }
-    for _ in 0..<200 { if await gate.count() == 32 { break }; try? await Task.sleep(for: .milliseconds(10)) }
+    let ready = await clusterWorkReady(gate, count: 32)
+    if !ready {
+        await gate.release()
+        for task in work { _ = try? await task.value }
+    }
+    try #require(ready, "All 32 admitted operations must enter the suspended executor before testing overload")
     #expect(await gate.count() == 32)
     let denied = ClusterRequest(operation: .restart, module: "demo/api")
     await #expect(throws: (any Error).self) { _ = try await b.receive(denied, from: a.identity.fingerprint) }
@@ -185,12 +222,12 @@ private actor ClusterWorkGate {
         _ = try await b.accept(a.identity.fingerprint)
         let id = UUID().uuidString.lowercased()
         let original = Task { try await a.operate(peer: b.identity.fingerprint, operation: .restart, module: "demo/api", requestID: id) }
-        for _ in 0..<200 { if await gate.count() == 1 { break }; try? await Task.sleep(for: .milliseconds(10)) }
+        try #require(await clusterWorkReady(gate, count: 1))
         #expect(await gate.count() == 1)
         await #expect(throws: (any Error).self) { _ = try await a.operate(peer: b.identity.fingerprint, operation: .restart, module: "demo/api", requestID: id) }
         #expect(try await a.receipt(peer: b.identity.fingerprint, requestID: id).state == "unconfirmed")
         let occupied = (0..<31).map { _ in Task { try await b.receive(ClusterRequest(operation: .status), from: a.identity.fingerprint) } }
-        for _ in 0..<200 { if await gate.count() == 32 { break }; try? await Task.sleep(for: .milliseconds(10)) }
+        try #require(await clusterWorkReady(gate, count: 32))
         #expect(await gate.count() == 32)
         // Rejecting a receipt LOOKUP must not mark the pending mutation rejected.
         await #expect(throws: (any Error).self) { _ = try await a.receipt(peer: b.identity.fingerprint, requestID: id) }
