@@ -1,0 +1,19 @@
+name: Server validation
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.2.3
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test clients
+        run: apt-get update && apt-get install -y --no-install-recommends openssh-client python3
+      - name: Unit and policy tests
+        run: swift test --jobs 2
+      - name: SSH, HTTP, WebSocket, crash recovery and restore
+        run: python3 scripts/integration.py

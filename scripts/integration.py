@@ -79,6 +79,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
         return result
     def install(name, p, websocket=False):
         manifest = {'application':'storefront','name':name,'version':'0.1.0','executable':str(BIN/'kiln-example-backend'), 'arguments':['--port',str(p)] + (['--websocket'] if websocket else []), 'healthURL':f'http://127.0.0.1:{p}/health'}
+        if websocket: manifest['restartPolicy'] = 'always'
         path = tmp/f'{name}.json'; path.write_text(json.dumps(manifest))
         ssh(f'app install {path}'); ssh(f'app start storefront/{name}')
     def pid(name):
@@ -102,6 +103,16 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
         assert ws(ws_port) and process.poll() is None
         ssh('app restart storefront/rest'); wait_for(lambda: http(rest_port))
         print('PASS: real process crash contained; other module and SSH survive; manual restart works', flush=True)
+        ws_pid = pid('websocket')
+        os.kill(ws_pid, signal.SIGKILL)
+        wait_for(lambda: pid('websocket') != ws_pid)
+        wait_for(lambda: ws(ws_port))
+        assert http(rest_port) and process.poll() is None
+        ssh('app stop storefront/websocket')
+        time.sleep(2)
+        assert 'stopped' in ssh('app list').stdout
+        ssh('app start storefront/websocket'); wait_for(lambda: ws(ws_port))
+        print('PASS: automatic worker recovery and explicit stop disables restart', flush=True)
         stop(); process=launch(); second=wait_for(scan)
         assert first == second, 'Host key changed'
         wait_for(lambda: http(rest_port)); wait_for(lambda: ws(ws_port))
@@ -115,6 +126,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-test-') as tmp:
         print('PASS: runtime and modules work with SSH disabled', flush=True)
         stop()
     except Exception:
+        print("RUNTIME EXIT:", process.poll(), flush=True)
         log.flush(); print((tmp/'runtime.log').read_text())
         raise
     finally:

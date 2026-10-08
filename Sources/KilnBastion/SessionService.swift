@@ -1,5 +1,6 @@
 import Foundation
-import Dispatch
+// Linux Dispatch lacks Sendable annotations; signal-source cancellation is thread-safe.
+@preconcurrency import Dispatch
 import Crypto
 import NIOCore
 import NIOPosix

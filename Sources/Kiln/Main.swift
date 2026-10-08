@@ -1,5 +1,6 @@
 import Foundation
-import Dispatch
+// Linux Dispatch lacks Sendable annotations; signal-source cancellation is thread-safe.
+@preconcurrency import Dispatch
 import KilnRuntime
 import KilnKit
 import KilnVault
@@ -71,6 +72,16 @@ struct Kiln {
         let lockFD = open(state.appendingPathComponent("runtime.lock").path, O_CREAT | O_RDWR, 0o600)
         guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw CLIError.invalid("State directory already in use or cannot be locked") }
         defer { close(lockFD) }
+        // Buffer shutdown requests before any service can become externally reachable.
+        signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN)
+        let signals = AsyncStream<Void> { continuation in
+            let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
+            let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
+            interrupt.setEventHandler { continuation.yield(()); continuation.finish() }
+            terminate.setEventHandler { continuation.yield(()); continuation.finish() }
+            continuation.onTermination = { _ in interrupt.cancel(); terminate.cancel() }
+            interrupt.resume(); terminate.resume()
+        }
         let runtime = try KilnRuntime(stateDirectory: state)
         let commands = KilnCommands(runtime: runtime)
         try await commands.startSessionService()
@@ -86,24 +97,15 @@ struct Kiln {
             try await runtime.restore()
         } catch { await ssh?.stop(); await runtime.shutdown(); throw error }
         print("Kiln runtime ready. State: \(state.path)")
-        fflush(stdout)
+        fflush(nil)
         if flags.contains("--console") {
             Task.detached {
                 while let line = readLine() {
                     let result = await commands.execute(line)
-                    print(result.text); fflush(stdout)
+                    print(result.text); fflush(nil)
                     if result.disconnect { break }
                 }
             }
-        }
-        signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN)
-        let signals = AsyncStream<Void> { continuation in
-            let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
-            let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-            interrupt.setEventHandler { continuation.yield(()); continuation.finish() }
-            terminate.setEventHandler { continuation.yield(()); continuation.finish() }
-            continuation.onTermination = { _ in interrupt.cancel(); terminate.cancel() }
-            interrupt.resume(); terminate.resume()
         }
         for await _ in signals { break }
         print("Kiln shutting down")

@@ -17,11 +17,12 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Optional local stdin console, including with SSH disabled.
 - Installation of a trusted, locally compiled executable from a JSON manifest.
 - Versioned local releases, readiness-checked deployment, stable loopback TCP ingress, draining and rollback.
-- Separate processes, start/stop/restart, health checks and log tail.
+- Separate processes, start/stop/restart, health checks, log tail and opt-in bounded crash recovery.
+- Persistent approved-AI operation receipts, inspectable with `ai operations`.
 - Installed-module persistence and restoration of desired running modules after clean shutdown.
 - Independent REST and WebSocket example services.
 
-This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. There is no automatic crash restart, resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, cluster secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
+This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. Optional bounded crash recovery is available via `restartPolicy: always` (see [supervision](docs/supervision.md)). There is no resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, cluster secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
 
 See [native AI chat](docs/ai.md) for Erebine setup, tools and updateable knowledge.
 
@@ -33,7 +34,7 @@ Kiln releases use `YY.MM.DD.BUILD`, starting with `26.10.07.1`. The build counte
 
 ## Build
 
-Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux is an intended target, not yet verified.
+Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: 22 unit/policy tests plus real SSH, REST/WebSocket, crash recovery and restore checks. Bastion credential storage remains macOS Keychain-specific.
 
 ```sh
 swift build
@@ -178,7 +179,7 @@ Metric definitions:
 - Uptime is host uptime; load is the OS 1/5/15-minute load average.
 - Process CPU is the OS `ps` percentage (its averaging differs from host CPU and may exceed 100%); RSS is resident memory. Samples do not include process command lines or environments.
 
-The implementation is verified on macOS. Linux collection code remains unverified. This is local, ephemeral observability: no retained time-series database, alerting, distributed tracing, network counters, HTTP latency/error instrumentation or Prometheus endpoint yet. Existing service log commands return a bounded tail rather than a continuous log stream. Running process state is not an application-health guarantee.
+The host metrics test passes on macOS and Linux; Linux validation ran inside a container. This is local, ephemeral observability: no retained time-series database, alerting, distributed tracing, network counters, HTTP latency/error instrumentation or Prometheus endpoint yet. Existing service log commands return a bounded tail rather than a continuous log stream. Running process state is not an application-health guarantee.
 
 ## Bastion and managed SSH
 

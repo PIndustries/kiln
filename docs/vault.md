@@ -1,6 +1,6 @@
 # Kiln Vault — single-node credentials
 
-Vault is a headless server component implemented in Swift using Swift Crypto. It does not use Keychain, a GUI login, or a cloud account. The current release is tested on macOS; Linux execution is not yet verified. Existing bastion SSH keys remain in their separate Keychain-backed store on macOS.
+Vault is a headless server component implemented in Swift using Swift Crypto. It does not use Keychain, a GUI login, or a cloud account. Vault encryption, tamper rejection and per-module grants are tested on macOS and Linux x86_64. Existing bastion SSH keys remain in their separate Keychain-backed store on macOS.
 
 The `KilnVault` target encrypts secret values and grants together using AES-256-GCM with authenticated encryption. A randomly generated 32-byte master key is held in an explicit file **outside the Kiln state directory**. This is protection for stored data and state backups, not a sandbox against programs running as Kiln's OS user.
 

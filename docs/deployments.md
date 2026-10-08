@@ -88,7 +88,7 @@ client -> stable loopback ingress -> new connections: candidate
 
 - Existing connections have up to **30 seconds** to finish after the switch; remaining connections are closed, then the old process stops. Long-lived WebSockets need client reconnect logic. HTTP keep-alive connections stay with the old generation until closed or drained.
 - `app deploy` returns after draining. The active version may already be visible while the command waits. Concurrent lifecycle changes for the same app are rejected. Disconnecting the SSH client does not cancel an accepted deployment.
-- Health admission is a point-in-time check. Runtime metrics stream in the dashboard; `app health` probes health on demand. Continuous health-based eviction, automatic crash restart and multi-instance failover are not provided.
+- Health admission is a point-in-time check. Runtime metrics stream in the dashboard; `app health` probes health on demand. Opt-in bounded crash restart is described in [supervision](supervision.md). Continuous health-based eviction and multi-instance failover are not provided.
 - Releases share `KILN_DATA_DIR`. Database/schema changes must remain compatible while both versions run. Code rollback does **not** undo writes or migrations.
 - Workers use Kiln's OS account. Only deploy trusted programs. Environment inheritance is restricted, but this is not a sandbox or resource quota system.
 - Clean supervisor restart briefly stops application traffic. Abrupt supervisor death may orphan app processes; reconcile those before restarting. Remote terminal sessions have their separate service lifecycle.

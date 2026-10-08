@@ -92,7 +92,7 @@ Prompts, the built-in/operator knowledge, runtime context and selected tool resu
 
 Conversations and pending proposals stay in runtime memory. Up to 32 idle conversations are retained, with a one-hour idle expiry; context is reset when its configured size limit is reached. At most four conversations can perform inference concurrently. Each turn has at most five model calls, six tool calls per model response, and 4096 output tokens per model request. Requests have bounded timeouts and are not automatically retried. A timeout may still consume provider credits. Disconnecting does not necessarily cancel an in-flight model request; it cannot bypass local approval.
 
-This is an integrated runtime module, not yet an independently hot-replaceable AI service. The framework target uses Foundation/FoundationNetworking and supports headless design; runtime and live-provider validation were performed on macOS. Linux execution is not yet verified.
+This is an integrated runtime module, not yet an independently hot-replaceable AI service. The framework target uses Foundation/FoundationNetworking and supports headless design; runtime and live-provider validation were performed on macOS. Linux compilation and AI policy tests now pass; live Erebine calls were verified on macOS.
 
 ## Verification and references
 
@@ -101,3 +101,5 @@ This is an integrated runtime module, not yet an independently hot-replaceable A
 The opt-in scripts `ai-live-integration.py` and `ai-terminal-integration.py` use real Erebine inference and disposable Swift workers, with an operator-supplied configured Vault. They can consume API credits. They verify live reports, tool calls, proposal-before-execution, explicit approval, rejected replay, knowledge reload and the real SSH chat view.
 
 API implementation references: [Erebine Chat Completions](https://erebine.ai/docs/api-reference), [Tool Calling](https://erebine.ai/docs/tool-calling), and [OpenCode provider configuration](https://erebine.ai/docs/opencode).
+
+Approved operations now persist private outcome receipts before execution; use `ai operations` to inspect them. See [supervision and operation receipts](supervision.md) for interruption semantics. Pending approvals are still in memory and session-bound.

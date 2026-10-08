@@ -82,3 +82,28 @@ private func call(_ name: String, arguments: String) throws -> AIMessage {
     #expect(await runtime.snapshot().first?.state == "running")
     await runtime.shutdown()
 }
+
+@Test func approvedOperationsPersistOutcomesAndRejectUnrecordedExecution() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let runtime = try KilnRuntime(stateDirectory: root)
+    let manifest = ApplicationManifest(name: "worker", version: "1", executable: "/bin/sleep", arguments: ["60"])
+    let path = root.appendingPathComponent("manifest.json")
+    try JSONEncoder().encode(manifest).write(to: path)
+    _ = try await runtime.install(path: path.path)
+    let fingerprint = try #require(await runtime.snapshot().first?.generationFingerprint)
+    // The audit path is deliberately unavailable: no side effect may take place.
+    let operations = root.appendingPathComponent("operations")
+    try Data().write(to: operations)
+    do {
+        _ = try await runtime.performApprovedOperation("start", name: "default/worker", fingerprint: fingerprint)
+        Issue.record("Started without an operation receipt")
+    } catch {}
+    #expect(await runtime.snapshot().first?.state == "stopped")
+    try FileManager.default.removeItem(at: operations)
+    _ = try await runtime.performApprovedOperation("start", name: "default/worker", fingerprint: fingerprint)
+    #expect(try await runtime.operationHistory().contains("succeeded"))
+    await runtime.shutdown()
+    let restored = try KilnRuntime(stateDirectory: root)
+    #expect(try await restored.operationHistory().contains("default/worker"))
+}

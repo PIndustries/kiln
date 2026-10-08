@@ -118,7 +118,7 @@ public struct KilnCommands: Sendable {
                 Quote paths containing spaces. Tab completion is available in the command drawer.
                 """)
             case ["metrics"]: return CommandResult(await telemetry.sample().summary)
-            case ["status"]: return CommandResult("Kiln runtime running\nRelease: \(KilnVersion.current)\nMode: single node\nApplication isolation: OS processes\nAutomatic restart and clustering: not implemented")
+            case ["status"]: return CommandResult("Kiln runtime running\nRelease: \(KilnVersion.current)\nMode: single node\nApplication isolation: OS processes\nAutomatic restart: opt-in, bounded retries\nClustering: not implemented")
             case ["app", "list"]: return CommandResult(await runtime.list())
             case ["exit"], ["quit"]: return CommandResult("Goodbye.", disconnect: true)
             default:
@@ -228,7 +228,8 @@ private extension KilnCommands {
         let knowledgeURL = runtime.stateDirectory.appendingPathComponent("ai-knowledge.json")
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+        case ["ai", "operations"]: return CommandResult(try await runtime.operationHistory())
         case ["ai", "reset"]: return CommandResult(try await assistant.reset(sessionID))
         default: break
         }
@@ -277,7 +278,7 @@ private extension KilnCommands {
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
             modules: modules, context: context, knowledge: knowledge) { name, module in
                 switch name {
-                case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; no automatic restart or cluster."
+                case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; opt-in bounded worker restart; no cluster."
                 case "list_modules": return await runtime.list()
                 case "host_metrics": return await telemetry.sample().summary
                 case "module_health": return try await runtime.health(module!)

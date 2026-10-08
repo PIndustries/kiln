@@ -67,4 +67,4 @@ The prototype verifies OpenSSH public-key authentication, exec requests, PTY she
 
 ## Delivery
 
-A signed platform-specific binary is the simplest entry point. A Linux appliance may package the same runtime into QCOW2/installer images, with bootc providing OS image updates. OS updates, runtime updates and application updates have different lifecycles. Mutable application state must live outside the immutable OS image. Linux, appliance boot and cross-node behavior remain unverified in this prototype.
+A signed platform-specific binary is the simplest entry point. A Linux appliance may package the same runtime into QCOW2/installer images, with bootc providing OS image updates. OS updates, runtime updates and application updates have different lifecycles. Mutable application state must live outside the immutable OS image. Linux core runtime tests now pass. Appliance boot and cross-node behavior remain unverified in this prototype.

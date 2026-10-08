@@ -39,6 +39,52 @@ public actor KilnRuntime {
     private var candidates: [String: ApplicationManifest] = [:]
     private var shuttingDown = false
     private var stopping: Set<String> = []
+    private var supervision: Task<Void, Never>?
+    private struct Recovery {
+        var attempts = 0
+        var nextAttempt: Date = .distantPast
+        var healthySince: Date?
+    }
+    private var recovery: [String: Recovery] = [:]
+
+    private func beginSupervision() {
+        guard supervision == nil, !shuttingDown else { return }
+        supervision = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { break }
+                guard let self else { break }
+                await self.reconcileWorkers()
+            }
+        }
+    }
+
+    private func reconcileWorkers() async {
+        for name in installed.keys.sorted() {
+            guard !shuttingDown, installed[name]?.desiredRunning == true,
+                  installed[name]?.manifest.restartPolicy == .always,
+                  !deploying.contains(name), !stopping.contains(name) else { continue }
+            var state = recovery[name] ?? Recovery()
+            if running[name]?.process.isRunning == true {
+                if state.healthySince == nil { state.healthySince = Date() }
+                if Date().timeIntervalSince(state.healthySince!) >= 60 { state.attempts = 0 }
+                recovery[name] = state
+                continue
+            }
+            ingress[name]?.switchTo(nil)
+            state.healthySince = nil
+            guard state.attempts < 3 else { recovery[name] = state; continue }
+            if state.nextAttempt == .distantPast {
+                state.nextAttempt = Date().addingTimeInterval(pow(2, Double(state.attempts)))
+            }
+            recovery[name] = state
+            guard Date() >= state.nextAttempt else { continue }
+            state.attempts += 1
+            state.nextAttempt = .distantPast
+            recovery[name] = state
+            // start uses the same readiness and deployment exclusion rules as operator actions.
+            _ = try? await start(name, automatic: true)
+        }
+    }
 
     public init(stateDirectory: URL) throws {
         self.stateDirectory = stateDirectory
@@ -59,7 +105,11 @@ public actor KilnRuntime {
     }
 
     public func restore() async throws {
-        for name in installed.keys.sorted() where installed[name]?.desiredRunning == true { _ = try await start(name) }
+        beginSupervision()
+        // A broken worker must not prevent other installations or the management plane starting.
+        for name in installed.keys.sorted() where installed[name]?.desiredRunning == true {
+            _ = try? await start(name)
+        }
     }
 
     public func install(path: String) throws -> String {
@@ -122,7 +172,13 @@ public actor KilnRuntime {
     }
 
     public func start(_ name: String) async throws -> String {
+        try await start(name, automatic: false)
+    }
+
+    private func start(_ name: String, automatic: Bool) async throws -> String {
         guard !deploying.contains(name) else { throw KilnError.message("Deployment in progress") }
+        if !automatic { recovery.removeValue(forKey: name) }
+        beginSupervision()
         deploying.insert(name)
         defer { deploying.remove(name) }
         try launch(name)
@@ -156,6 +212,7 @@ public actor KilnRuntime {
         let previousDesired = installed[name]!.desiredRunning
         installed[name]?.desiredRunning = false
         do { try save() } catch { installed[name]?.desiredRunning = previousDesired; throw error }
+        recovery.removeValue(forKey: name)
         ingress[name]?.switchTo(nil)
         await terminate(name)
         return "Stopped \(name)"
@@ -193,7 +250,9 @@ public actor KilnRuntime {
             let alive = process?.isRunning == true
             return ModuleSnapshot(application: manifest.application, name: manifest.name,
                 version: manifest.version,
-                state: stopping.contains(id) ? "stopping" : alive ? "running" : installed[id]!.desiredRunning ? "exited" : "stopped",
+                state: stopping.contains(id) ? "stopping" : alive ? "running" :
+                    installed[id]!.desiredRunning ? (manifest.restartPolicy == .always ?
+                        ((recovery[id]?.attempts ?? 0) >= 3 ? "failed" : "recovering") : "exited") : "stopped",
                 pid: alive ? process?.processIdentifier : nil)
         }
     }
@@ -232,6 +291,8 @@ public actor KilnRuntime {
 
     public func shutdown() async {
         shuttingDown = true
+        supervision?.cancel()
+        supervision = nil
         while !deploying.isEmpty { try? await Task.sleep(for: .milliseconds(50)) }
         for listener in ingress.values { await listener.stop() }
         ingress.removeAll()
@@ -361,18 +422,60 @@ extension KilnRuntime {
 
 
 extension KilnRuntime {
+    public func operationHistory() throws -> String {
+        let directory = stateDirectory.appendingPathComponent("operations")
+        guard FileManager.default.fileExists(atPath: directory.path) else { return "No recorded AI operations." }
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey])
+            .filter { $0.pathExtension == "json" }
+        let records = try files.map { try JSONDecoder().decode([String: String].self, from: Data(contentsOf: $0)) }
+            .sorted { ($0["startedAt"] ?? "") > ($1["startedAt"] ?? "") }.prefix(50)
+        return records.map { record in
+            let state = record["state"] == "started" ? "unconfirmed (inspect state; do not blindly retry)" : record["state"] ?? "unknown"
+            return [record["id"] ?? "", record["startedAt"] ?? "", record["operation"] ?? "", record["module"] ?? "", state].joined(separator: "  ")
+        }.joined(separator: "\n")
+    }
+
     public func performApprovedOperation(_ operation: String, name: String, fingerprint: String) async throws -> String {
         guard snapshot().first(where: { $0.id == name })?.generationFingerprint == fingerprint else {
             throw KilnError.message("Module changed since proposal; ask AI for a fresh proposal")
         }
-        switch operation {
-        case "start": return try await start(name)
-        case "stop": return try await stop(name)
-        case "rollback": return try await rollback(name)
-        case "restart":
-            _ = try await stop(name)
-            return try await start(name)
-        default: throw KilnError.message("Unsupported AI operation")
+        guard ["start", "stop", "restart", "rollback"].contains(operation) else {
+            throw KilnError.message("Unsupported AI operation")
         }
+        let directory = stateDirectory.appendingPathComponent("operations")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let id = UUID().uuidString
+        let path = directory.appendingPathComponent(id + ".json")
+        var record = ["id": id, "source": "approved-ai", "operation": operation, "module": name,
+                      "generation": fingerprint, "startedAt": Date().ISO8601Format(), "state": "started"]
+        func persist(_ value: [String: String]) throws {
+            try JSONEncoder().encode(value).write(to: path, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        }
+        // Fail closed before any side effect if the operation receipt cannot be recorded.
+        try persist(record)
+        let result: String
+        do {
+            switch operation {
+            case "start": result = try await start(name)
+            case "stop": result = try await stop(name)
+            case "rollback": result = try await rollback(name)
+            default:
+                _ = try await stop(name)
+                result = try await start(name)
+            }
+        } catch {
+            record["state"] = "failed"
+            record["finishedAt"] = Date().ISO8601Format()
+            // Error text can contain application data; persist only the outcome.
+            do { try persist(record) }
+            catch { throw KilnError.message("Operation \(id) failed; outcome could not be recorded. Inspect module state before retrying.") }
+            throw error
+        }
+        record["state"] = "succeeded"
+        record["finishedAt"] = Date().ISO8601Format()
+        do { try persist(record) }
+        catch { throw KilnError.message("Operation \(id) completed but its outcome could not be recorded. Inspect module state before retrying.") }
+        return result + "\nOperation: " + id
     }
 }
