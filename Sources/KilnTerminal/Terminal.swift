@@ -51,10 +51,16 @@ public struct KilnTerminal {
         case .reasoning(let text): liveReasoning = String((liveReasoning + text).suffix(6000))
         case .status(let text):
             liveStatus = text
-            if text.hasPrefix("Tool: ") { transcript.append(text); transcript = Array(transcript.suffix(300)) }
+            if text.hasPrefix("Tool: ") { toolCount += 1 }
         case .snapshot(let text): liveAnswer = text; liveReasoning = ""
         }
     }
+    public var chatVisible: Bool { aiMode && drawer }
+    private var messages: [(String, String)] = []
+    private var started = Date()
+    private var animation = 0
+    private var toolCount = 0
+    public mutating func tick() { if busy { animation = (animation + 1) % 4 } }
     private var aiMode = false
     private var transcript: [String] = ["Command drawer ready. Type help, or use Tab to complete."]
     private var scroll = 0
@@ -87,6 +93,7 @@ public struct KilnTerminal {
     private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int) }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
+        if aiMode { messages.append((status == 0 ? "Kiln" : "Error", text)); messages = Array(messages.suffix(40)) }
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""
         busy = false; management.finish(text:text,status:status)
         let lines = text.components(separatedBy: "\n")
@@ -97,6 +104,9 @@ public struct KilnTerminal {
     private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
         guard !busy else { return [] }
         busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
+        started = Date(); animation = 0; toolCount = 0
+        liveAnswer = ""; liveReasoning = ""; liveStatus = ""
+        if aiMode { messages.append(("You", display.map { String($0.dropFirst(5)) } ?? command)) }
         notice = "Working: " + command
         return [.command(command)]
     }
@@ -256,7 +266,7 @@ public struct KilnTerminal {
                 if common.count > input.count { input = common; cursor = input.count }
                 else { transcript += matches; transcript = Array(transcript.suffix(300)) }
             }
-        case .pageUp: scroll = min(max(0, (aiMode ? transcript.reduce(0) { $0 + max(1, ($1.count / max(1, width - 4)) + 1) } : transcript.count) - 1), scroll + 5)
+        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: min(96, width - 6)).count : transcript.count) - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
@@ -274,7 +284,7 @@ public struct KilnTerminal {
                 if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
                 if command.hasPrefix("/watch ") { return execute("ai task watch " + Self.quote(String(command.dropFirst(7)))) }
                 if command.hasPrefix("/cancel ") { return execute("ai task cancel " + Self.quote(String(command.dropFirst(8)))) }
-                if command == "/reset" { transcript = []; return execute("ai reset") }
+                if command == "/reset" { messages = []; transcript = []; return execute("ai reset") }
                 if command.hasPrefix("/approve ") || command.hasPrefix("/deny ") { return execute("ai " + command.dropFirst()) }
                 let quoted = "\"" + command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
                 return execute("ai ask " + quoted, display: "You: " + command)
@@ -294,8 +304,70 @@ public struct KilnTerminal {
             return scalar.value == 9 ? " " : "?"
         })
     }
+    // Format only sanitized text: model output can never introduce terminal controls.
+    private func chatText(_ text: String, columns: Int) -> [String] {
+        var result: [String] = []
+        for source in text.components(separatedBy: "\n") {
+            var line = Self.safe(source).replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            if line.hasPrefix("#") { line = line.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces) }
+            if line.hasPrefix("|") {
+                let cells = line.split(separator: "|", omittingEmptySubsequences: true).map { $0.trimmingCharacters(in: .whitespaces) }
+                if cells.allSatisfy({ $0.allSatisfy { "-: ".contains($0) } }) { continue }
+                line = cells.joined(separator: "  /  ")
+            }
+            while line.count > columns {
+                let prefix = String(line.prefix(columns))
+                let cut = prefix.lastIndex(of: " ").map { prefix.distance(from: prefix.startIndex, to: $0) }.flatMap { $0 > columns / 2 ? $0 : nil } ?? columns
+                result.append(String(line.prefix(cut)))
+                line = String(line.dropFirst(cut)); if line.first == " " { line.removeFirst() }
+            }
+            result.append(line)
+        }
+        return result
+    }
+    private func chatBody(columns: Int) -> [String] {
+        var body: [String] = []
+        for (role, text) in messages {
+            body += [role.uppercased()] + chatText(text, columns: columns) + [""]
+        }
+        if busy {
+            body += ["KILN"]
+            if !liveAnswer.isEmpty { body += chatText(liveAnswer, columns: columns) }
+            else if !liveReasoning.isEmpty { body += ["Provider reasoning"] + Array(chatText(liveReasoning, columns: columns).suffix(3)) }
+            else { body += ["Waiting for Erebine..."] }
+        }
+        if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools run automatically. Changes require your approval.", "Prompts and tool results go to Erebine; keep credentials in Vault."] }
+        return body
+    }
+    private func chatLayout() -> (String, [Hit]) {
+        let columns = min(96, width - 6), left = max(2, (width - columns) / 2)
+        let accent = "\u{1b}[38;5;215m", muted = "\u{1b}[38;5;245m", normal = "\u{1b}[38;5;252m"
+        func row(_ value: String = "", _ color: String = "") -> String {
+            let text = String((String(repeating: " ", count: left) + Self.safe(value)).prefix(width - 1))
+            return "\u{1b}[0m\u{1b}[48;5;234m" + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
+        }
+        let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
+        var lines = [row("KILN AI CHAT   /   Erebine   " + state, accent), row("Esc dashboard    /tasks background work    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
+        let body = chatBody(columns: columns), capacity = height - 9
+        let end = max(0, body.count - scroll)
+        for text in body.prefix(end).suffix(capacity) {
+            lines.append(row(text, ["YOU", "KILN", "ERROR"].contains(text) ? accent : normal))
+        }
+        while lines.count < height - 5 { lines.append(row()) }
+        let phase = !liveAnswer.isEmpty ? "Receiving response" : !liveReasoning.isEmpty ? "Reasoning" : liveStatus == "Preparing response" ? "Preparing response" : toolCount > 0 ? "Inspecting system" : "Waiting for Erebine"
+        let spinner = ["|", "/", "-", "\\"][animation]
+        let activity = busy ? "\(spinner) \(phase)  \(Int(Date().timeIntervalSince(started)))s  /  \(toolCount) tool calls" : "Ready" + (toolCount > 0 ? "  /  \(toolCount) tool calls" : "")
+        lines += [row(selectingText ? "SELECT TEXT: drag to copy; Ctrl-S resumes" : activity, muted), row(String(repeating: "-", count: columns), accent)]
+        let room = columns - 3, offset = max(0, cursor - room + 1)
+        lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
+        lines.append(row("Enter send   Ctrl-C stop   Ctrl-S select/copy   PgUp/PgDn", muted))
+        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "/task <request>   /approve <id>   /deny <id>", muted))
+        return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
+    }
+
     public func render() -> String { layout().0 }
     private func layout() -> (String, [Hit]) {
+        if chatVisible && width >= 50 && height >= 16 { return chatLayout() }
         var hits: [Hit] = []
         let w = width - 1
         let bg = "\u{1b}[48;5;234m", fg = "\u{1b}[38;5;252m"

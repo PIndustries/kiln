@@ -293,7 +293,7 @@ private extension KilnCommands {
             knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
         } else { knowledge = nil }
         if parts == ["ai", "status"] {
-            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 2\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 3\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
         }
         guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
         let values = try runtime.vault.environment(for: "kiln/ai", bindings: ["API_KEY": configuration.secret])

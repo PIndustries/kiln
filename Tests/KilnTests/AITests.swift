@@ -10,7 +10,7 @@ private actor AISequence {
     var requests: [[AIMessage]] = []
     var reads = 0
     init(_ replies: [AIMessage]) { self.replies = replies }
-    func next(_ messages: [AIMessage]) -> AIMessage { requests.append(messages); return replies.removeFirst() }
+    func next(_ messages: [AIMessage]) -> AIMessage { requests.append(messages); return replies.count > 1 ? replies.removeFirst() : replies[0] }
     func read() -> String { reads += 1; return "running" }
 }
 private let aiConfig = AIConfiguration(baseURL: "https://api.erebine.ai/test/v1", model: "test", secret: "test-reference")
@@ -28,7 +28,7 @@ private func call(_ name: String, arguments: String) throws -> AIMessage {
     #expect(result == "Unavailable")
     #expect(await sequence.reads == 0)
     let requests = await sequence.requests
-    #expect(requests.last?.last?.content?.contains("rejected") == true)
+    #expect(requests.dropLast().last?.last?.content?.contains("rejected") == true)
     #expect(!(String(decoding: try JSONEncoder().encode(requests), as: UTF8.self)).contains("never-in-messages"))
 }
 

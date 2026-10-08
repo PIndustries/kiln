@@ -35,14 +35,19 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
    while text not in '\n'.join(screen.display):pump(.1);assert time.monotonic()<end,(text,'\n'.join(screen.display))
   def send(data):os.write(master,data);pump()
   expect('7 AI Chat',10);send(b'\x1b[<0;77;4M');expect('KILN AI CHAT')
-  send(b'Use list_modules and module_health to report the running service and its health. Keep it brief.\r')
+  send(b'Use list_modules and module_health. Report the service and health, then explain in about 180 words what these checks establish and what they do not.\r')
   expect('[streaming]')
-  saw_live=False; deadline=time.monotonic()+120
+  live_frames=set(); waiting_frames=set(); activity_frames=set(); deadline=time.monotonic()+120
   while '[ready]' not in '\n'.join(screen.display):
    pump(.05); frame='\n'.join(screen.display)
-   if 'Assistant:' in frame or 'Provider reasoning:' in frame:saw_live=True
+   activity_frames.add(screen.display[-5].strip())
+   if 'Receiving response' in frame:live_frames.add('\n'.join(screen.display[4:-5]))
+   elif 'Waiting for Erebine' in frame:waiting_frames.add(screen.display[-5])
    assert time.monotonic()<deadline,frame
-  assert saw_live,'No incremental provider output appeared before completion'
+  print(f'PASS: {len(activity_frames)} distinct activity frames', flush=True)
+  assert len(live_frames)>=3, f'Only {len(live_frames)} distinct partial answer frames\n'+frame
+  assert len(waiting_frames)>=2, 'Waiting state did not animate'
+  print(f'PASS: {len(live_frames)} distinct partial answer frames and {len(waiting_frames)} waiting frames',flush=True)
   send(b'\x13');expect('SELECT TEXT')
   frozen=list(screen.display);pump(1.5);assert screen.display==frozen,'Selection mode repainted'
   send(b'\x13');expect('[ready]')

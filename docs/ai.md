@@ -10,14 +10,14 @@ In Kiln's SSH dashboard, click **7 AI Chat** (or **7 AI** on smaller terminals),
 ai
 ```
 
-The drawer becomes a chat panel. Ask naturally, for example:
+AI opens a dedicated conversation screen. Ask naturally, for example:
 
 - "Which modules are running? Check their health."
 - "Report host memory and CPU."
 - "Explain how rollback works in Kiln."
 - "Propose restarting storefront/rest."
 
-Responses wrap to the terminal width. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. Answers now stream through native SSE as they arrive, alongside named tool activity. Provider reasoning is shown transiently only when Erebine sends it; Kiln does not fabricate a thinking trace. Ctrl-C cancels a foreground response or stops watching a task. Ctrl-S freezes the display and disables mouse capture for native terminal selection/copy; press Ctrl-S again to resume.
+Responses use a centered reading column of up to 96 characters, adapting to smaller terminals. Incoming and completed answers preserve line breaks and render common Markdown markers as readable terminal text. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. Answers now stream through native SSE as they arrive, alongside a compact tool-call count. Provider reasoning is shown transiently only when Erebine sends it; Kiln does not fabricate a thinking trace. Ctrl-C cancels a foreground response or stops watching a task. Ctrl-S freezes the display and disables mouse capture for native terminal selection/copy; press Ctrl-S again to resume.
 
 Read-only tools run automatically. A requested change produces an exact `app start`, `stop`, `restart` or `rollback` proposal. It does not execute based on model prose. Review the module/action, then use `/approve ID` or `/deny ID`. Approvals belong to the originating SSH session, expire after five minutes, and can be consumed only once. If the module's process state, PID or version changed since the proposal, execution is refused. A consumed proposal is not automatically retried after failure.
 
@@ -121,4 +121,9 @@ Task workers may inspect status, modules, host metrics, health, releases and tas
 
 Task IDs, requests, status and final results persist in private `ai-tasks.json` (0600). Do not place credentials in prompts; task records are not Vault-encrypted. Provider reasoning is transient and excluded from task records. History is capped at 200 tasks; remove finished entries when full. Interrupted/queued work is marked interrupted after a runtime restart and is never automatically replayed. A viewer disconnect does not stop the task. Results can be inspected from a new SSH connection using the same configured administrator identity.
 
-The SSE parser handles UTF-8 and tool arguments split across network packets, rejects oversized/truncated streams, and executes tools only after a complete response. Output repainting is throttled to 20 Hz; text selection freezes repainting. Streaming follows [Erebine's chat API](https://erebine.ai/docs/api-reference) and [SSE format](https://erebine.ai/docs/streaming). These pages differ on reasoning-channel availability, so the implementation accepts optional `reasoning_content`/`reasoning` fields and reports only what the provider sends.
+The SSE parser handles UTF-8 and tool arguments split across network packets, rejects oversized/truncated streams, and executes tools only after a complete response. Incoming output repainting is coalesced at 50 ms; an independent 100 ms activity animation remains visible while waiting for provider output. Only changed chat rows are transmitted. No fake token delay or fabricated progress is added; text selection freezes repainting. Streaming follows [Erebine's chat API](https://erebine.ai/docs/api-reference) and [SSE format](https://erebine.ai/docs/streaming). These pages differ on reasoning-channel availability, so the implementation accepts optional `reasoning_content`/`reasoning` fields and reports only what the provider sends.
+
+
+For provider timing diagnostics, set `KILN_LIVE_STATE` to an existing configured state directory and run `swift test --filter optionalLiveProviderStreamTiming`. This opt-in test consumes inference credits and reports only chunk counts, byte counts and arrival times, never credentials or response contents. Provider latency before the first answer is distinct from terminal rendering latency. The SSH UI test requires at least three distinct partial answer frames before completion and an animated waiting state.
+
+Erebine currently emits tool-enabled answers as a single content chunk in our measurements. Kiln therefore uses a bounded tool phase followed by a separate tool-free presentation request. Only the presentation answer is displayed as live text; provider reasoning and activity remain visible during planning. This adds an inference request and provider latency/cost. The presentation receives verified tool results, cannot execute operations, and falls back to the completed draft if it fails. No operation is replayed during fallback.

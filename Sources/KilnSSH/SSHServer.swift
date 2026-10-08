@@ -67,6 +67,7 @@ private final class ShellHandler: ChannelInboundHandler {
     var lastFrame = ""
     var selectingText = false
     var progressPaint: Scheduled<Void>?
+    var chatAnimation: RepeatedTask?
     var panes: [RemoteTerminalClient] = []
     var focusedPane = 0
     var stacked = false
@@ -87,7 +88,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
-        commandTask?.cancel(); progressPaint?.cancel()
+        commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
         releasePanes()
@@ -104,7 +105,26 @@ private final class ShellHandler: ChannelInboundHandler {
         if secretName != nil || secretSaving {
             frame = "\u{1B}[2J\u{1B}[H\u{1B}[33mKILN VAULT\u{1B}[0m\r\n\r\n" + (secretSaving ? "Saving credential..." : "Secret: \(secretName!)\r\nValue: [hidden]\r\n\r\nEnter saves. Escape/Ctrl-C cancels. Backspace edits. Maximum 16 KiB." + (secretInputRejected ? "\r\nInput rejected (size or newline). Ctrl-U clears the field; enter it again." : ""))
         } else { frame = terminal.render() }
-        if frame != lastFrame { output(frame, channel: channel); lastFrame = frame }
+        if frame != lastFrame {
+            // Chat frames have fixed rows and no overlay cursor escapes. Patch changed
+            // rows instead of repainting the entire transcript for every token.
+            let old = lastFrame.components(separatedBy: "\r\n")
+            let new = frame.components(separatedBy: "\r\n")
+            if terminal.chatVisible, secretName == nil, !secretSaving,
+               old.count == rows, new.count == rows, lastFrame.contains("KILN AI CHAT") {
+                var patch = "\u{1b}[?25l"
+                for index in new.indices where old[index] != new[index] {
+                    let content = index == 0 ? new[index].replacingOccurrences(of: "\u{1b}[?25l\u{1b}[H", with: "") : new[index]
+                    patch += "\u{1b}[\(index+1);1H" + content
+                }
+                // Restore the composer cursor even when its row did not change.
+                if let tail = new.last, let cursor = tail.range(of: "\u{1b}[", options: .backwards, range: tail.startIndex..<tail.index(tail.endIndex, offsetBy: -6)) {
+                    patch += String(tail[cursor.lowerBound...])
+                }
+                output(patch, channel: channel)
+            } else { output(frame, channel: channel) }
+            lastFrame = frame
+        }
     }
     func refresh(channel: Channel) {
         guard !refreshing, channel.isActive else { return }
@@ -232,7 +252,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func close(channel: Channel, status: Int) {
-        commandTask?.cancel(); progressPaint?.cancel()
+        commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
@@ -301,6 +321,12 @@ private final class ShellHandler: ChannelInboundHandler {
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands
         let sessionID = owner.uuidString
+        chatAnimation?.cancel()
+        chatAnimation = channel.eventLoop.scheduleRepeatedTask(initialDelay: .milliseconds(100), delay: .milliseconds(100)) { _ in
+            let shell = bound.value
+            guard shell.busy, channel.isActive else { shell.chatAnimation?.cancel(); shell.chatAnimation = nil; return }
+            if shell.terminal?.chatVisible == true { shell.terminal?.tick(); shell.paint(channel: channel) }
+        }
         commandTask = Task {
             let result = await commands.execute(line, sessionID: sessionID) { event in
                 channel.eventLoop.execute {

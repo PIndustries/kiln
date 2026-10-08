@@ -45,9 +45,11 @@ import KilnTerminal
     #expect(ui.handle(.selectText) == [.selectText(false)])
     _ = ui.handle(.text("/task check all services"))
     #expect(ui.handle(.enter) == [.command("ai task new \"check all services\"")])
-    ui.progress(.answer("Partial answer")); ui.progress(.reasoning("Provider text"))
-    #expect(ui.render().contains("Partial answer"))
+    ui.progress(.reasoning("Provider text"))
     #expect(ui.render().contains("Provider reasoning"))
+    ui.progress(.answer("Partial answer"))
+    #expect(ui.render().contains("Partial answer"))
+    #expect(!ui.render().contains("Provider reasoning"))
     ui.finish(text: "Final answer", status: 0)
     #expect(!ui.render().contains("Partial answer"))
 }
@@ -152,4 +154,19 @@ private actor WorkerGate {
     #expect(result.contains("Verified results"))
     #expect(result.contains("running"))
     #expect(await calls.reads == 1)
+}
+
+@Test func chatPreservesLiveLinesAndAnimatesWaiting() {
+    var ui = KilnTerminal(); ui.resize(width: 120, height: 35)
+    _ = ui.handle(.text("7")); _ = ui.handle(.text("check")); _ = ui.handle(.enter)
+    let waiting = ui.render(); ui.tick()
+    #expect(ui.render() != waiting)
+    ui.progress(.answer("**First**\nSecond"))
+    let frame = ui.render()
+    #expect(frame.contains("First")); #expect(frame.contains("Second"))
+    #expect(!frame.contains("First?Second")); #expect(!frame.contains("**"))
+    #expect(!frame.contains("Command completed"))
+    #expect(!frame.contains("LOCAL NODE"))
+    ui.finish(text: "**First**\nSecond", status: 0)
+    #expect(ui.render().contains("[ready]"))
 }
