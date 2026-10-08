@@ -163,6 +163,7 @@ public struct KilnTerminal {
             }
         }
         switch key {
+        case .text("7"): openAIChat()
         case .text("6"): page = 5
         case .text("5"): page = 4
         case .text("1"): page = 0
@@ -176,6 +177,14 @@ public struct KilnTerminal {
         default: break
         }
         return []
+    }
+    private mutating func openAIChat() {
+        guard !busy else { return }
+        if !aiMode {
+            transcript = ["KILN AI / Erebine", "Ask about Kiln or request an operation.", "Prompts and read-tool results go to Erebine. Do not paste credentials.", "/exit returns to commands; /reset clears context; /approve ID or /deny ID handles proposals."]
+        }
+        aiMode = true; drawer = true; menu = nil; confirmation = nil
+        input = ""; cursor = 0; historyPosition = nil; scroll = 0
     }
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
@@ -233,8 +242,7 @@ public struct KilnTerminal {
             if history.last != command { history.append(command); history = Array(history.suffix(100)) }
             input = ""; cursor = 0; historyPosition = nil
             if !aiMode && command == "ai" {
-                aiMode = true; transcript = ["KILN AI / Erebine", "Ask about Kiln or request an operation.", "Prompts and read-tool results go to Erebine. Do not paste credentials.", "/exit returns to commands; /reset clears context; /approve ID or /deny ID handles proposals."]
-                scroll = 0; return []
+                openAIChat(); return []
             }
             if aiMode {
                 if command == "/exit" { aiMode = false; transcript.append("Left AI chat."); return [] }
@@ -279,10 +287,10 @@ public struct KilnTerminal {
         let brand = "P.INDUSTRIES"
         var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
                      row("  LOCAL NODE  /  ONLINE  /  SSH SESSION", green), row()]
-        let labels = width < 85 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY", "6 SSH"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions", "6 Servers"]
+        let labels = width < 65 ? ["1", "2", "3", "4", "5", "6", "7 AI"] : width < 100 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY", "6 SSH", "7 AI"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions", "6 Servers", "7 AI Chat"]
         var tabs = "  "
         for (index,label) in labels.enumerated() {
-            let text = page == index ? "[" + label + "]" : " " + label + " "
+            let text = (index == 6 ? aiMode && drawer : page == index && !(aiMode && drawer)) ? "[" + label + "]" : " " + label + " "
             hits.append(Hit(row: 4, column: tabs.count+1, width: text.count, click: .key(.text(String(index+1)))))
             tabs += text + " "
         }
@@ -409,7 +417,7 @@ public struct KilnTerminal {
             return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)
         }
         lines.append(row("  " + notice, muted))
-        lines.append(row(page == 4 ? "  Enter actions | a attach | n new | ` drawer | q exit" : "  Click/Enter manage | ` drawer | ? help | q exit", accent))
+        lines.append(row(page == 4 ? "  Enter actions | a attach | n new | ` drawer | q exit" : "  Click/Enter manage | 7 AI | ` drawer | ? help | q exit", accent))
         let sampled = host.map { String($0.timestamp.ISO8601Format().suffix(9)) } ?? "waiting"
         lines.append(row("  LIVE 1s / " + sampled + " / process state != health", muted))
         hits.append(Hit(row: height-1, column: 1, width: w, click: .key(.text("`"))))

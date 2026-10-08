@@ -4,7 +4,7 @@ Kiln AI is a Swift library and SSH chat interface using Foundation HTTP directly
 
 ## Chat
 
-In Kiln's SSH dashboard, open the backtick drawer and type:
+In Kiln's SSH dashboard, click **7 AI Chat** (or **7 AI** on smaller terminals), or press **7**. You can also open the backtick drawer and type:
 
 ```text
 ai

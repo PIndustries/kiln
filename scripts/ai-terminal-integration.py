@@ -34,7 +34,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
    end=time.monotonic()+seconds
    while text not in '\n'.join(screen.display):pump(.1);assert time.monotonic()<end,(text,'\n'.join(screen.display))
   def send(data):os.write(master,data);pump()
-  expect('Overview',10);send(b'`');send(b'ai\r');expect('KILN AI CHAT')
+  expect('7 AI Chat',10);send(b'\x1b[<0;77;4M');expect('KILN AI CHAT')
   send(b'Use list_modules and module_health to report the running service and its health. Keep it brief.\r')
   expect('[working]');expect('[ready]')
   rendered='\n'.join(screen.display);assert 'ai-ui/worker' in rendered,rendered;assert 'healthy' in rendered.lower(),rendered

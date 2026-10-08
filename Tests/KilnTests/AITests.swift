@@ -107,3 +107,20 @@ private func call(_ name: String, arguments: String) throws -> AIMessage {
     let restored = try KilnRuntime(stateDirectory: root)
     #expect(try await restored.operationHistory().contains("default/worker"))
 }
+
+@Test func aiChatIsVisibleAndOpensFromNavigation() {
+    var ui = KilnTerminal()
+    ui.resize(width: 120, height: 30)
+    #expect(ui.render().contains("7 AI Chat"))
+    _ = ui.handle(.text("7"))
+    #expect(ui.render().contains("KILN AI CHAT"))
+    _ = ui.handle(.text("report status"))
+    #expect(ui.handle(.enter) == [.command("ai ask \"report status\"")])
+    var mouse = KilnTerminal()
+    mouse.resize(width: 120, height: 30)
+    _ = mouse.handle(.mouse(button: 0, column: 77, row: 4, released: false))
+    #expect(mouse.render().contains("KILN AI CHAT"))
+    var compact = KilnTerminal()
+    compact.resize(width: 50, height: 20)
+    #expect(compact.render().contains("7 AI"))
+}
