@@ -14,11 +14,13 @@ public actor AITasks {
     private let directory: URL
     private var index = Index()
     private var loaded = false
+    private var persistenceUncertain = false
     private var runners: [String: Runner] = [:]
     private var running: [String: Task<Void, Never>] = [:]
     private var watchers: [String: [UUID: AsyncStream<String>.Continuation]] = [:]
     public init(directory: URL) { self.directory = directory }
     private func load() throws {
+        guard !persistenceUncertain else { throw AIError.message("Task state commit is uncertain; restart and reconcile before retrying") }
         guard !loaded else { return }
         let file = directory.appendingPathComponent("ai-tasks.json")
         if FileManager.default.fileExists(atPath: file.path) {
@@ -35,11 +37,13 @@ public actor AITasks {
         loaded = true
     }
     private func save() throws {
+        guard !persistenceUncertain else { throw AIError.message("Task state requires restart reconciliation") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let url = directory.appendingPathComponent("ai-tasks.json")
         let bytes = try JSONEncoder().encode(index)
         guard bytes.count <= 16_777_216 else { throw AIError.message("AI task history exceeds 16 MiB; remove completed tasks") }
-        try bytes.write(to: url, options: .atomic)
+        do { try KilnStateFile.write(bytes, to: url) }
+        catch let error as KilnStateFile.CommitUncertain { persistenceUncertain = true; throw error }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
     public func submit(_ prompt: String, runner: @escaping Runner) throws -> String {

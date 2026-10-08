@@ -17,3 +17,5 @@ jobs:
         run: swift test --jobs 2
       - name: SSH, HTTP, WebSocket, crash recovery and restore
         run: python3 scripts/integration.py
+      - name: Supervisor SIGKILL and interrupted deployment recovery
+        run: python3 scripts/crash-recovery-integration.py

@@ -122,6 +122,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-deploy-') as tmp:
         tunnel.terminate(); tunnel.wait(timeout=5); tunnel=None
         process.terminate(); process.wait(timeout=12); assert process.returncode == 0
         process=launch(); wait(lambda: version(ingress) == '1.0.0')
+        wait(lambda: command('status').returncode == 0)  # Restore finishes before SSH is exposed.
         command('app rollback storefront/api'); assert version(ingress) == '2.0.0'
         print('PASS: active/previous releases and stable ingress survive clean runtime restart',flush=True)
     finally:

@@ -11,6 +11,8 @@ import Darwin
 import Glibc
 #endif
 
+private final class GuardianBundleMarker: NSObject {}
+
 private final class LocalHealthPolicy: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
@@ -29,6 +31,8 @@ public actor KilnRuntime {
     private struct Running {
         var process: Process
         var log: FileHandle
+        var lifetime: FileHandle
+        var workerPID: Int32
     }
     public nonisolated let stateDirectory: URL
     public nonisolated var vault: KilnVault { KilnVault(directory: stateDirectory) }
@@ -38,6 +42,7 @@ public actor KilnRuntime {
     private var deploying: Set<String> = []
     private var candidates: [String: ApplicationManifest] = [:]
     private var shuttingDown = false
+    private var persistenceFault = false
     private var stopping: Set<String> = []
     private var supervision: Task<Void, Never>?
     private struct Recovery {
@@ -60,7 +65,7 @@ public actor KilnRuntime {
 
     private func reconcileWorkers() async {
         for name in installed.keys.sorted() {
-            guard !shuttingDown, installed[name]?.desiredRunning == true,
+            guard !shuttingDown, !persistenceFault, installed[name]?.desiredRunning == true,
                   installed[name]?.manifest.restartPolicy == .always,
                   !deploying.contains(name), !stopping.contains(name) else { continue }
             var state = recovery[name] ?? Recovery()
@@ -101,10 +106,69 @@ public actor KilnRuntime {
 
     private func save() throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(installed).write(to: stateDirectory.appendingPathComponent("applications.json"), options: .atomic)
+        do { try KilnStateFile.write(encoder.encode(installed), to: stateDirectory.appendingPathComponent("applications.json")) }
+        catch let error as KilnStateFile.CommitUncertain { persistenceFault = true; throw error }
+    }
+
+    private func flushRelease(_ executable: URL) throws {
+        // The index must never become durable before the executable it names.
+        func normalizedPath(_ url: URL) -> String {
+            var path = url.standardizedFileURL.path
+            while path.count > 1 && path.last == "/" { path.removeLast() }
+            return path
+        }
+        let root = normalizedPath(stateDirectory)
+        var item = executable.standardizedFileURL
+        while true {
+            let path = normalizedPath(item)
+            // Compare filesystem paths, not URL directory flags. Foundation on
+            // Linux distinguishes a directory URL with/without its trailing slash.
+            guard path == root || path.hasPrefix(root == "/" ? "/" : root + "/") else {
+                throw KilnError.message("Release is outside runtime state directory")
+            }
+            let descriptor = open(path, O_RDONLY | O_CLOEXEC)
+            guard descriptor >= 0 else { throw KilnError.message("Cannot open release for persistence") }
+            let result = fsync(descriptor)
+            close(descriptor)
+            guard result == 0 else { throw KilnError.message("Cannot flush release before activation") }
+            if path == root { break }
+            let parent = item.deletingLastPathComponent()
+            guard normalizedPath(parent) != path else { throw KilnError.message("Release is outside runtime state directory") }
+            item = parent
+        }
+    }
+
+    private func stageRelease(_ manifest: ApplicationManifest) throws -> URL {
+        let directory = stateDirectory.appendingPathComponent("pending-releases")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let marker = directory.appendingPathComponent(UUID().uuidString + ".json")
+        // Record intent BEFORE creating the directory, closing the empty-directory
+        // crash window. A marker left after commit is harmless and is reconciled.
+        try KilnStateFile.write(JSONEncoder().encode(manifest), to: marker)
+        return marker
+    }
+
+    private func removeInterruptedReleases() throws {
+        let directory = stateDirectory.appendingPathComponent("pending-releases")
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        let retained = Set(installed.values.flatMap { [$0.manifest, $0.previous].compactMap { $0 }.map {
+            "\($0.application)/\($0.name)/\($0.version)"
+        } })
+        for marker in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) where marker.pathExtension == "json" {
+            let manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: marker))
+            try manifest.validate()
+            let release = "\(manifest.application)/\(manifest.name)/\(manifest.version)"
+            if !retained.contains(release) {
+                let path = stateDirectory.appendingPathComponent("releases/" + release)
+                if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
+            }
+            try FileManager.default.removeItem(at: marker)
+        }
     }
 
     public func restore() async throws {
+        try KilnWorkerGuardian.reconcile(directory: stateDirectory)
+        try removeInterruptedReleases()
         beginSupervision()
         // A broken worker must not prevent other installations or the management plane starting.
         for name in installed.keys.sorted() where installed[name]?.desiredRunning == true {
@@ -113,7 +177,7 @@ public actor KilnRuntime {
     }
 
     public func install(path: String) throws -> String {
-        guard !shuttingDown else { throw KilnError.message("Runtime is shutting down") }
+        guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
         var manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         try manifest.validate()
         let id = "\(manifest.application)/\(manifest.name)"
@@ -122,27 +186,33 @@ public actor KilnRuntime {
         guard FileManager.default.isExecutableFile(atPath: manifest.executable) else { throw KilnError.message("Executable is missing or not executable") }
         let directory = stateDirectory.appendingPathComponent("releases/\(id)/\(manifest.version)")
         guard !FileManager.default.fileExists(atPath: directory.path) else { throw KilnError.message("Release directory already exists") }
+        let staging = try stageRelease(manifest)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
             let destination = directory.appendingPathComponent("app")
             try FileManager.default.copyItem(atPath: manifest.executable, toPath: destination.path)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+            try flushRelease(destination)
             manifest.executable = destination.path
             installed[id] = Installation(manifest: manifest, desiredRunning: false)
             try save()
         } catch {
-            installed.removeValue(forKey: id)
-            try? FileManager.default.removeItem(at: directory)
+            if !persistenceFault {
+                installed.removeValue(forKey: id)
+                try? FileManager.default.removeItem(at: directory)
+                try? FileManager.default.removeItem(at: staging)
+            }
             throw error
         }
+        try? FileManager.default.removeItem(at: staging)
         return "Installed \(id)@\(manifest.version). Run: app start \(id)"
     }
 
     private func launch(_ name: String) throws {
-        guard !shuttingDown, let installation = installed[name] else { throw KilnError.message("Unknown application: \(name)") }
+        guard !shuttingDown, !persistenceFault, let installation = installed[name] else { throw KilnError.message("Unknown application: \(name)") }
         guard !stopping.contains(name) else { throw KilnError.message("Application is stopping") }
         if running[name]?.process.isRunning == true { throw KilnError.message("Application is already running") }
-        if let old = running.removeValue(forKey: name) { try? old.log.close() }
+        if let old = running.removeValue(forKey: name) { try? old.lifetime.close(); try? old.log.close() }
         running[name] = try spawn(installation.manifest)
     }
 
@@ -156,8 +226,27 @@ public actor KilnRuntime {
         if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
         let log = try FileHandle(forWritingTo: logURL); try log.seekToEnd()
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: manifest.executable)
-        process.arguments = manifest.arguments
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        var guardian = executable.lastPathComponent == "kiln" ? executable : executable.deletingLastPathComponent().appendingPathComponent("kiln")
+        #if os(macOS)
+        // SwiftPM places the test runner inside an XCTest bundle, while executable
+        // products are beside that bundle. Linux runners already use siblings.
+        var ancestor = Bundle(for: GuardianBundleMarker.self).bundleURL
+        if ancestor.pathExtension != "xctest" { ancestor = executable.deletingLastPathComponent() }
+        while ancestor.path != "/" {
+            if ancestor.pathExtension == "xctest" {
+                guardian = ancestor.deletingLastPathComponent().appendingPathComponent("kiln")
+                break
+            }
+            ancestor.deleteLastPathComponent()
+        }
+        #endif
+        guard FileManager.default.isExecutableFile(atPath: guardian.path) else {
+            try? log.close()
+            throw KilnError.message("Worker guardian executable is unavailable: " + guardian.path)
+        }
+        process.executableURL = guardian
+        process.arguments = ["worker-guardian", stateDirectory.path, manifest.executable] + manifest.arguments
         // Do not inherit the supervisor's credentials or shell environment.
         let dataDirectory = stateDirectory.appendingPathComponent("data/\(name)")
         try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
@@ -165,10 +254,49 @@ public actor KilnRuntime {
         process.environment = ["PATH": "/usr/bin:/bin", "KILN_APP_NAME": name, "KILN_DATA_DIR": dataDirectory.path, "KILN_RELEASE_VERSION": manifest.version]
         if manifest.ingressPort != nil { process.environment?["KILN_PORT"] = String(workerPort(manifest)) }
         process.environment?.merge(secrets) { _, secret in secret }
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = log; process.standardError = log
-        do { try process.run() } catch { try? log.close(); throw error }
-        return Running(process: process, log: log)
+        let lifetime = Pipe(), acknowledgement = Pipe()
+        // Explicitly prevent another child inheriting a writer and delaying EOF.
+        _ = fcntl(lifetime.fileHandleForWriting.fileDescriptor, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(lifetime.fileHandleForReading.fileDescriptor, F_SETFD, FD_CLOEXEC)
+        process.standardInput = lifetime.fileHandleForReading
+        process.standardOutput = acknowledgement.fileHandleForWriting
+        process.standardError = log
+        do {
+            try process.run()
+            try lifetime.fileHandleForReading.close()
+            try acknowledgement.fileHandleForWriting.close()
+            defer { try? acknowledgement.fileHandleForReading.close() }
+            var response = Data()
+            for _ in 0..<100 {
+                var item = pollfd(fd: acknowledgement.fileHandleForReading.fileDescriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let count = poll(&item, 1, 50)
+                if count > 0 {
+                    var bytes = [UInt8](repeating: 0, count: 32)
+                    #if canImport(Darwin)
+                    let length = Darwin.read(acknowledgement.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
+                    #else
+                    let length = Glibc.read(acknowledgement.fileHandleForReading.fileDescriptor, &bytes, bytes.count)
+                    #endif
+                    if length < 0 && errno == EINTR { continue }
+                    if length <= 0 { break }
+                    response.append(contentsOf: bytes.prefix(length))
+                    if response.contains(10) { break }
+                }
+            }
+            guard let pid = Int32(String(decoding: response, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else {
+                throw KilnError.message("Worker guardian did not acknowledge launch")
+            }
+            return Running(process: process, log: log, lifetime: lifetime.fileHandleForWriting, workerPID: pid)
+        } catch {
+            try? lifetime.fileHandleForWriting.close()
+            try? lifetime.fileHandleForReading.close()
+            try? acknowledgement.fileHandleForWriting.close()
+            // Acknowledgement failure must not discard a still-owning guardian:
+            // another start could otherwise overlap its not-yet-reaped child.
+            if process.isRunning { process.waitUntilExit() }
+            try? log.close()
+            throw error
+        }
     }
 
     public func start(_ name: String) async throws -> String {
@@ -176,7 +304,7 @@ public actor KilnRuntime {
     }
 
     private func start(_ name: String, automatic: Bool) async throws -> String {
-        guard !deploying.contains(name) else { throw KilnError.message("Deployment in progress") }
+        guard !deploying.contains(name), !persistenceFault else { throw KilnError.message("Deployment in progress or state recovery required") }
         if !automatic { recovery.removeValue(forKey: name) }
         beginSupervision()
         deploying.insert(name)
@@ -192,10 +320,10 @@ public actor KilnRuntime {
                     ingress[name] = listener
                 }
             }
-            guard !shuttingDown else { throw KilnError.message("Runtime is shutting down") }
+            guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
             let previousDesired = installed[name]?.desiredRunning ?? false
             installed[name]?.desiredRunning = true
-            do { try save() } catch { installed[name]?.desiredRunning = previousDesired; throw error }
+            do { try save() } catch { if !persistenceFault { installed[name]?.desiredRunning = previousDesired }; throw error }
             if let manifest = installed[name]?.manifest, manifest.ingressPort != nil {
                 ingress[name]?.switchTo(workerPort(manifest))
             }
@@ -203,19 +331,35 @@ public actor KilnRuntime {
             await terminate(name)
             throw error
         }
-        return "Started \(name) pid=\(running[name]!.process.processIdentifier)"
+        return "Started \(name) pid=\(running[name]!.workerPID)"
     }
 
     public func stop(_ name: String) async throws -> String {
-        guard !deploying.contains(name) else { throw KilnError.message("Deployment in progress") }
+        guard !deploying.contains(name), !persistenceFault else { throw KilnError.message("Deployment in progress or state recovery required") }
         guard installed[name] != nil else { throw KilnError.message("Unknown application: \(name)") }
         let previousDesired = installed[name]!.desiredRunning
         installed[name]?.desiredRunning = false
-        do { try save() } catch { installed[name]?.desiredRunning = previousDesired; throw error }
+        do { try save() } catch { if !persistenceFault { installed[name]?.desiredRunning = previousDesired }; throw error }
         recovery.removeValue(forKey: name)
         ingress[name]?.switchTo(nil)
         await terminate(name)
         return "Stopped \(name)"
+    }
+
+    public func restart(_ name: String) async throws -> String {
+        guard !shuttingDown, !persistenceFault, !deploying.contains(name), !stopping.contains(name), installed[name] != nil else {
+            throw KilnError.message("Unknown application, application busy, or runtime requires recovery")
+        }
+        // Restart expresses desired running BEFORE stopping the old process. An
+        // interrupted restart restores a worker without replaying an operation.
+        let previousDesired = installed[name]!.desiredRunning
+        installed[name]?.desiredRunning = true
+        do { try save() } catch { if !persistenceFault { installed[name]?.desiredRunning = previousDesired }; throw error }
+        deploying.insert(name)
+        ingress[name]?.switchTo(nil)
+        await terminate(name)
+        deploying.remove(name)
+        return try await start(name)
     }
 
     private func terminate(_ name: String) async {
@@ -226,19 +370,13 @@ public actor KilnRuntime {
     }
 
     private func terminateEntry(_ entry: Running) async {
-        if entry.process.isRunning {
-            entry.process.terminate()
-            for _ in 0..<30 {
-                if !entry.process.isRunning { break }
-                try? await Task.sleep(for: .milliseconds(100))
-            }
-            if entry.process.isRunning {
-                kill(entry.process.processIdentifier, SIGKILL)
-                for _ in 0..<20 {
-                    if !entry.process.isRunning { break }
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-            }
+        try? entry.lifetime.close()
+        // The guardian owns and reaps the child; never kill a persisted PID.
+        // Keep waiting if the child is unkillable rather than launch a duplicate.
+        while entry.process.isRunning {
+            // Cancellation may stop a caller waiting for an operation, but must
+            // not discard ownership or turn cleanup into a hot spin.
+            await Task.detached { try? await Task.sleep(for: .milliseconds(50)) }.value
         }
         try? entry.log.close()
     }
@@ -250,10 +388,10 @@ public actor KilnRuntime {
             let alive = process?.isRunning == true
             return ModuleSnapshot(application: manifest.application, name: manifest.name,
                 version: manifest.version,
-                state: stopping.contains(id) ? "stopping" : alive ? "running" :
+                state: persistenceFault ? "recovery-required" : stopping.contains(id) ? "stopping" : alive ? "running" :
                     installed[id]!.desiredRunning ? (manifest.restartPolicy == .always ?
                         ((recovery[id]?.attempts ?? 0) >= 3 ? "failed" : "recovering") : "exited") : "stopped",
-                pid: alive ? process?.processIdentifier : nil)
+                pid: alive ? running[id]?.workerPID : nil)
         }
     }
 
@@ -313,19 +451,33 @@ extension KilnRuntime {
         let session = URLSession(configuration: .ephemeral, delegate: LocalHealthPolicy(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         // Require consecutive successes while the candidate process remains alive.
+        // Linux FoundationNetworking can expire fractional-second timeouts while
+        // processing a response whose headers/body arrive separately (verified
+        // with this NIO backend). Whole-second probes avoid premature -1001.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         var successes = 0
+        var lastFailure = "no successful response"
         for _ in 0..<40 {
+            if ContinuousClock.now >= deadline { break }
             guard !shuttingDown, process.isRunning else { throw KilnError.message("Candidate exited or runtime is shutting down") }
-            var request = URLRequest(url: url); request.timeoutInterval = 0.5
+            var request = URLRequest(url: url); request.timeoutInterval = 1
             request.cachePolicy = .reloadIgnoringLocalCacheData
             do {
                 let (_, response) = try await session.data(for: request)
-                successes = (response as? HTTPURLResponse)?.statusCode == 200 ? successes + 1 : 0
-            } catch { successes = 0 }
+                let status = (response as? HTTPURLResponse)?.statusCode
+                successes = status == 200 ? successes + 1 : 0
+                if status != 200 { lastFailure = status.map { "HTTP \($0)" } ?? "non-HTTP response" }
+            } catch {
+                successes = 0
+                // Preserve a useful, credential-free reason instead of hiding
+                // transport failures behind a generic readiness timeout.
+                if let networkError = error as? URLError { lastFailure = "transport code \(networkError.errorCode)" }
+                else { lastFailure = "transport failure" }
+            }
             if successes >= 3, process.isRunning { return }
             try await Task.sleep(for: .milliseconds(100))
         }
-        throw KilnError.message("Candidate failed readiness; active release unchanged")
+        throw KilnError.message("Candidate failed readiness (\(lastFailure)); active release unchanged")
     }
 
     public func allowIngress(host: String, port: Int) -> Bool {
@@ -344,28 +496,35 @@ extension KilnRuntime {
         try manifest.validate()
         guard manifest.ingressPort != nil else { throw KilnError.message("app deploy requires ingressPort") }
         let name = "\(manifest.application)/\(manifest.name)"
-        guard !shuttingDown, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
+        guard !shuttingDown, !persistenceFault, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
         deploying.insert(name)
         defer { deploying.remove(name) }
         let directory = stateDirectory.appendingPathComponent("releases/\(name)/\(manifest.version)")
         guard !FileManager.default.fileExists(atPath: directory.path), FileManager.default.isExecutableFile(atPath: manifest.executable) else {
             throw KilnError.message("Release version already exists or executable is unavailable")
         }
+        let staging = try stageRelease(manifest)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
             let destination = directory.appendingPathComponent("app")
             try FileManager.default.copyItem(atPath: manifest.executable, toPath: destination.path)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+            try flushRelease(destination)
             manifest.executable = destination.path
-            return try await activate(manifest)
+            let result = try await activate(manifest)
+            try? FileManager.default.removeItem(at: staging)
+            return result
         } catch {
-            try? FileManager.default.removeItem(at: directory)
+            if !persistenceFault {
+                try? FileManager.default.removeItem(at: directory)
+                try? FileManager.default.removeItem(at: staging)
+            }
             throw error
         }
     }
 
     public func rollback(_ name: String) async throws -> String {
-        guard !shuttingDown, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
+        guard !shuttingDown, !persistenceFault, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
         guard let previous = installed[name]?.previous else { throw KilnError.message("No previous release") }
         deploying.insert(name)
         defer { deploying.remove(name) }
@@ -401,12 +560,16 @@ extension KilnRuntime {
                 let listener = KilnIngress(); newListener = listener
                 try await listener.start(port: manifest.ingressPort!)
             }
-            guard !shuttingDown else { throw KilnError.message("Runtime is shutting down") }
+            guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
             installed[name] = Installation(manifest: manifest, desiredRunning: true, previous: old?.manifest)
-            do { try save() } catch { installed[name] = old; throw error }
+            do { try save() } catch { if !persistenceFault { installed[name] = old }; throw error }
         } catch {
             await newListener?.stop()
             await terminateEntry(candidate)
+            if persistenceFault {
+                ingress[name]?.switchTo(nil)
+                await terminate(name)
+            }
             throw error
         }
         if let newListener { ingress[name] = newListener }
@@ -449,8 +612,7 @@ extension KilnRuntime {
         var record = ["id": id, "source": "approved-ai", "operation": operation, "module": name,
                       "generation": fingerprint, "startedAt": Date().ISO8601Format(), "state": "started"]
         func persist(_ value: [String: String]) throws {
-            try JSONEncoder().encode(value).write(to: path, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+            try KilnStateFile.write(JSONEncoder().encode(value), to: path)
         }
         // Fail closed before any side effect if the operation receipt cannot be recorded.
         try persist(record)
@@ -461,8 +623,7 @@ extension KilnRuntime {
             case "stop": result = try await stop(name)
             case "rollback": result = try await rollback(name)
             default:
-                _ = try await stop(name)
-                result = try await start(name)
+                result = try await restart(name)
             }
         } catch {
             record["state"] = "failed"

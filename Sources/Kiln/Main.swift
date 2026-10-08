@@ -21,6 +21,10 @@ struct Kiln {
     }
     static func run() async throws {
         let args = Array(CommandLine.arguments.dropFirst())
+        if args.first == "worker-guardian" {
+            try KilnWorkerGuardian.run(arguments: Array(args.dropFirst()))
+            return
+        }
         if args.count == 5, args[0] == "vault", args[1] == "put", args[3] == "--state" {
             guard isatty(STDIN_FILENO) == 0 else { throw CLIError.invalid("Use the SSH dashboard for hidden entry, or redirect a secret file to stdin") }
             var data = Data()
@@ -69,7 +73,7 @@ struct Kiln {
         }
         let state = URL(fileURLWithPath: values["--state"] ?? ".kiln", isDirectory: true).standardizedFileURL
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let lockFD = open(state.appendingPathComponent("runtime.lock").path, O_CREAT | O_RDWR, 0o600)
+        let lockFD = open(state.appendingPathComponent("runtime.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw CLIError.invalid("State directory already in use or cannot be locked") }
         defer { close(lockFD) }
         // Buffer shutdown requests before any service can become externally reachable.
@@ -84,6 +88,8 @@ struct Kiln {
         }
         let runtime = try KilnRuntime(stateDirectory: state)
         let commands = KilnCommands(runtime: runtime)
+        // Complete ownership recovery before exposing any management mutations.
+        try await runtime.restore()
         try await commands.startSessionService()
         var ssh: KilnSSHServer?
         do {
@@ -94,7 +100,6 @@ struct Kiln {
                 ssh = try await KilnSSHServer.start(host: host, port: port, username: values["--user"] ?? "admin", authorizedKeys: URL(fileURLWithPath: keyPath), stateDirectory: state, commands: commands)
                 print("KilnSSH enabled at \(host):\(port)")
             } else { print("KilnSSH disabled") }
-            try await runtime.restore()
         } catch { await ssh?.stop(); await runtime.shutdown(); throw error }
         print("Kiln runtime ready. State: \(state.path)")
         fflush(nil)

@@ -132,9 +132,7 @@ public struct KilnCommands: Sendable {
                 case "install": return CommandResult(try await runtime.install(path: name))
                 case "start": return CommandResult(try await runtime.start(name))
                 case "stop": return CommandResult(try await runtime.stop(name))
-                case "restart":
-                    _ = try await runtime.stop(name)
-                    return CommandResult(try await runtime.start(name))
+                case "restart": return CommandResult(try await runtime.restart(name))
                 case "health": return CommandResult(try await runtime.health(name))
                 case "logs": return CommandResult(try await runtime.logs(name))
                 default: return CommandResult("Unknown app operation", status: 2)

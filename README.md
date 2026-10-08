@@ -21,10 +21,12 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Versioned local releases, readiness-checked deployment, stable loopback TCP ingress, draining and rollback.
 - Separate processes, start/stop/restart, health checks, log tail and opt-in bounded crash recovery.
 - Persistent approved-AI operation receipts, inspectable with `ai operations`.
-- Installed-module persistence and restoration of desired running modules after clean shutdown.
+- Installed-module persistence, guardian cleanup after supervisor death, and restoration of desired running modules.
 - Independent REST and WebSocket example services.
 
-This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. Optional bounded crash recovery is available via `restartPolicy: always` (see [supervision](docs/supervision.md)). There is no resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, cluster secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Abrupt supervisor death and child-process reconciliation are not yet handled; use clean shutdown.
+This is **not a production sandbox or cluster**. Modules run as the same OS user as Kiln. Optional bounded crash recovery is available via `restartPolicy: always` (see [supervision](docs/supervision.md)). There is no resource enforcement, public TLS/cluster ingress, remote adoption, Git build pipeline, cluster secrets service, installer or appliance yet. No arbitrary code is loaded into the supervisor's address space. A crash is contained at the OS process boundary; workers within one module share its fate. Direct workers now use supervisor-lifetime guardians and ownership-lock reconciliation after abrupt supervisor death; see [recovery boundaries](docs/supervision.md).
+
+See [Linux boot service setup](docs/linux-service.md) for systemd startup and recovery boundaries.
 
 See [native AI chat](docs/ai.md) for Erebine setup, tools and updateable knowledge.
 
@@ -36,7 +38,7 @@ Kiln releases use `YY.MM.DD.BUILD`, starting with `26.10.07.1`. The build counte
 
 ## Build
 
-Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: 22 unit/policy tests plus real SSH, REST/WebSocket, crash recovery and restore checks. Bastion credential storage remains macOS Keychain-specific.
+Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: 38 unit/policy tests plus real SSH, REST/WebSocket, supervisor SIGKILL, interrupted deployment and restore checks. A disposable Ubuntu VM also verifies startup and application restoration after a real reboot. Bastion credential storage remains macOS Keychain-specific.
 
 ```sh
 swift build
@@ -152,6 +154,8 @@ See [the ecosystem direction](docs/ecosystem.md) for source/prebuilt distributio
 ## Validation
 
 `scripts/integration.py` uses real OpenSSH, HTTP requests and WebSocket frames. It checks rejected keys, interactive PTY sessions, command exit codes, independent module addition, process crash isolation, manual recovery, stable host keys, restart persistence, and operation without SSH. It creates temporary credentials and state and removes them afterward.
+
+`scripts/crash-recovery-integration.py` verifies supervisor SIGKILL recovery, direct-worker cleanup, stopped intent, interrupted deployment and restart, and seeded AI task recovery without contacting a provider. It uses disposable state; it never reboots the host.
 
 No open-source license has been selected yet.
 
