@@ -3,20 +3,23 @@ import Crypto
 import NIOCore
 import NIOPosix
 import NIOSSH
+import KilnKit
 import KilnCommands
 import KilnTerminal
 import KilnBastion
 
-private enum SSHError: Error { case unsupportedChannel }
+private enum SSHError: Error { case unsupportedChannel, capacity }
 struct ServerShutdown: Sendable {}
 /// Lock protects only the registry; session state stays on its event loop.
 private final class Sessions: @unchecked Sendable {
     private let lock = NSLock()
     private var channels: [ObjectIdentifier: Channel] = [:]
     private var closing = false
+    private let limit: Int
+    init(limit: Int) { self.limit = limit }
     func insert(_ channel: Channel) -> Bool {
         lock.withLock {
-            guard !closing else { return false }
+            guard !closing, channels.count < limit else { return false }
             channels[ObjectIdentifier(channel)] = channel
             return true
         }
@@ -30,16 +33,44 @@ private final class KeyAuthentication: NIOSSHServerUserAuthenticationDelegate, @
     private let commands: KilnCommands
     private let lock = NSLock()
     private var authenticated: KilnCommands?
-    init(commands: KilnCommands) { self.commands = commands }
+    private var attempts = 0
+    private let channel: Channel
+    init(commands: KilnCommands, channel: Channel) { self.commands = commands; self.channel = channel }
     var sessionCommands: KilnCommands? { lock.withLock { authenticated } }
     var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods { .publicKey }
     func requestReceived(request: NIOSSHUserAuthenticationRequest, responsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>) {
+        let allowed = lock.withLock { attempts += 1; return attempts <= 6 }
+        guard allowed else { responsePromise.succeed(.failure); channel.close(promise: nil); return }
         guard case .publicKey(let supplied) = request.request else { responsePromise.succeed(.failure); return }
         let bound = commands.forIdentity(name: request.username, publicKey: String(openSSHPublicKey: supplied.publicKey))
         guard bound.isAuthorized() else { responsePromise.succeed(.failure); return }
         lock.withLock { authenticated = bound }
         responsePromise.succeed(.success)
     }
+}
+
+/// Bound pre-authentication occupancy and parser input independently of SSH keys.
+private final class AuthenticationDeadline: ChannelInboundHandler {
+    typealias InboundIn = ByteBuffer
+    private let authentication: KeyAuthentication
+    private var deadline: Scheduled<Void>?
+    private var received = 0
+    init(_ authentication: KeyAuthentication) { self.authentication = authentication }
+    func handlerAdded(context: ChannelHandlerContext) {
+        let channel = context.channel, authentication = authentication
+        deadline = context.eventLoop.scheduleTask(in: .seconds(15)) {
+            if authentication.sessionCommands == nil { channel.close(promise: nil) }
+        }
+    }
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        if authentication.sessionCommands == nil {
+            received += unwrapInboundIn(data).readableBytes
+            guard received <= 131_072 else { context.close(promise: nil); return }
+        } else { deadline?.cancel(); deadline = nil }
+        context.fireChannelRead(data)
+    }
+    func channelInactive(context: ChannelHandlerContext) { deadline?.cancel(); context.fireChannelInactive() }
+    func handlerRemoved(context: ChannelHandlerContext) { deadline?.cancel() }
 }
 
 private final class CloseOnError: ChannelInboundHandler, Sendable {
@@ -576,46 +607,56 @@ public final class KilnSSHServer: Sendable {
     private let group: MultiThreadedEventLoopGroup
     private let channel: Channel
     private let sessions: Sessions
-    private init(group: MultiThreadedEventLoopGroup, channel: Channel, sessions: Sessions) { self.group = group; self.channel = channel; self.sessions = sessions }
+    private let connections: Sessions
+    private init(group: MultiThreadedEventLoopGroup, channel: Channel, sessions: Sessions, connections: Sessions) { self.group = group; self.channel = channel; self.sessions = sessions; self.connections = connections }
 
     public static func start(host: String, port: Int, username: String, authorizedKeys: URL, stateDirectory: URL, commands: KilnCommands) async throws -> KilnSSHServer {
-        let lines = try String(contentsOf: authorizedKeys, encoding: .utf8).split(separator: "\n")
-        let keys = try lines.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .map { try NIOSSHPublicKey(openSSHPublicKey: String($0)) }
-        guard !keys.isEmpty else { throw NSError(domain: "KilnSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "No authorized keys"]) }
-        try commands.bootstrapIdentity(username: username, keys: keys.map { String(openSSHPublicKey: $0) })
+        // Bootstrap keys seed the first policy only. Persisted policy remains the
+        // authority on restart even if that original provisioning file is removed.
+        if FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("identities.json").path)
+            || FileManager.default.fileExists(atPath: stateDirectory.appendingPathComponent("identities.initialized").path) {
+            try commands.bootstrapIdentity(username: username, keys: [])
+        } else {
+            let lines = try String(contentsOf: authorizedKeys, encoding: .utf8).split(separator: "\n")
+            let keys = try lines.filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") && !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map { try NIOSSHPublicKey(openSSHPublicKey: String($0)) }
+            guard !keys.isEmpty else { throw NSError(domain: "KilnSSH", code: 1, userInfo: [NSLocalizedDescriptionKey: "No authorized keys"]) }
+            try commands.bootstrapIdentity(username: username, keys: keys.map { String(openSSHPublicKey: $0) })
+        }
         let keyURL = stateDirectory.appendingPathComponent("ssh-host-ed25519")
         let privateKey: Curve25519.Signing.PrivateKey
         if FileManager.default.fileExists(atPath: keyURL.path) {
             privateKey = try Curve25519.Signing.PrivateKey(rawRepresentation: Data(contentsOf: keyURL))
         } else {
             privateKey = Curve25519.Signing.PrivateKey()
-            guard FileManager.default.createFile(atPath: keyURL.path, contents: privateKey.rawRepresentation, attributes: [.posixPermissions: 0o600]) else {
-                throw NSError(domain: "KilnSSH", code: 2, userInfo: [NSLocalizedDescriptionKey: "Cannot persist host key"])
-            }
+            try KilnStateFile.write(privateKey.rawRepresentation, to: keyURL)
         }
         let hostKey = NIOSSHPrivateKey(ed25519Key: privateKey)
-        try (String(openSSHPublicKey: hostKey.publicKey) + "\n").write(to: stateDirectory.appendingPathComponent("ssh-host-ed25519.pub"), atomically: true, encoding: .utf8)
+        try KilnStateFile.write(Data((String(openSSHPublicKey: hostKey.publicKey) + "\n").utf8), to: stateDirectory.appendingPathComponent("ssh-host-ed25519.pub"))
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
-        let sessions = Sessions()
+        let sessions = Sessions(limit: 256)
+        let connections = Sessions(limit: 128)
         do {
             let channel = try await ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
-                    channel.eventLoop.makeCompletedFuture {
-                        let authentication = KeyAuthentication(commands: commands)
+                    guard connections.insert(channel) else { return channel.close() }
+                    channel.closeFuture.whenComplete { _ in connections.remove(channel) }
+                    let children = Sessions(limit: 16)
+                    return channel.eventLoop.makeCompletedFuture {
+                        let authentication = KeyAuthentication(commands: commands, channel: channel)
                         try channel.pipeline.syncOperations.addHandlers([
+                            AuthenticationDeadline(authentication),
                             NIOSSHHandler(role: .server(.init(hostKeys: [hostKey], userAuthDelegate: authentication)), allocator: channel.allocator, inboundChildChannelInitializer: { child, type in
                                 guard let commands = authentication.sessionCommands, commands.isAuthorized() else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
+                                guard children.insert(child) else { return child.eventLoop.makeFailedFuture(SSHError.capacity) }
+                                guard sessions.insert(child) else { children.remove(child); return child.eventLoop.makeFailedFuture(SSHError.capacity) }
+                                child.closeFuture.whenComplete { _ in sessions.remove(child); children.remove(child) }
                                 if case .directTCPIP(let destination) = type {
-                                    guard sessions.insert(child) else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
-                                    child.closeFuture.whenComplete { _ in sessions.remove(child) }
                                     return openTunnel(channel: child, host: destination.targetHost, port: destination.targetPort, commands: commands)
                                 }
                                 guard case .session = type else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
                                 return child.eventLoop.makeCompletedFuture {
-                                    guard sessions.insert(child) else { throw SSHError.unsupportedChannel }
-                                    child.closeFuture.whenComplete { _ in sessions.remove(child) }
                                     try child.pipeline.syncOperations.addHandler(ShellHandler(commands: commands))
                                 }
                             }),
@@ -623,7 +664,7 @@ public final class KilnSSHServer: Sendable {
                         ])
                     }
                 }.bind(host: host, port: port).get()
-            return KilnSSHServer(group: group, channel: channel, sessions: sessions)
+            return KilnSSHServer(group: group, channel: channel, sessions: sessions, connections: connections)
         } catch { try? await group.shutdownGracefully(); throw error }
     }
 
@@ -636,6 +677,7 @@ public final class KilnSSHServer: Sendable {
         // Give terminal reset/exit packets time to flush, without allowing a stalled
         // client to hold up runtime shutdown indefinitely.
         try? await Task.sleep(for: .milliseconds(100))
+        for connection in connections.drain() { try? await connection.close().get() }
         try? await group.shutdownGracefully()
     }
 }

@@ -317,15 +317,14 @@ private extension KilnCommands {
         if parts.count == 5, parts[1] == "configure" {
             let config = AIConfiguration(baseURL: parts[2], model: parts[3], secret: parts[4]); try config.validate()
             try KilnVault.validateName(config.secret)
-            try JSONEncoder().encode(config).write(to: configURL, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            try KilnStateFile.write(JSONEncoder().encode(config), to: configURL)
             return CommandResult("AI configured. Grant kiln/ai the named Vault secret. Credentials are never stored in ai.json.")
         }
         if parts.count == 4, parts[1] == "knowledge", parts[2] == "install" {
             let bytes = try Data(contentsOf: URL(fileURLWithPath: parts[3]))
             guard bytes.count <= 32768 else { throw AIError.message("Knowledge pack exceeds 32 KiB") }
             let pack = try JSONDecoder().decode(AIKnowledgePack.self, from: bytes); try pack.validate()
-            try JSONEncoder().encode(pack).write(to: knowledgeURL, options: .atomic)
+            try KilnStateFile.write(JSONEncoder().encode(pack), to: knowledgeURL)
             return CommandResult("Knowledge pack \(pack.version) installed. New turns use it without a restart; permissions are unchanged.")
         }
         if parts.count == 3, parts[1] == "deny" { return CommandResult(try await assistant.deny(parts[2], session: sessionID)) }

@@ -22,7 +22,7 @@ public final class KilnIngress: @unchecked Sendable {
             .childChannelInitializer { [self] channel in
                 let id = UUID()
                 let target = state.withLockedValue { state -> Int? in
-                    guard let target = state.target else { return nil }
+                    guard let target = state.target, state.clients.count < 1024 else { return nil }
                     state.clients[id] = (target, channel)
                     return target
                 }

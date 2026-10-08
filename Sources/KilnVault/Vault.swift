@@ -15,10 +15,16 @@ public struct KilnVault: Sendable {
         var grants: [String: Set<String>] = [:]
     }
     public let directory: URL
-    public init(directory: URL) { self.directory = directory }
+    private let stateWriter: @Sendable (Data, URL) throws -> Void
+    private static let maximumStoreBytes = 16_777_216
+    public init(directory: URL) { self.directory = directory; self.stateWriter = { try KilnStateFile.write($0, to: $1) } }
+    // Fault injection for testing failures after an atomic replacement committed.
+    init(directory: URL, stateWriter: @escaping @Sendable (Data, URL) throws -> Void) {
+        self.directory = directory; self.stateWriter = stateWriter
+    }
     private func locked<T>(_ body: () throws -> T) throws -> T {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let fd = open(directory.appendingPathComponent("vault.lock").path, O_CREAT | O_RDWR, 0o600)
+        let fd = open(directory.appendingPathComponent("vault.lock").path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw KilnError.message("Cannot open Vault lock") }
         defer { close(fd) }
         guard flock(fd, LOCK_EX) == 0 else { throw KilnError.message("Cannot lock Vault") }
@@ -39,8 +45,7 @@ public struct KilnVault: Sendable {
     private var configurationURL: URL { directory.appendingPathComponent("vault-config.json") }
     private var contentsURL: URL { directory.appendingPathComponent("vault.enc") }
     private func write(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try stateWriter(data, url)
     }
     public func initialize(keyFile: URL) throws -> String {
         try locked {
@@ -52,44 +57,69 @@ public struct KilnVault: Sendable {
             guard !keyURL.path.hasPrefix(statePath + "/"), keyURL.path != statePath else {
                 throw KilnError.message("Master key must live outside the state directory")
             }
-            let fd = open(keyURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            let parent = keyURL.deletingLastPathComponent()
+            var parentInfo = stat()
+            guard stat(parent.path, &parentInfo) == 0, parentInfo.st_uid == geteuid(),
+                  parentInfo.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR), parentInfo.st_mode & 0o022 == 0 else {
+                throw KilnError.message("Master key parent must be owned by this user and not writable by group or others")
+            }
+            let fd = open(keyURL.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
             guard fd >= 0 else { throw KilnError.message("Master key path must be new, with an existing protected parent directory") }
             let key = SymmetricKey(size: .bits256)
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             do {
                 try handle.write(contentsOf: key.withUnsafeBytes { Data($0) }); try handle.synchronize(); try handle.close()
+                let parentFD = open(parent.path, O_RDONLY | O_CLOEXEC)
+                guard parentFD >= 0 else { throw KilnError.message("Cannot flush master key directory") }
+                let flushed = fsync(parentFD); close(parentFD)
+                guard flushed == 0 else { throw KilnError.message("Cannot flush master key directory") }
                 let config = Configuration(id: UUID().uuidString, keyFile: keyURL.path)
                 try save(Contents(), config: config, key: key)
                 try write(JSONEncoder().encode(config), to: configurationURL)
             } catch {
-                try? handle.close(); try? FileManager.default.removeItem(at: keyURL)
-                try? FileManager.default.removeItem(at: contentsURL)
-                throw KilnError.message("Vault initialization failed")
+                try? handle.close()
+                // A replacement may already be committed despite an fsync error.
+                // Never delete its only key or ciphertext as an error "rollback".
+                throw KilnError.message("Vault initialization did not confirm completion. Existing key and state files were preserved; inspect or restore them before retrying.")
             }
             return "Vault initialized. Keep the master key separate from state backups; losing it makes secrets unrecoverable."
         }
     }
+    private func readPrivateFile(_ url: URL, maximum: Int) throws -> Data {
+        // Validate and read the same descriptor. O_NONBLOCK avoids hanging on a
+        // substituted FIFO before fstat rejects it; symlinks are never followed.
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { throw KilnError.message("Vault file is missing or cannot be opened safely") }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_uid == geteuid(), info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              info.st_mode & 0o777 == 0o600, info.st_size >= 0, Int64(info.st_size) <= Int64(maximum) else {
+            throw KilnError.message("Vault files must be regular, owned by this user, mode 0600 and within size limits")
+        }
+        let bytes = try handle.read(upToCount: maximum + 1) ?? Data()
+        guard bytes.count <= maximum else { throw KilnError.message("Vault file exceeds size limit") }
+        return bytes
+    }
     private func load() throws -> (Contents, Configuration, SymmetricKey) {
-        guard let data = try? Data(contentsOf: configurationURL), let config = try? JSONDecoder().decode(Configuration.self, from: data) else {
-            throw KilnError.message("Vault is not initialized. On the host run: kiln vault init --state PATH --key-file PATH")
+        let data = try readPrivateFile(configurationURL, maximum: 16384)
+        guard let config = try? JSONDecoder().decode(Configuration.self, from: data),
+              UUID(uuidString: config.id) != nil, config.keyFile.hasPrefix("/"), config.keyFile.utf8.count <= 4096 else {
+            throw KilnError.message("Vault configuration is invalid; restore the original configuration and key")
         }
-        let attributes = try FileManager.default.attributesOfItem(atPath: config.keyFile)
-        guard (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600,
-              (attributes[.ownerAccountID] as? NSNumber)?.uint32Value == geteuid(),
-              attributes[.type] as? FileAttributeType == .typeRegular else {
-            throw KilnError.message("Vault master key must be a regular file owned by this user with mode 0600")
-        }
-        let bytes = try Data(contentsOf: URL(fileURLWithPath: config.keyFile))
+        let bytes = try readPrivateFile(URL(fileURLWithPath: config.keyFile), maximum: 32)
         guard bytes.count == 32 else { throw KilnError.message("Invalid Vault master key") }
         let key = SymmetricKey(data: bytes)
         do {
-            let box = try AES.GCM.SealedBox(combined: Data(contentsOf: contentsURL))
+            let box = try AES.GCM.SealedBox(combined: readPrivateFile(contentsURL, maximum: Self.maximumStoreBytes))
             let clear = try AES.GCM.open(box, using: key, authenticating: Data(config.id.utf8))
             return (try JSONDecoder().decode(Contents.self, from: clear), config, key)
         } catch { throw KilnError.message("Vault authentication failed; key or encrypted store is invalid") }
     }
     private func save(_ contents: Contents, config: Configuration, key: SymmetricKey) throws {
-        let box = try AES.GCM.seal(JSONEncoder().encode(contents), using: key, authenticating: Data(config.id.utf8))
+        let clear = try JSONEncoder().encode(contents)
+        guard clear.count <= Self.maximumStoreBytes - 28 else { throw KilnError.message("Vault exceeds the 16 MiB encrypted store limit") }
+        let box = try AES.GCM.seal(clear, using: key, authenticating: Data(config.id.utf8))
         guard let data = box.combined else { throw KilnError.message("Vault encryption failed") }
         try write(data, to: contentsURL)
     }

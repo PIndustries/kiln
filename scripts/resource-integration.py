@@ -124,7 +124,19 @@ while True: time.sleep(1)
         assert children and int((pids_group / 'pids.current').read_text()) <= 16
         assert int(counters(pids_group, 'pids.events')['max']) > 0
         assert health()
-        command('app stop resource/pids'); wait(lambda: not pids_group.exists())
+        # Diagnostic persistence must never gate actual cgroup cleanup. Obstruct
+        # mkdir with a regular file, then restore reports for the OOM proof.
+        reports = state / 'resource-reports'; saved_reports = state / 'saved-resource-reports'
+        if reports.exists(): reports.rename(saved_reports)
+        reports.write_text('diagnostic path deliberately obstructed')
+        try:
+            command('app stop resource/pids'); wait(lambda: not pids_group.exists())
+            assert not (state / 'resource-ledger' / (pids_group.name.removeprefix('kiln-') + '.json')).exists()
+            assert health()
+        finally:
+            reports.unlink()
+            if saved_reports.exists(): saved_reports.rename(reports)
+        print('PASS blocked diagnostic storage does not strand cgroups or ownership', flush=True)
         def terminated(pid):
             path = pathlib.Path(f'/proc/{pid}/stat')
             return not path.exists() or path.read_text().split(') ', 1)[1].startswith('Z ')

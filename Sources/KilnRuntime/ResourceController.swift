@@ -110,15 +110,25 @@ enum ResourceController {
                 usleep(50_000)
             }
             guard empty else { throw KilnError.message("Resource descendants have not exited; refusing to discard ownership") }
-            let report = try observation(record, active: false)
-            let reports = state.appendingPathComponent("resource-reports/" + record.module).deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            // Reports are diagnostic. Their failure must not skip descendant cleanup.
-            try? KilnStateFile.write(Data(report.utf8), to: state.appendingPathComponent("resource-reports/" + record.module + ".txt"))
+            // Every diagnostic step is best-effort, including mkdir. A full disk
+            // or obstructed report path must not strand an empty owned group.
+            if let report = try? observation(record, active: false) {
+                writeDiagnostic(report, module: record.module, state: state)
+            }
             try removeEmptyTree(directory)
         }
         let marker = state.appendingPathComponent("resource-ledger/" + record.id + ".json")
         if FileManager.default.fileExists(atPath: marker.path) { try FileManager.default.removeItem(at: marker) }
+    }
+
+    static func writeDiagnostic(_ report: String, module: String, state: URL) {
+        do {
+            let destination = state.appendingPathComponent("resource-reports/" + module + ".txt")
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try KilnStateFile.write(Data(report.utf8), to: destination)
+        } catch {
+            // Inspection may be unavailable; ownership cleanup remains mandatory.
+        }
     }
 
     static func reconcile(state: URL) throws {

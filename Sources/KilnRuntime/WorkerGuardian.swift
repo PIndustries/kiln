@@ -33,31 +33,41 @@ public enum KilnWorkerGuardian {
         }
         let worker = Process()
         let handshake = Pipe()
+        let output = Pipe()
+        let outputFD = output.fileHandleForReading.fileDescriptor
+        guard fcntl(outputFD, F_SETFL, O_NONBLOCK) == 0 else {
+            throw KilnError.message("Cannot initialize worker log capture")
+        }
+        defer { try? output.fileHandleForReading.close(); try? output.fileHandleForWriting.close() }
         worker.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
         worker.arguments = ["worker-exec", resource?.root ?? "-", resource?.id ?? "-"] + Array(arguments.dropFirst())
         worker.environment = environment
         worker.currentDirectoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         worker.standardInput = FileHandle.nullDevice
         worker.standardOutput = handshake.fileHandleForWriting
-        worker.standardError = FileHandle.standardError
+        worker.standardError = output.fileHandleForWriting
         // A supervisor killed before reading the acknowledgement closes stdout.
         // Never let SIGPIPE abandon a child we have already launched.
         signal(SIGPIPE, SIG_IGN)
         var failure: (any Error)?
         do {
             try launchWithWorkerSignals(worker)
+            try output.fileHandleForWriting.close()
             try handshake.fileHandleForWriting.close()
             defer { try? handshake.fileHandleForReading.close() }
             guard readHandshake(handshake.fileHandleForReading.fileDescriptor) else {
                 throw KilnError.message("Worker execution preparation was not acknowledged")
             }
             let acknowledged = writeBytes(STDOUT_FILENO, Array("\(worker.processIdentifier)\n".utf8))
-            while acknowledged && worker.isRunning && !lifetimeEnded(timeout: 100) {}
+            while acknowledged && worker.isRunning && !lifetimeEnded() {
+                if !captureOutput(outputFD, timeout: 50) { usleep(10_000) }
+            }
         } catch { failure = error }
         if worker.isRunning {
             worker.terminate()
             for _ in 0..<30 {
                 if !worker.isRunning { break }
+                captureOutput(outputFD, timeout: 0)
                 usleep(100_000)
             }
             if worker.isRunning { kill(worker.processIdentifier, SIGKILL) }
@@ -68,7 +78,25 @@ public enum KilnWorkerGuardian {
         // library termination descriptor open and delay direct-child reaping.
         if let resource { try ResourceController.finish(resource, state: state) }
         if worker.processIdentifier > 0 { worker.waitUntilExit() }
+        // Drain a bounded final tail. Legacy daemon children may retain the pipe;
+        // never wait for their EOF after the exact direct worker has exited.
+        for _ in 0..<16 { if !captureOutput(outputFD, timeout: 0) { break } }
         if let failure { throw failure }
+    }
+
+    @discardableResult
+    private static func captureOutput(_ descriptor: Int32, timeout: Int32) -> Bool {
+        var item = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+        guard poll(&item, 1, timeout) > 0 else { return false }
+        var bytes = [UInt8](repeating: 0, count: 65536)
+        #if canImport(Darwin)
+        let count = Darwin.read(descriptor, &bytes, bytes.count)
+        #else
+        let count = Glibc.read(descriptor, &bytes, bytes.count)
+        #endif
+        guard count > 0 else { return false }
+        WorkerLog.append(Array(bytes.prefix(count)), to: STDERR_FILENO)
+        return true
     }
 
     /// Internal same-binary trampoline. Application instructions cannot run until

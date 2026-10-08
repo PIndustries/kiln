@@ -60,10 +60,71 @@ public struct AITool: Encodable, Sendable {
         function = Function(name: name, description: description, parameters: Parameters(properties: properties, required: properties.keys.sorted()))
     }
 }
-private final class NoRedirect: NSObject, URLSessionTaskDelegate, Sendable {
+/// URLSession delivers delegate callbacks serially on its delegate queue. Only
+/// those callbacks mutate the accumulator; cancellation only cancels the task.
+private final class BoundedCompletionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    static let maximumBytes = 4_194_304
+    let continuation: AsyncThrowingStream<Data, Error>.Continuation
+    private var bytes = Data()
+    private var finished = false
+    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation) { self.continuation = continuation }
+    private func fail(_ message: String) {
+        guard !finished else { return }
+        finished = true; bytes.removeAll(keepingCapacity: false)
+        continuation.finish(throwing: AIError.message(message))
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
         completionHandler(nil)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        guard let response = response as? HTTPURLResponse else { fail("Invalid Erebine response"); completionHandler(.cancel); return }
+        guard response.statusCode == 200 else {
+            fail("Erebine returned HTTP \(response.statusCode); check endpoint, model, quota and credential")
+            completionHandler(.cancel); return
+        }
+        guard response.expectedContentLength <= Int64(Self.maximumBytes) else {
+            fail("Erebine response exceeded its 4 MiB size limit"); completionHandler(.cancel); return
+        }
+        completionHandler(.allow)
+    }
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard !finished else { return }
+        // Content-Length can be absent, compressed, or wrong. Enforce the limit
+        // on actual delivered bytes BEFORE appending, including chunked bodies.
+        guard data.count <= Self.maximumBytes - bytes.count else {
+            fail("Erebine response exceeded its 4 MiB size limit"); dataTask.cancel(); return
+        }
+        bytes.append(data)
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !finished else { return }
+        if error != nil { fail("Erebine request failed or timed out; no operation was automatically retried"); return }
+        finished = true
+        continuation.yield(bytes); continuation.finish()
+        bytes.removeAll(keepingCapacity: false)
+    }
+}
+
+enum BoundedCompletionHTTP {
+    static func data(for request: URLRequest, configuration: URLSessionConfiguration) async throws -> Data {
+        let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(1))
+        let delegate = BoundedCompletionDelegate(pair.continuation)
+        let queue = OperationQueue(); queue.maxConcurrentOperationCount = 1
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: queue)
+        let task = session.dataTask(with: request)
+        defer { task.cancel(); session.invalidateAndCancel() }
+        return try await withTaskCancellationHandler {
+            do {
+                try Task.checkCancellation(); task.resume()
+                for try await data in pair.stream { try Task.checkCancellation(); return data }
+                throw AIError.message("Erebine returned no response")
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                throw error
+            }
+        } onCancel: { task.cancel() }
     }
 }
 
@@ -86,13 +147,7 @@ public struct ErebineClient: Sendable {
         request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages, tools: tools))
         let options = URLSessionConfiguration.ephemeral
         options.httpCookieStorage = nil; options.urlCache = nil; options.timeoutIntervalForResource = 120
-        let session = URLSession(configuration: options, delegate: NoRedirect(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-        let data: Data; let response: URLResponse
-        do { (data, response) = try await session.data(for: request) }
-        catch { throw AIError.message("Erebine request failed or timed out; no operation was automatically retried") }
-        guard let response = response as? HTTPURLResponse else { throw AIError.message("Invalid Erebine response") }
-        guard response.statusCode == 200 else { throw AIError.message("Erebine returned HTTP \(response.statusCode); check endpoint, model, quota and credential") }
+        let data = try await BoundedCompletionHTTP.data(for: request, configuration: options)
         guard data.count <= 4_194_304, let decoded = try? JSONDecoder().decode(Response.self, from: data),
               let message = decoded.choices.first?.message, message.role == "assistant" else { throw AIError.message("Invalid or oversized Erebine response") }
         guard (try? JSONEncoder().encode(message).count) ?? Int.max <= 65536 else { throw AIError.message("Erebine message exceeded the conversation limit") }

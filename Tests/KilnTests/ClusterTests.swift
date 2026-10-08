@@ -44,6 +44,12 @@ private actor PeerCounter {
         #expect(try await a.receipt(peer: bp.fingerprint, requestID: UUID().uuidString.lowercased()).state == "missing")
         #expect(await counter.count() == 1)
         #expect(try await a.operations().contains(id))
+        // A durable send with no recorded outcome is reconciled, never resent.
+        let uncertain = ClusterRequest(operation: .restart, module: "demo/api")
+        let pending: [String: Any] = ["peer": bp.fingerprint, "request": try JSONSerialization.jsonObject(with: JSONEncoder().encode(uncertain))]
+        try JSONSerialization.data(withJSONObject: pending).write(to: folder.appendingPathComponent("a/cluster/outbound/\(uncertain.id).json"))
+        await #expect(throws: (any Error).self) { _ = try await a.operate(peer: bp.fingerprint, operation: .restart, module: "demo/api", requestID: uncertain.id) }
+        #expect(await counter.count() == 1)
         // Native SSH host pin mismatch must fail before the request reaches B.
         let wrong = ClusterPeer(fingerprint: ap.fingerprint, publicKey: ap.publicKey, host: "127.0.0.1", port: lb.channel.localAddress!.port!, discoveredAt: Date())
         await #expect(throws: (any Error).self) { _ = try await ClusterTransport.execute(peer: wrong, key: a.privateKey, request: ClusterRequest(operation: .status)) }
@@ -127,4 +133,95 @@ private actor PeerCounter {
     #expect(lines.count == 101)
     #expect(lines[1].hasPrefix(newest))
     #expect(lines[2].hasPrefix(oldest))
+}
+
+private actor ClusterWorkGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    func execute() async -> String {
+        if !released { await withCheckedContinuation { waiters.append($0) } }
+        return "completed fixture work"
+    }
+    func count() -> Int { waiters.count }
+    func release() {
+        released = true
+        let pending = waiters; waiters = []
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+@Test func clusterBoundsWorkThatOutlivesConnections() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let gate = ClusterWorkGate()
+    let a = try KilnCluster(directory: folder.appendingPathComponent("a")) { _, _ in "" }
+    let b = try KilnCluster(directory: folder.appendingPathComponent("b")) { _, _ in await gate.execute() }
+    _ = try await b.candidate(host: "127.0.0.1", port: 2223, publicKey: a.identity.publicKey)
+    _ = try await b.accept(a.identity.fingerprint)
+    // These represent already-dispatched operations, independent of any socket.
+    let work = (0..<32).map { _ in Task { try await b.receive(ClusterRequest(operation: .restart, module: "demo/api"), from: a.identity.fingerprint) } }
+    for _ in 0..<200 { if await gate.count() == 32 { break }; try? await Task.sleep(for: .milliseconds(10)) }
+    #expect(await gate.count() == 32)
+    let denied = ClusterRequest(operation: .restart, module: "demo/api")
+    await #expect(throws: (any Error).self) { _ = try await b.receive(denied, from: a.identity.fingerprint) }
+    #expect(!FileManager.default.fileExists(atPath: folder.appendingPathComponent("b/cluster/receipts/\(denied.id).json").path))
+    await gate.release()
+    for task in work { #expect(try await task.value.state == "completed") }
+    // Admission is released when accepted work completes.
+    #expect(try await b.receive(denied, from: a.identity.fingerprint).state == "completed")
+}
+
+@Test func clusterConcurrentOutboundIDCannotOverwriteConfirmedOutcome() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let gate = ClusterWorkGate()
+    let a = try KilnCluster(directory: folder.appendingPathComponent("a")) { _, _ in "" }
+    let b = try KilnCluster(directory: folder.appendingPathComponent("b")) { _, _ in await gate.execute() }
+    let listener = try await ClusterListener.start(host: "127.0.0.1", port: 0, key: b.privateKey, cluster: b)
+    do {
+        _ = try await a.candidate(host: "127.0.0.1", port: listener.channel.localAddress!.port!, publicKey: b.identity.publicKey)
+        _ = try await a.accept(b.identity.fingerprint)
+        _ = try await b.candidate(host: "127.0.0.1", port: 2223, publicKey: a.identity.publicKey)
+        _ = try await b.accept(a.identity.fingerprint)
+        let id = UUID().uuidString.lowercased()
+        let original = Task { try await a.operate(peer: b.identity.fingerprint, operation: .restart, module: "demo/api", requestID: id) }
+        for _ in 0..<200 { if await gate.count() == 1 { break }; try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(await gate.count() == 1)
+        await #expect(throws: (any Error).self) { _ = try await a.operate(peer: b.identity.fingerprint, operation: .restart, module: "demo/api", requestID: id) }
+        #expect(try await a.receipt(peer: b.identity.fingerprint, requestID: id).state == "unconfirmed")
+        let occupied = (0..<31).map { _ in Task { try await b.receive(ClusterRequest(operation: .status), from: a.identity.fingerprint) } }
+        for _ in 0..<200 { if await gate.count() == 32 { break }; try? await Task.sleep(for: .milliseconds(10)) }
+        #expect(await gate.count() == 32)
+        // Rejecting a receipt LOOKUP must not mark the pending mutation rejected.
+        await #expect(throws: (any Error).self) { _ = try await a.receipt(peer: b.identity.fingerprint, requestID: id) }
+        #expect(try await a.operations().contains("\(id) \(b.identity.fingerprint) restart demo/api unconfirmed"))
+        await gate.release()
+        for task in occupied { _ = try await task.value }
+        #expect(try await original.value.state == "completed")
+        #expect(try await a.operations().contains("\(id) \(b.identity.fingerprint) restart demo/api completed"))
+        #expect(try await a.operate(peer: b.identity.fingerprint, operation: .restart, module: "demo/api", requestID: id).state == "completed")
+    } catch { await gate.release(); await listener.stop(); throw error }
+    await listener.stop()
+}
+
+@Test func clusterConcurrentStartKeepsOneListener() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let cluster = try KilnCluster(directory: folder) { _, _ in "" }
+    let successes = await withTaskGroup(of: Bool.self, returning: Int.self) { group in
+        for _ in 0..<12 {
+            group.addTask {
+                do { try await cluster.start(host: "127.0.0.1", port: 0); return true }
+                catch { return false }
+            }
+        }
+        var successes = 0
+        for await success in group { if success { successes += 1 } }
+        return successes
+    }
+    await cluster.stop()
+    #expect(successes == 1)
+    // Clean stop permits a later deliberate start.
+    try await cluster.start(host: "127.0.0.1", port: 0)
+    await cluster.stop()
 }

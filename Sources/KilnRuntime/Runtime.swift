@@ -262,8 +262,7 @@ public actor KilnRuntime {
         try FileManager.default.createDirectory(at: logs, withIntermediateDirectories: true)
         let logURL = logs.appendingPathComponent("\(name).log")
         try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
-        let log = try FileHandle(forWritingTo: logURL); try log.seekToEnd()
+        let log = try WorkerLog.open(logURL)
         let process = Process()
         let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
         var guardian = executable.lastPathComponent == "kiln" ? executable : executable.deletingLastPathComponent().appendingPathComponent("kiln")
@@ -487,7 +486,7 @@ public actor KilnRuntime {
         let file = try FileHandle(forReadingFrom: stateDirectory.appendingPathComponent("logs/\(name).log"))
         defer { try? file.close() }
         let size = try file.seekToEnd(); try file.seek(toOffset: size > 8192 ? size - 8192 : 0)
-        return String(decoding: try file.readToEnd() ?? Data(), as: UTF8.self)
+        return String(decoding: try file.read(upToCount: 8192) ?? Data(), as: UTF8.self)
     }
 
     public func shutdown() async {

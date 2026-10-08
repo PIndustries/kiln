@@ -87,3 +87,7 @@ Values are delivered at startup. Rotation applies on the next start/deployment. 
 ## Verification
 
 `swift test` covers encrypted persistence, explicit grants, denial, rotation, revocation, tampering, missing keys and module startup enforcement. `scripts/vault-integration.py` exercises hidden entry and cancellation using real OpenSSH, checks a launched worker's received credential by digest, and verifies that raw values are absent from captured SSH output and runtime state/log files. Test credentials are disposable.
+
+State replacement flushes encrypted contents and configuration before reporting success. If initialization cannot confirm its final write, Kiln retains the newly created key and state files instead of deleting potentially committed data. Inspect the existing files or restore a matching backup before attempting initialization again. The master-key parent must be owned by the runtime user and must not allow group/other writes.
+
+Vault reads validate ownership, mode 0600 and regular-file type on the same open descriptor used for reading; symlinks are rejected. Configuration is bounded to 16 KiB and the encrypted store to 16 MiB. These checks prevent accidental exposure through loose file permissions and unbounded allocation from a damaged state file. They do not make the Vault secure against arbitrary code already running as Kiln's OS user.

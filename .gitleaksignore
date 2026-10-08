@@ -1,0 +1,4 @@
+# Reviewed false positives: uninitialized Swift type declarations, no key values.
+# Exact historical fingerprints only; future findings still require review.
+39048268dfe08daf31115258e672a84032e163f5:Sources/KilnCluster/Cluster.swift:generic-api-key:61
+62dc6b23bebfeb0d254b9f2e3e9fdd5d66a78e95:Sources/KilnSSH/SSHServer.swift:generic-api-key:142

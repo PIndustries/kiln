@@ -48,6 +48,11 @@ public actor KilnCluster {
     private var index: Index
     private var persistenceFault = false
     private var stopping = false
+    private var starting = false
+    private var shutdownTask: Task<Void, Never>?
+    private var incomingRequests = 0
+    private var outgoingRequests = 0
+    private var sendingMutations: Set<String> = []
     private var reachability: [String: (Date, String)] = [:]
     private var heartbeat: Task<Void, Never>?
     private var listener: ClusterListener?
@@ -120,7 +125,10 @@ public actor KilnCluster {
         return peer
     }
     public func discover(host: String, port: Int) async throws -> ClusterPeer {
+        guard !stopping, !persistenceFault, outgoingRequests < 16 else { throw KilnError.message("Cluster unavailable or outbound request limit reached") }
         try Self.validateEndpoint(host, port)
+        outgoingRequests += 1
+        defer { outgoingRequests -= 1 }
         let key = try await ClusterTransport.scan(host: host, port: port)
         return try candidate(host: host, port: port, publicKey: key)
     }
@@ -153,16 +161,22 @@ public actor KilnCluster {
     }
     public func operate(peer fingerprint: String, operation: ClusterOperation, module: String? = nil, requestID: String = UUID().uuidString.lowercased()) async throws -> ClusterResponse {
         guard !stopping, !persistenceFault, let peer = index.peers[fingerprint] else { throw KilnError.message("Peer is not adopted") }
-        var request = ClusterRequest(id: requestID, operation: operation, module: module)
+        let request = ClusterRequest(id: requestID, operation: operation, module: module)
         try Self.validate(request)
+        guard outgoingRequests < 16 else { throw KilnError.message("Cluster outbound request limit reached") }
+        if operation != .status {
+            guard sendingMutations.insert(requestID).inserted else { throw KilnError.message("Peer request \(requestID) is already in flight; inspect its receipt instead of sending it again") }
+        }
+        outgoingRequests += 1
+        defer { outgoingRequests -= 1; if operation != .status { sendingMutations.remove(requestID) } }
         let path = directory.appendingPathComponent("outbound/" + requestID + ".json")
         var outbound = Outbound(peer: fingerprint, request: request, response: nil)
         if operation != .status {
             if FileManager.default.fileExists(atPath: path.path) {
                 outbound = try JSONDecoder().decode(Outbound.self, from: Data(contentsOf: path))
                 guard outbound.peer == fingerprint, outbound.request.operation == operation, outbound.request.module == module else { throw KilnError.message("Outbound ID reused with a different peer or operation") }
-                request = outbound.request
                 if let response = outbound.response { return response }
+                throw KilnError.message("Peer request \(requestID) already has an uncertain outcome. Query its receipt; the original mutation will not be retransmitted.")
             } else {
                 guard try FileManager.default.contentsOfDirectory(atPath: directory.appendingPathComponent("outbound").path).count < 10000 else { throw KilnError.message("Outbound journal full") }
                 do { try KilnStateFile.write(try JSONEncoder().encode(outbound), to: path) }
@@ -171,7 +185,7 @@ public actor KilnCluster {
         }
         do {
             let response = try await ClusterTransport.execute(peer: peer, key: privateKey, request: request)
-            guard index.peers[fingerprint]?.publicKey == peer.publicKey, !persistenceFault else { throw KilnError.message("Peer revoked or local persistence uncertain during operation") }
+            guard !stopping, index.peers[fingerprint]?.publicKey == peer.publicKey, !persistenceFault else { throw KilnError.message("Peer revoked or local persistence uncertain during operation") }
             reachability[fingerprint] = (Date(), "reachable")
             if operation != .status {
                 outbound.response = response
@@ -206,12 +220,18 @@ public actor KilnCluster {
     }
     public func receipt(peer fingerprint: String, requestID: String) async throws -> ClusterResponse {
         guard !stopping, !persistenceFault, let peer = index.peers[fingerprint], UUID(uuidString: requestID)?.uuidString.lowercased() == requestID else { throw KilnError.message("Unknown peer or invalid operation ID") }
+        guard outgoingRequests < 16 else { throw KilnError.message("Cluster outbound request limit reached") }
+        outgoingRequests += 1
+        defer { outgoingRequests -= 1 }
         let request = ClusterRequest(operation: .status, receiptID: requestID)
         let response = try await ClusterTransport.execute(peer: peer, key: privateKey, request: request)
         guard !stopping, !persistenceFault, index.peers[fingerprint]?.publicKey == peer.publicKey else { throw KilnError.message("Peer revoked or local state requires recovery during receipt lookup") }
         // A read-only remote lookup can reconcile our local journal, but can
         // never send the original mutation or erase an uncertain outcome.
-        if ["completed", "failed", "rejected"].contains(response.state) {
+        // "rejected" describes this lookup request (for example admission
+        // overload), not the original mutation whose receipt was requested.
+        guard response.state != "rejected" else { throw KilnError.message("Receipt lookup rejected; the outcome of \(requestID) is unchanged: \(response.output)") }
+        if ["completed", "failed"].contains(response.state) {
             let path = directory.appendingPathComponent("outbound/" + requestID + ".json")
             if FileManager.default.fileExists(atPath: path.path) {
                 var outbound = try JSONDecoder().decode(Outbound.self, from: Data(contentsOf: path))
@@ -230,6 +250,11 @@ public actor KilnCluster {
     public func receive(_ request: ClusterRequest, from peer: String) async throws -> ClusterResponse {
         guard !stopping, !persistenceFault, index.peers[peer] != nil else { throw KilnError.message("Peer is not adopted or was revoked") }
         try Self.validate(request)
+        // Work can outlive its SSH connection. Bound actor-dispatched work,
+        // not merely the currently open sockets, before any receipt or effect.
+        guard incomingRequests < 32 else { throw KilnError.message("Cluster incoming request limit reached; no new operation was started") }
+        incomingRequests += 1
+        defer { incomingRequests -= 1 }
         if request.operation == .status {
             if let target = request.receiptID {
                 let path = directory.appendingPathComponent("receipts/" + target + ".json")
@@ -268,11 +293,23 @@ public actor KilnCluster {
               !module.contains(".."), !module.hasPrefix("/"), !module.hasSuffix("/") else { throw KilnError.message("Expected application/module identifier") }
     }
     public func start(host: String, port: Int, discoveryPort: Int? = nil) async throws {
-        guard listener == nil else { throw KilnError.message("Cluster listener already started") }
+        guard !starting, shutdownTask == nil, listener == nil else { throw KilnError.message("Cluster listener already started or changing lifecycle") }
+        starting = true
         stopping = false
-        listener = try await ClusterListener.start(host: host, port: port, key: privateKey, cluster: self)
-        do { if let discoveryPort { discovery = try await ClusterDiscovery.start(cluster: self, publicKey: identity.publicKey, peerPort: port, discoveryPort: discoveryPort) } }
-        catch { await listener?.stop(); listener = nil; throw error }
+        defer { starting = false }
+        let opened = try await ClusterListener.start(host: host, port: port, key: privateKey, cluster: self)
+        var advertisements: ClusterDiscovery?
+        do {
+            guard !stopping else { throw KilnError.message("Cluster stopped during startup") }
+            if let discoveryPort { advertisements = try await ClusterDiscovery.start(cluster: self, publicKey: identity.publicKey, peerPort: port, discoveryPort: discoveryPort) }
+            guard !stopping else { throw KilnError.message("Cluster stopped during startup") }
+        } catch {
+            await advertisements?.stop()
+            await opened.stop()
+            throw error
+        }
+        listener = opened
+        discovery = advertisements
         heartbeat = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -290,5 +327,15 @@ public actor KilnCluster {
             }
         }
     }
-    public func stop() async { stopping = true; heartbeat?.cancel(); heartbeat = nil; await discovery?.stop(); discovery = nil; await listener?.stop(); listener = nil }
+    public func stop() async {
+        if let shutdownTask { await shutdownTask.value; return }
+        stopping = true
+        heartbeat?.cancel(); heartbeat = nil
+        let advertisements = discovery, opened = listener
+        discovery = nil; listener = nil
+        let task = Task<Void, Never> { await advertisements?.stop(); await opened?.stop() }
+        shutdownTask = task
+        await task.value
+        shutdownTask = nil
+    }
 }

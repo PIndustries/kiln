@@ -36,7 +36,7 @@ let package = Package(
         .target(name: "KilnTelemetry", dependencies: ["KilnKit"]),
         .target(name: "KilnCommands", dependencies: ["KilnCluster", "KilnAI", "KilnVault", "KilnRuntime", "KilnKit", "KilnTelemetry", "KilnBastion", .product(name: "NIOSSH", package: "swift-nio-ssh")]),
         .target(name: "KilnTerminal", dependencies: ["KilnKit"]),
-        .target(name: "KilnSSH", dependencies: ["KilnBastion", "KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
+        .target(name: "KilnSSH", dependencies: ["KilnKit", "KilnBastion", "KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnHTTP", dependencies: [.product(name: "NIOHTTP1", package: "swift-nio")]),
         .target(name: "KilnWebSocket", dependencies: [.product(name: "NIOWebSocket", package: "swift-nio")]),
         .executableTarget(name: "Kiln", dependencies: ["KilnCluster", "KilnVault", "KilnKit", "KilnBastion", "KilnCommands", "KilnSSH", "KilnRuntime"]),

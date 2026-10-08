@@ -30,6 +30,8 @@ This is **not a production sandbox or a consensus-based cluster**. Modules run a
 
 See [identity and permissions](docs/identities.md), [module resource limits](docs/resources.md), [peer-node management](docs/clustering.md), and [foundation acceptance](docs/foundation.md).
 
+See [release-readiness gates and operating limits](docs/release-readiness.md) before preparing a distribution or changing repository visibility.
+
 See [Linux boot service setup](docs/linux-service.md) for systemd startup and recovery boundaries.
 
 See [native AI chat](docs/ai.md) for Erebine setup, tools and updateable knowledge.
@@ -42,7 +44,7 @@ Kiln releases use `YY.MM.DD.BUILD`, starting with `26.10.07.1`. The build counte
 
 ## Build
 
-Requires Swift 6.1 or newer. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: unit/policy tests plus real SSH, REST/WebSocket, supervisor SIGKILL, interrupted deployment and restore checks. A disposable Ubuntu VM also verifies startup and application restoration after a real reboot. Bastion credential storage remains macOS Keychain-specific.
+Release validation uses Swift 6.2.3. The package manifest uses tools version 6.1, but older compilers are not part of the verified support matrix. Verified locally on Apple Silicon macOS with Swift 6.2.3. Linux x86_64 is verified with Swift 6.2.3 in an isolated container: unit/policy tests plus real SSH, REST/WebSocket, supervisor SIGKILL, interrupted deployment and restore checks. A disposable Ubuntu VM also verifies startup and application restoration after a real reboot. Bastion credential storage remains macOS Keychain-specific.
 
 ```sh
 swift build

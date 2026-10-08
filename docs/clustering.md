@@ -41,7 +41,7 @@ node revoke SHA256:<peer>
 
 `node list` reports the last actual probe result and timestamp. AI can read this inventory through its administrator-only `cluster_status` tool; remote peer mutations are available through the administrator CLI, not through AI tools. Heartbeats run in bounded groups of four; an unreachable peer is not treated as dead for scheduling or takeover. Remote operations are limited to module inventory, start, stop and restart. Revocation denies future requests, including requests on already authenticated connections. An operation already authorized and dispatched may still finish.
 
-There are at most 32 accepted peers and 64 simultaneous incoming peer connections. Each connection supports one typed request, has a bounded lifetime, and has no general command interpreter. Requests and responses have size limits.
+There are at most 32 accepted peers and 64 simultaneous incoming peer connections. Separately, at most 32 incoming operations may remain dispatched, including work whose client disconnected, and 16 outgoing calls may be active. Reaching these limits rejects new work before dispatch. Concurrent sends of the same mutation ID are refused. A persisted request with an uncertain outcome is never retransmitted; use its receipt to inspect the existing operation. Each connection supports one typed request, has a bounded lifetime, and has no general command interpreter. Requests and responses have size limits.
 
 ## Failure and idempotency
 

@@ -46,7 +46,7 @@ ai status
 
 Use the base URL and model ID supplied by your Erebine endpoint or OpenCode provider configuration. A direct-routing endpoint's model ID must match its model catalog. Only HTTPS configuration is accepted; credential-bearing URLs and redirects are rejected. `ai.json` stores the base URL, model and secret reference, never the API key. Each turn resolves the named grant from Vault, so rotating the key applies to the next turn without a runtime restart.
 
-The user-authorized local installation was configured from the sandbox user's Erebine OpenCode provider on `fleet`. Its source configuration was not modified. The API credential was transferred directly into encrypted Vault without printing it or writing a plaintext local credential file. No configuration or credential from that account ships with the package.
+Provision an Erebine API credential into the encrypted Vault using hidden terminal entry or redirected stdin. Provider configuration and credentials are local operator state and must never be included in a distributable package.
 
 ## How it understands Kiln
 
