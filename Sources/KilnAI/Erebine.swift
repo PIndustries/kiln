@@ -67,6 +67,7 @@ private final class BoundedCompletionDelegate: NSObject, URLSessionDataDelegate,
     let continuation: AsyncThrowingStream<Data, Error>.Continuation
     private var bytes = Data()
     private var finished = false
+    private var rejection: ProviderFailure?
     init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation) { self.continuation = continuation }
     private func fail(_ message: String) {
         guard !finished else { return }
@@ -81,8 +82,11 @@ private final class BoundedCompletionDelegate: NSObject, URLSessionDataDelegate,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
         guard let response = response as? HTTPURLResponse else { fail("Invalid Erebine response"); completionHandler(.cancel); return }
         guard response.statusCode == 200 else {
-            fail("Erebine returned HTTP \(response.statusCode); check endpoint, model, quota and credential")
-            completionHandler(.cancel); return
+            rejection = ProviderFailure(response: response)
+            if response.expectedContentLength > Int64(ProviderFailure.maximumBytes) {
+                fail(rejection!.explanation()); completionHandler(.cancel)
+            } else { completionHandler(.allow) }
+            return
         }
         guard response.expectedContentLength <= Int64(Self.maximumBytes) else {
             fail("Erebine response exceeded its 4 MiB size limit"); completionHandler(.cancel); return
@@ -91,6 +95,10 @@ private final class BoundedCompletionDelegate: NSObject, URLSessionDataDelegate,
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard !finished else { return }
+        if rejection != nil {
+            if !rejection!.append(data) { fail(rejection!.explanation()); dataTask.cancel() }
+            return
+        }
         // Content-Length can be absent, compressed, or wrong. Enforce the limit
         // on actual delivered bytes BEFORE appending, including chunked bodies.
         guard data.count <= Self.maximumBytes - bytes.count else {
@@ -100,6 +108,7 @@ private final class BoundedCompletionDelegate: NSObject, URLSessionDataDelegate,
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard !finished else { return }
+        if let rejection { fail(rejection.explanation()); return }
         if error != nil { fail("Erebine request failed or timed out; no operation was automatically retried"); return }
         finished = true
         continuation.yield(bytes); continuation.finish()

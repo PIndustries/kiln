@@ -273,7 +273,7 @@ public struct KilnTerminal {
                 if common.count > input.count { input = common; cursor = input.count }
                 else { transcript += matches; transcript = Array(transcript.suffix(300)) }
             }
-        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: min(96, width - 6)).count : transcript.count) - 1), scroll + 5)
+        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: max(1, width - 5)).count : transcript.count) - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
@@ -347,7 +347,7 @@ public struct KilnTerminal {
         return body
     }
     private func chatLayout() -> (String, [Hit]) {
-        let columns = min(96, width - 6), left = max(2, (width - columns) / 2)
+        let columns = width - 5, left = 2
         let accent = "\u{1b}[38;5;215m", muted = "\u{1b}[38;5;245m", normal = "\u{1b}[38;5;252m"
         func row(_ value: String = "", _ color: String = "") -> String {
             let text = String((String(repeating: " ", count: left) + Self.safe(value)).prefix(width - 1))
@@ -361,7 +361,8 @@ public struct KilnTerminal {
             lines.append(row(text, ["YOU", "KILN", "ERROR"].contains(text) ? accent : normal))
         }
         while lines.count < height - 5 { lines.append(row()) }
-        let phase = !liveAnswer.isEmpty ? "Receiving response" : !liveReasoning.isEmpty ? "Reasoning" : liveStatus == "Preparing response" ? "Preparing response" : toolCount > 0 ? "Inspecting system" : "Waiting for Erebine"
+        let backingOff = liveStatus.hasPrefix("Provider busy;")
+        let phase = backingOff ? liveStatus : !liveAnswer.isEmpty ? "Receiving response" : !liveReasoning.isEmpty ? "Reasoning" : !liveStatus.isEmpty ? liveStatus : toolCount > 0 ? "Inspecting system" : "Waiting for Erebine"
         let spinner = ["|", "/", "-", "\\"][animation]
         let activity = busy ? "\(spinner) \(phase)  \(Int(Date().timeIntervalSince(started)))s  /  \(toolCount) tool calls" : "Ready" + (toolCount > 0 ? "  /  \(toolCount) tool calls" : "")
         lines += [row(selectingText ? "SELECT TEXT: drag to copy; Ctrl-S resumes" : activity, muted), row(String(repeating: "-", count: columns), accent)]

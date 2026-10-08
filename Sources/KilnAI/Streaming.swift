@@ -76,26 +76,46 @@ struct ErebineStreamDecoder {
     }
 }
 
-private final class StreamingDelegate: NSObject, URLSessionDataDelegate, Sendable {
+// URLSession serializes callbacks on its delegate queue.
+final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private var rejection: ProviderFailure?
+    private var rejected = false
     let continuation: AsyncThrowingStream<Data, Error>.Continuation
     init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation) { self.continuation = continuation }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-              http.mimeType == "text/event-stream" else {
-            continuation.finish(throwing: AIError.message("Erebine stream rejected (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)); check model, quota and endpoint"))
-            completionHandler(.cancel); return
+        guard let http = response as? HTTPURLResponse else {
+            continuation.finish(throwing: AIError.message("Invalid Erebine stream response")); completionHandler(.cancel); return
+        }
+        if http.statusCode != 200 {
+            rejection = ProviderFailure(response: http)
+            if http.expectedContentLength > Int64(ProviderFailure.maximumBytes) {
+                rejected = true; continuation.finish(throwing: rejection!); completionHandler(.cancel)
+            } else { completionHandler(.allow) }
+            return
+        }
+        guard http.mimeType == "text/event-stream" else {
+            continuation.finish(throwing: AIError.message("Erebine returned an invalid stream content type")); completionHandler(.cancel); return
         }
         completionHandler(.allow)
     }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard !rejected else { return }
+        if rejection != nil {
+            if !rejection!.append(data) {
+                rejected = true; continuation.finish(throwing: rejection!); dataTask.cancel()
+            }
+            return
+        }
         if case .dropped = continuation.yield(data) {
             continuation.finish(throwing: AIError.message("Erebine stream consumer fell behind")); dataTask.cancel()
         }
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard !rejected else { return }
+        if let rejection { continuation.finish(throwing: rejection); return }
         if error != nil { continuation.finish(throwing: AIError.message("Erebine stream failed or timed out; no automatic retry")) }
         else { continuation.finish() }
     }
@@ -117,9 +137,16 @@ extension ErebineClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages, tools: tools))
+        let preparedRequest = request
+        return try await ProviderRetry.run(emit: emit) {
+            try await streamAttempt(request: preparedRequest, emit: emit)
+        }
+    }
+    func streamAttempt(request: URLRequest, configuration: URLSessionConfiguration? = nil,
+                       emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
         let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(128))
         let delegate = StreamingDelegate(pair.continuation)
-        let options = URLSessionConfiguration.ephemeral
+        let options = configuration ?? URLSessionConfiguration.ephemeral
         options.httpCookieStorage = nil; options.urlCache = nil; options.timeoutIntervalForResource = 120
         let session = URLSession(configuration: options, delegate: delegate, delegateQueue: nil)
         let task = session.dataTask(with: request)
