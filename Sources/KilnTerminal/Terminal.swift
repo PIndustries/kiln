@@ -1,7 +1,7 @@
 import Foundation
 import KilnKit
 
-public enum TerminalEffect: Equatable { case command(String), disconnect }
+public enum TerminalEffect: Equatable { case command(String), disconnect, selectText(Bool) }
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
@@ -41,6 +41,20 @@ public struct KilnTerminal {
     private var history: [String] = []
     private var historyPosition: Int?
     private var draft = ""
+    public private(set) var selectingText = false
+    private var liveAnswer = ""
+    private var liveReasoning = ""
+    private var liveStatus = ""
+    public mutating func progress(_ event: AIProgress) {
+        switch event {
+        case .answer(let text): liveAnswer = String((liveAnswer + text).suffix(24000))
+        case .reasoning(let text): liveReasoning = String((liveReasoning + text).suffix(6000))
+        case .status(let text):
+            liveStatus = text
+            if text.hasPrefix("Tool: ") { transcript.append(text); transcript = Array(transcript.suffix(300)) }
+        case .snapshot(let text): liveAnswer = text; liveReasoning = ""
+        }
+    }
     private var aiMode = false
     private var transcript: [String] = ["Command drawer ready. Type help, or use Tab to complete."]
     private var scroll = 0
@@ -73,6 +87,7 @@ public struct KilnTerminal {
     private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int) }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
+        liveAnswer = ""; liveReasoning = ""; liveStatus = ""
         busy = false; management.finish(text:text,status:status)
         let lines = text.components(separatedBy: "\n")
         transcript += lines
@@ -86,6 +101,11 @@ public struct KilnTerminal {
         return [.command(command)]
     }
     public mutating func handle(_ key: TerminalKey) -> [TerminalEffect] {
+        if key == .selectText {
+            selectingText.toggle()
+            return [.selectText(selectingText)]
+        }
+        if selectingText { return [] }
         if management.active {
             if let command = management.handle(key,width:width,height:height) { return execute(command) }
             return []
@@ -178,6 +198,9 @@ public struct KilnTerminal {
         }
         return []
     }
+    private static func quote(_ text: String) -> String {
+        "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+    }
     private mutating func openAIChat() {
         guard !busy else { return }
         if !aiMode {
@@ -189,6 +212,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
+        case .selectText: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }
@@ -246,6 +270,10 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/exit" { aiMode = false; transcript.append("Left AI chat."); return [] }
+                if command == "/tasks" { return execute("ai task list") }
+                if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
+                if command.hasPrefix("/watch ") { return execute("ai task watch " + Self.quote(String(command.dropFirst(7)))) }
+                if command.hasPrefix("/cancel ") { return execute("ai task cancel " + Self.quote(String(command.dropFirst(8)))) }
                 if command == "/reset" { transcript = []; return execute("ai reset") }
                 if command.hasPrefix("/approve ") || command.hasPrefix("/deny ") { return execute("ai " + command.dropFirst()) }
                 let quoted = "\"" + command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
@@ -260,6 +288,8 @@ public struct KilnTerminal {
     // is emitted in cells; this also guarantees deterministic single-column widths.
     public static func safe(_ value: String) -> String {
         String(value.unicodeScalars.map { scalar -> Character in
+            let replacements: [UInt32: Character] = [0x2014: "-", 0x2013: "-", 0x2018: "'", 0x2019: "'", 0x201C: "\"", 0x201D: "\"", 0x2022: "*", 0x00A0: " "]
+            if let replacement = replacements[scalar.value] { return replacement }
             if scalar.value >= 32 && scalar.value <= 126 { return Character(String(scalar)) }
             return scalar.value == 9 ? " " : "?"
         })
@@ -389,9 +419,12 @@ public struct KilnTerminal {
             lines.append(row("  " + String(repeating: "=", count: max(0, w - 4)), accent))
             hits.append(Hit(row: lines.count, column: 1, width: w, click: .key(.text("`"))))
             hits.append(Hit(row: lines.count+1, column: 1, width: w, click: .key(.text("`"))))
-            lines.append(row("  \(aiMode ? "KILN AI CHAT" : "COMMAND DRAWER")   \(busy ? "[working]" : "[ready]")   Esc / ` to close", accent))
+            lines.append(row("  \(aiMode ? "KILN AI CHAT" : "COMMAND DRAWER")   \(selectingText ? "[SELECT TEXT · Ctrl-S resumes]" : busy ? (aiMode ? "[streaming]" : "[working]") : "[ready]")   Esc / ` to close", accent))
             let available = max(0, height - lines.count - 3)
-            let displayLines: [String] = aiMode ? transcript.flatMap { text -> [String] in
+            let liveLines = (liveStatus.isEmpty ? [] : ["Activity: " + liveStatus]) +
+                (liveReasoning.isEmpty ? [] : ["Provider reasoning: " + liveReasoning]) +
+                (liveAnswer.isEmpty ? [] : ["Assistant: " + liveAnswer])
+            let displayLines: [String] = aiMode ? (transcript + liveLines).flatMap { text -> [String] in
                 var rest = Self.safe(text); var wrapped: [String] = []
                 let columns = max(1, w - 3)
                 while rest.count > columns {
@@ -411,12 +444,12 @@ public struct KilnTerminal {
             let shown = String(Array(input).dropFirst(offset).prefix(room))
             hits.append(Hit(row: height-2, column: 10, width: room, click: .cursor(offset)))
             lines.append(row((aiMode ? "  chat > " : "  kiln > ") + shown, accent))
-            lines.append(row(aiMode ? "  /exit commands | /reset | /approve ID | PgUp/PgDn" : "  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
-            lines.append(row("  " + notice, muted))
+            lines.append(row(aiMode ? "  Ctrl-S select/copy | /task | /tasks | /exit | PgUp/PgDn" : "  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
+            lines.append(row("  " + (selectingText ? "SELECT TEXT: drag to select and copy; Ctrl-S resumes." : notice), muted))
             let cursorColumn = min(w, 10 + cursor - offset)
             return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)
         }
-        lines.append(row("  " + notice, muted))
+        lines.append(row("  " + (selectingText ? "SELECT TEXT: drag to select and copy; Ctrl-S resumes." : notice), muted))
         lines.append(row(page == 4 ? "  Enter actions | a attach | n new | ` drawer | q exit" : "  Click/Enter manage | 7 AI | ` drawer | ? help | q exit", accent))
         let sampled = host.map { String($0.timestamp.ISO8601Format().suffix(9)) } ?? "waiting"
         lines.append(row("  LIVE 1s / " + sampled + " / process state != health", muted))

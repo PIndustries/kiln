@@ -11,7 +11,9 @@ Kiln's runtime runs independently of its interfaces. SSH is an optional module. 
 - Public-key-only SSH authentication and noninteractive commands (default: `127.0.0.1:2222`).
 - Menu-driven server/key/trust setup, session actions, two-pane splits, and remote terminals that survive dashboard restarts in a separate session service.
 - Saved bastion destinations, allowlisted OpenSSH ProxyJump, and macOS Keychain-backed Ed25519 keys for pinned remote command execution.
-- Native Erebine AI chat with live read tools, explicit operation proposals and versioned ecosystem knowledge.
+- Native Erebine AI chat with streamed answers/provider reasoning, visible tool activity, explicit operation proposals and versioned ecosystem knowledge.
+- Persistent background AI investigation tasks, live watch/cancel controls and configurable concurrency up to 48 (default 4; provider quotas apply).
+- Ctrl-S selection mode freezes terminal redraws and releases mouse capture for native text selection/copy.
 - Encrypted, headless Vault with hidden SSH entry, stdin import and explicit per-module secret grants.
 - Persistent Ed25519 host identity; only the configured administrator is accepted.
 - Optional local stdin console, including with SSH disabled.

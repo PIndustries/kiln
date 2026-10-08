@@ -45,6 +45,18 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-live-') as td:
   assert 'without a restart' in command(f'ai knowledge install {pack}')
   assert 'test-knowledge-1' in command('ai status')
   print('PASS: versioned knowledge pack updated without restarting Kiln',flush=True)
+  receipt=command('ai ask Create a background task to inspect the installed modules and briefly report their state. Use create_task and return its task ID.')
+  match=re.search(r'Task created: ([a-f0-9-]+)',receipt);assert match,receipt
+  task_id=match.group(1)
+  deadline=time.monotonic()+120
+  while True:
+   task=command('ai task show '+task_id)
+   if '[completed]' in task:break
+   assert '[failed]' not in task and time.monotonic()<deadline,task
+   time.sleep(.3)
+  assert 'ai-test' in task,task
+  assert task_id in command('ai task list')
+  print('PASS: background native AI task completed with persisted, inspectable result',flush=True)
  finally:
   if server.poll() is None: server.terminate();server.wait(timeout=15)
   subprocess.run([str(BIN/'kiln'),'session-service-stop','--state',str(state)],capture_output=True,timeout=8)

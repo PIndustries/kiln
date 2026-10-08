@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Opt-in live Erebine test of the native SSH chat view. Requires pyte and Pillow."""
-import argparse,fcntl,json,os,pathlib,pty,select,shutil,socket,struct,subprocess,tempfile,termios,time
+import argparse,fcntl,json,os,pathlib,pty,re,select,shutil,socket,struct,subprocess,tempfile,termios,time
 import pyte
 p=argparse.ArgumentParser();p.add_argument('--state-source',type=pathlib.Path,required=True);p.add_argument('--preview',type=pathlib.Path);a=p.parse_args()
 ROOT=pathlib.Path(__file__).resolve().parents[1];BIN=pathlib.Path(os.environ.get('KILN_BIN_DIR',ROOT/'.build/release'))
@@ -36,8 +36,17 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
   def send(data):os.write(master,data);pump()
   expect('7 AI Chat',10);send(b'\x1b[<0;77;4M');expect('KILN AI CHAT')
   send(b'Use list_modules and module_health to report the running service and its health. Keep it brief.\r')
-  expect('[working]');expect('[ready]')
-  rendered='\n'.join(screen.display);assert 'ai-ui/worker' in rendered,rendered;assert 'healthy' in rendered.lower(),rendered
+  expect('[streaming]')
+  saw_live=False; deadline=time.monotonic()+120
+  while '[ready]' not in '\n'.join(screen.display):
+   pump(.05); frame='\n'.join(screen.display)
+   if 'Assistant:' in frame or 'Provider reasoning:' in frame:saw_live=True
+   assert time.monotonic()<deadline,frame
+  assert saw_live,'No incremental provider output appeared before completion'
+  send(b'\x13');expect('SELECT TEXT')
+  frozen=list(screen.display);pump(1.5);assert screen.display==frozen,'Selection mode repainted'
+  send(b'\x13');expect('[ready]')
+  rendered='\n'.join(screen.display);assert 'ai-ui/worker' in rendered,rendered;assert 'healthy' in rendered.lower() or 'HTTP 200' in rendered,rendered
   if a.preview:
    from PIL import Image,ImageDraw,ImageFont
    font=ImageFont.truetype('/System/Library/Fonts/Menlo.ttc',15);cw,ch=10,22
@@ -48,8 +57,20 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
      cell=screen.buffer[y][x];xx,yy=16+x*cw,16+y*ch
      d.rectangle((xx,yy,xx+cw,yy+ch),fill=color(cell.bg,'#1c1c1c'));d.text((xx,yy),cell.data,font=font,fill=color(cell.fg,'#ddd'),anchor='la')
    a.preview.parent.mkdir(parents=True,exist_ok=True);im.save(a.preview)
-  send(b'/exit\r');expect('COMMAND DRAWER')
-  print('PASS: real SSH native AI chat, live Erebine tools, health report, wrapped rendering and exit',flush=True)
+  send(b'/task Inspect list_modules and report the running module names briefly.\r')
+  expect('Task created:')
+  task_id=re.findall(r'Task created: ([a-f0-9-]+)', '\n'.join(screen.display))[-1]
+  send(('/watch '+task_id+'\r').encode());expect('Task '+task_id)
+  client.kill();client.wait(timeout=5)
+  deadline=time.monotonic()+120
+  while True:
+   snapshot=command('ai task show '+task_id)
+   if '[completed]' in snapshot:break
+   assert '[failed]' not in snapshot and time.monotonic()<deadline,snapshot
+   time.sleep(.3)
+  assert 'ai-ui' in snapshot,snapshot
+  print('PASS: task survives SSH viewer disconnect and result is available through a new connection',flush=True)
+  print('PASS: real SSH native AI chat, live Erebine tools, health report, incremental output and frozen text-selection mode',flush=True)
  finally:
   if client and client.poll() is None:client.kill();client.wait(timeout=5)
   if master is not None:os.close(master)

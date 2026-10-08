@@ -17,7 +17,7 @@ The drawer becomes a chat panel. Ask naturally, for example:
 - "Explain how rollback works in Kiln."
 - "Propose restarting storefront/rest."
 
-Responses wrap to the terminal width. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. This version displays completed responses, not a streaming token feed.
+Responses wrap to the terminal width. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. Answers now stream through native SSE as they arrive, alongside named tool activity. Provider reasoning is shown transiently only when Erebine sends it; Kiln does not fabricate a thinking trace. Ctrl-C cancels a foreground response or stops watching a task. Ctrl-S freezes the display and disables mouse capture for native terminal selection/copy; press Ctrl-S again to resume.
 
 Read-only tools run automatically. A requested change produces an exact `app start`, `stop`, `restart` or `rollback` proposal. It does not execute based on model prose. Review the module/action, then use `/approve ID` or `/deny ID`. Approvals belong to the originating SSH session, expire after five minutes, and can be consumed only once. If the module's process state, PID or version changed since the proposal, execution is refused. A consumed proposal is not automatically retried after failure.
 
@@ -90,7 +90,7 @@ The model can still make mistakes or write misleading prose. The locally generat
 
 Prompts, the built-in/operator knowledge, runtime context and selected tool results are sent to the configured Erebine endpoint. API credentials are used only in the authorization header. Requests set `store: false`; this does not replace the provider's retention policy or establish zero-data-retention by itself. Inference may consume account credits.
 
-Conversations and pending proposals stay in runtime memory. Up to 32 idle conversations are retained, with a one-hour idle expiry; context is reset when its configured size limit is reached. At most four conversations can perform inference concurrently. Each turn has at most five model calls, six tool calls per model response, and 4096 output tokens per model request. Requests have bounded timeouts and are not automatically retried. A timeout may still consume provider credits. Disconnecting does not necessarily cancel an in-flight model request; it cannot bypass local approval.
+Conversations and pending proposals stay in runtime memory. Up to 32 idle conversations are retained, with a one-hour idle expiry; context is reset when its configured size limit is reached. At most 48 conversations can perform inference concurrently. Background concurrency defaults to four and is operator-configurable from 1–48. Each turn has up to eight tool-capable model calls followed by one summarization call with tools disabled, six tool calls per model response, and 4096 output tokens per model request. Identical tools are cached within the turn; an exhausted budget returns collected results instead of discarding them. Requests have bounded timeouts and are not automatically retried. A timeout may still consume provider credits. Disconnecting cancels foreground inference and task watchers; background tasks continue until finished or explicitly cancelled.
 
 This is an integrated runtime module, not yet an independently hot-replaceable AI service. The framework target uses Foundation/FoundationNetworking and supports headless design; runtime and live-provider validation were performed on macOS. Linux compilation and AI policy tests now pass; live Erebine calls were verified on macOS.
 
@@ -103,3 +103,22 @@ The opt-in scripts `ai-live-integration.py` and `ai-terminal-integration.py` use
 API implementation references: [Erebine Chat Completions](https://erebine.ai/docs/api-reference), [Tool Calling](https://erebine.ai/docs/tool-calling), and [OpenCode provider configuration](https://erebine.ai/docs/opencode).
 
 Approved operations now persist private outcome receipts before execution; use `ai operations` to inspect them. See [supervision and operation receipts](supervision.md) for interruption semantics. Pending approvals are still in memory and session-bound.
+
+## Background tasks
+
+Ask the chat to create a background investigation, or use:
+
+```text
+/task Inspect all modules and report unhealthy services
+/tasks
+/watch TASK-ID
+/cancel TASK-ID
+```
+
+The command drawer also accepts `ai task new <request>`, `ai task list`, `ai task show <id>`, `ai task watch <id>`, `ai task cancel <id>`, `ai task remove <id>` and `ai concurrency [1-48]`. Lowering concurrency affects admission of subsequent jobs; it does not terminate active jobs. The cap is Kiln's scheduling limit, not a claim about provider quotas or a 48-agent performance benchmark.
+
+Task workers may inspect status, modules, host metrics, health, releases and task inventory. They cannot mutate the runtime, propose operations, create more tasks, run shell commands, or change their own concurrency. Interactive chat retains the existing approval flow for mutations. These are bounded investigation tasks, not general coding agents or a workflow DAG engine.
+
+Task IDs, requests, status and final results persist in private `ai-tasks.json` (0600). Do not place credentials in prompts; task records are not Vault-encrypted. Provider reasoning is transient and excluded from task records. History is capped at 200 tasks; remove finished entries when full. Interrupted/queued work is marked interrupted after a runtime restart and is never automatically replayed. A viewer disconnect does not stop the task. Results can be inspected from a new SSH connection using the same configured administrator identity.
+
+The SSE parser handles UTF-8 and tool arguments split across network packets, rejects oversized/truncated streams, and executes tools only after a complete response. Output repainting is throttled to 20 Hz; text selection freezes repainting. Streaming follows [Erebine's chat API](https://erebine.ai/docs/api-reference) and [SSE format](https://erebine.ai/docs/streaming). These pages differ on reasoning-channel availability, so the implementation accepts optional `reasoning_content`/`reasoning` fields and reports only what the provider sends.

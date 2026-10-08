@@ -56,6 +56,7 @@ private final class ShellHandler: ChannelInboundHandler {
     var interactive = false
     var pty = false
     var busy = false
+    var commandTask: Task<Void, Never>?
     var pending: [String] = []
     var lastCR = false
     var terminal: KilnTerminal?
@@ -64,6 +65,8 @@ private final class ShellHandler: ChannelInboundHandler {
     var escapeTask: Scheduled<Void>?
     var refreshing = false
     var lastFrame = ""
+    var selectingText = false
+    var progressPaint: Scheduled<Void>?
     var panes: [RemoteTerminalClient] = []
     var focusedPane = 0
     var stacked = false
@@ -84,6 +87,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
+        commandTask?.cancel(); progressPaint?.cancel()
         secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
         releasePanes()
@@ -95,7 +99,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(bytes)), promise: nil)
     }
     func paint(channel: Channel) {
-        guard remote == nil, !attaching, let terminal, interactive, channel.isWritable else { return }
+        guard !selectingText, remote == nil, !attaching, let terminal, interactive, channel.isWritable else { return }
         let frame: String
         if secretName != nil || secretSaving {
             frame = "\u{1B}[2J\u{1B}[H\u{1B}[33mKILN VAULT\u{1B}[0m\r\n\r\n" + (secretSaving ? "Saving credential..." : "Secret: \(secretName!)\r\nValue: [hidden]\r\n\r\nEnter saves. Escape/Ctrl-C cancels. Backspace edits. Maximum 16 KiB." + (secretInputRejected ? "\r\nInput rejected (size or newline). Ctrl-U clears the field; enter it again." : ""))
@@ -184,6 +188,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func apply(_ key: TerminalKey, channel: Channel) {
+        if key == .interrupt, busy, secretName == nil, !secretSaving { commandTask?.cancel(); return }
         if secretSaving { return }
         if let name = secretName {
             switch key {
@@ -219,10 +224,15 @@ private final class ShellHandler: ChannelInboundHandler {
             switch effect {
             case .command(let command): submit(command, channel: channel)
             case .disconnect: close(channel: channel, status: 0)
+            case .selectText(let enabled):
+                selectingText = false; lastFrame = ""; paint(channel: channel)
+                selectingText = enabled
+                output(enabled ? "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l" : "\u{1b}[?1000h\u{1b}[?1006h", channel: channel)
             }
         }
     }
     func close(channel: Channel, status: Int) {
+        commandTask?.cancel(); progressPaint?.cancel()
         remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
@@ -291,8 +301,20 @@ private final class ShellHandler: ChannelInboundHandler {
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands
         let sessionID = owner.uuidString
-        Task {
-            let result = await commands.execute(line, sessionID: sessionID)
+        commandTask = Task {
+            let result = await commands.execute(line, sessionID: sessionID) { event in
+                channel.eventLoop.execute {
+                    let shell = bound.value
+                    guard channel.isActive else { return }
+                    shell.terminal?.progress(event)
+                    if shell.progressPaint == nil {
+                        shell.progressPaint = channel.eventLoop.scheduleTask(in: .milliseconds(50)) {
+                            let shell = bound.value
+                            shell.progressPaint = nil; shell.paint(channel: channel)
+                        }
+                    }
+                }
+            }
             let modules = await commands.snapshot()
             let management = await commands.management()
             channel.eventLoop.execute {

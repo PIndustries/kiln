@@ -2,7 +2,7 @@ import Foundation
 
 public enum TerminalKey: Equatable {
     case text(String), up, down, left, right, home, end, delete, backspace, enter, escape, tab
-    case pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
+    case selectText, pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
     case paste(String)
     case mouse(button: Int, column: Int, row: Int, released: Bool)
 }
@@ -65,6 +65,7 @@ public struct TerminalKeys {
             if byte == 10 && lastCR { lastCR = false; continue }
             lastCR = byte == 13
             switch byte {
+            case 19: keys.append(.selectText)
             case 10,13: keys.append(.enter)
             case 127,8: keys.append(.backspace)
             case 9: keys.append(.tab)

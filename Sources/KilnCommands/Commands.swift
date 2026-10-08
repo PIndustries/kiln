@@ -21,7 +21,8 @@ public struct KilnCommands: Sendable {
     private let bastion: BastionClient
     private let telemetry: KilnTelemetry
     private let assistant = KilnAssistant()
-    public init(runtime: KilnRuntime) { self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    private let aiTasks: AITasks
+    public init(runtime: KilnRuntime) { self.aiTasks = AITasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     public func allowForward(host: String, port: Int) async -> Bool {
         if await runtime.allowIngress(host: host, port: port) { return true }
         return (try? await bastion.allowForward(host: host, port: port)) ?? false
@@ -55,7 +56,7 @@ public struct KilnCommands: Sendable {
         do { return CommandResult(try runtime.vault.put(name, value: value)) }
         catch { return CommandResult("Vault write failed: \(error)", status: 1) }
     }
-    public func execute(_ line: String, sessionID: String = "console") async -> CommandResult {
+    public func execute(_ line: String, sessionID: String = "console", progress: @escaping @Sendable (AIProgress) -> Void = { _ in }) async -> CommandResult {
         var parts: [String]
         do { parts = try Self.tokenize(line) }
         catch { return CommandResult("Unclosed quote or trailing escape", status: 2) }
@@ -63,7 +64,7 @@ public struct KilnCommands: Sendable {
         if parts.isEmpty { return CommandResult("") }
         do {
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
-            if parts.first == "ai" { return try await aiCommand(parts, sessionID: sessionID) }
+            if parts.first == "ai" { return try await aiCommand(parts, sessionID: sessionID, progress: progress) }
             if parts.first == "vault" {
                 switch parts {
                 case ["vault", "help"]:
@@ -139,7 +140,8 @@ public struct KilnCommands: Sendable {
                 default: return CommandResult("Unknown app operation", status: 2)
                 }
             }
-        } catch { return CommandResult("Error: \(error)", status: 1) }
+        } catch is CancellationError { return CommandResult("Stopped waiting. Background tasks continue unless explicitly cancelled.", status: 1) }
+        catch { return CommandResult("Error: \(error)", status: 1) }
     }
 }
 
@@ -223,12 +225,35 @@ private extension KilnCommands {
 
 
 private extension KilnCommands {
-    func aiCommand(_ parts: [String], sessionID: String) async throws -> CommandResult {
+    func createAITask(_ prompt: String) async throws -> String {
+        try await aiTasks.submit(prompt) { id, request, progress in
+            let result = try await aiCommand(["ai", "ask", request], sessionID: "task:" + id, progress: progress)
+            guard result.status == 0 else { throw AIError.message("Task failed") }
+            return result.text
+        }
+    }
+    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }) async throws -> CommandResult {
+        if parts.count >= 3, parts[1] == "task" {
+            switch parts {
+            case ["ai", "task", "list"]: return CommandResult(try await aiTasks.list())
+            case let p where p.count == 4 && p[2] == "show": return CommandResult(try await aiTasks.show(p[3]))
+            case let p where p.count == 4 && p[2] == "cancel": return CommandResult(try await aiTasks.cancel(p[3]))
+            case let p where p.count == 4 && p[2] == "remove": return CommandResult(try await aiTasks.remove(p[3]))
+            case let p where p.count == 4 && p[2] == "watch":
+                for await snapshot in try await aiTasks.watch(p[3]) { try Task.checkCancellation(); progress(.snapshot(snapshot)) }
+                try Task.checkCancellation()
+                return CommandResult(try await aiTasks.show(p[3]))
+            case let p where p.count >= 4 && p[2] == "new": return CommandResult(try await createAITask(p.dropFirst(3).joined(separator: " ")))
+            default: throw AIError.message("Use ai task new/list/show/watch/cancel/remove")
+            }
+        }
+        if parts == ["ai", "concurrency"] { return CommandResult(try await aiTasks.limit()) }
+        if parts.count == 3, parts[1] == "concurrency", let limit = Int(parts[2]) { return CommandResult(try await aiTasks.limit(limit)) }
         let configURL = runtime.stateDirectory.appendingPathComponent("ai.json")
         let knowledgeURL = runtime.stateDirectory.appendingPathComponent("ai-knowledge.json")
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai concurrency [1-48]        Background worker limit (default 4)\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
         case ["ai", "operations"]: return CommandResult(try await runtime.operationHistory())
         case ["ai", "reset"]: return CommandResult(try await assistant.reset(sessionID))
         default: break
@@ -268,7 +293,7 @@ private extension KilnCommands {
             knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
         } else { knowledge = nil }
         if parts == ["ai", "status"] {
-            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 1\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 2\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
         }
         guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
         let values = try runtime.vault.environment(for: "kiln/ai", bindings: ["API_KEY": configuration.secret])
@@ -276,8 +301,10 @@ private extension KilnCommands {
         let modules = await runtime.snapshot()
         let context = "Kiln release \(KilnVersion.current)\n" + (await runtime.list())
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
-            modules: modules, context: context, knowledge: knowledge) { name, module in
+            modules: modules, context: context, knowledge: knowledge, progress: progress, allowProposals: !sessionID.hasPrefix("task:")) { name, module in
                 switch name {
+                case "create_task": return try await createAITask(module!)
+                case "list_tasks": return try await aiTasks.list()
                 case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; opt-in bounded worker restart; no cluster."
                 case "list_modules": return await runtime.list()
                 case "host_metrics": return await telemetry.sample().summary
