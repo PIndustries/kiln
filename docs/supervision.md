@@ -17,3 +17,5 @@ A receipt remaining in `started` is displayed as **unconfirmed**. It may describ
 CI uses Swift 6.2.3 on Linux and exercises unit/policy tests plus real OpenSSH, HTTP, WebSocket, crash recovery and restore. macOS release builds should start with `swift package clean` to avoid mixing cached clients with changes to Swift actor layouts. Run `swift build -c release`, then `KILN_BIN_DIR="$PWD/.build/release" python3 scripts/integration.py` before packaging.
 
 Release 26.10.08.1 passed all 22 unit/policy tests on macOS and Linux x86_64, real SSH/REST/WebSocket recovery and restoration on both, managed deployment/rollback under 414 concurrent encrypted requests on macOS, and live Erebine proposal/approval/replay checks on macOS. Shutdown signal handling is installed before services become reachable, fixing a startup/stop race discovered by the Linux integration test.
+
+The local console uses nonblocking stdin and a bounded command queue. A blocked libc `readLine` previously prevented Linux process exit with stdin still open; the integration test checks that this mode shuts down cleanly too.

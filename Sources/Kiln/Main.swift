@@ -98,9 +98,11 @@ struct Kiln {
         } catch { await ssh?.stop(); await runtime.shutdown(); throw error }
         print("Kiln runtime ready. State: \(state.path)")
         fflush(nil)
-        if flags.contains("--console") {
-            Task.detached {
-                while let line = readLine() {
+        let console = flags.contains("--console") ? ConsoleInput() : nil
+        let consoleTask: Task<Void, Never>? = console.map { input in
+            Task {
+                for await line in input.lines {
+                    guard !Task.isCancelled else { break }
                     let result = await commands.execute(line)
                     print(result.text); fflush(nil)
                     if result.disconnect { break }
@@ -108,9 +110,52 @@ struct Kiln {
             }
         }
         for await _ in signals { break }
+        consoleTask?.cancel(); console?.stop()
         print("Kiln shutting down")
         await runtime.shutdown()
         await ssh?.stop()
     }
     enum CLIError: Error { case invalid(String) }
+}
+
+/// Nonblocking stdin avoids holding a libc readLine lock through process shutdown.
+/// Buffer state is confined to this source's serial queue; cancellation is thread-safe.
+private final class ConsoleInput: @unchecked Sendable {
+    let lines: AsyncStream<String>
+    private let continuation: AsyncStream<String>.Continuation
+    private let source: DispatchSourceRead
+    private var pending: [UInt8] = []
+    private var discarding = false
+    init() {
+        let pair = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingOldest(16))
+        lines = pair.stream; continuation = pair.continuation
+        let flags = fcntl(STDIN_FILENO, F_GETFL)
+        _ = fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK)
+        source = DispatchSource.makeReadSource(fileDescriptor: STDIN_FILENO, queue: DispatchQueue(label: "kiln.console"))
+        source.setEventHandler { [weak self] in self?.readAvailable() }
+        source.resume()
+    }
+    private func readAvailable() {
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        let count = read(STDIN_FILENO, &bytes, bytes.count)
+        if count == 0 {
+            if !pending.isEmpty && !discarding { continuation.yield(String(decoding: pending, as: UTF8.self)) }
+            stop(); return
+        }
+        guard count > 0 else { if errno != EAGAIN && errno != EINTR { stop() }; return }
+        for byte in bytes.prefix(count) {
+            if byte == 10 {
+                if !discarding {
+                    if pending.last == 13 { pending.removeLast() }
+                    continuation.yield(String(decoding: pending, as: UTF8.self))
+                }
+                pending.removeAll(keepingCapacity: true); discarding = false
+            } else if !discarding {
+                if pending.count < 4096 { pending.append(byte) }
+                else { pending.removeAll(keepingCapacity: true); discarding = true }
+            }
+        }
+    }
+    func stop() { source.cancel(); continuation.finish() }
+    deinit { source.cancel(); continuation.finish() }
 }
