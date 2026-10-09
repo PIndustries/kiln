@@ -33,6 +33,12 @@ public actor KilnAssistant {
         proposals = proposals.filter { $0.value.session != session }
         return "AI conversation and pending proposals cleared."
     }
+    public func pendingProposals(session: String, now: Date = Date()) -> [AIProposalSnapshot] {
+        proposals.compactMap { id, proposal in
+            guard proposal.session == session, proposal.expires > now else { return nil }
+            return AIProposalSnapshot(id: id, operation: proposal.action.operation, module: proposal.action.module, expires: proposal.expires)
+        }.sorted { $0.expires == $1.expires ? $0.id < $1.id : $0.expires < $1.expires }
+    }
     public func deny(_ id: String, session: String) throws -> String {
         guard proposals[id]?.session == session else { throw AIError.message("Unknown proposal for this session") }
         proposals.removeValue(forKey: id); return "Proposal declined. No operation executed."

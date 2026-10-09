@@ -25,7 +25,7 @@ public struct KilnCommands: Sendable {
     private let runtime: KilnRuntime
     private let bastion: BastionClient
     private let telemetry: KilnTelemetry
-    private let assistant = KilnAssistant()
+    private let assistant: KilnAssistant
     private let aiTasks: AITasks
     public let identities: KilnIdentityStore
     public private(set) var principal: KilnPrincipal? = nil
@@ -33,7 +33,39 @@ public struct KilnCommands: Sendable {
     public func bootstrapIdentity(username: String, keys: [String]) throws { try identities.bootstrap(name: username, keys: keys) }
     public func isAuthorized() -> Bool { (try? identities.resolve(principal)) != nil }
     public func authorizeAdmin() throws { try identities.require(principal, admin: true) }
-    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.assistant = KilnAssistant(); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    // Internal dependency injection keeps snapshot tests deterministic without
+    // granting the presentation layer authority to create proposals.
+    init(runtime: KilnRuntime, assistant: KilnAssistant) {
+        self.runtime = runtime; self.assistant = assistant; self.cluster = nil
+        self.identities = KilnIdentityStore(directory: runtime.stateDirectory)
+        self.aiTasks = AITasks(directory: runtime.stateDirectory)
+        self.bastion = BastionClient(directory: runtime.stateDirectory)
+        self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path)
+    }
+    public func aiWorkspace(sessionID: String = "console") async -> AIWorkspaceSnapshot {
+        guard (try? identities.resolve(principal)) != nil else {
+            return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized")
+        }
+        let proposals = await assistant.pendingProposals(session: (principal?.name ?? "local-console") + ":" + sessionID)
+        var tasks: [AITaskSnapshot] = []
+        var taskError: String?
+        if (try? authorizeAdmin()) != nil {
+            do { tasks = try await aiTasks.snapshots() }
+            catch { taskError = "AI task state unavailable" }
+        }
+        // Re-resolve after actor suspension so an in-flight refresh cannot
+        // return the previous role's private task inventory after revocation.
+        guard let identity = try? identities.resolve(principal) else {
+            return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized")
+        }
+        let visible = proposals.filter {
+            $0.expires > Date() && identity.role != "viewer" &&
+            (identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.module))
+        }
+        return AIWorkspaceSnapshot(proposals: visible, tasks: identity.role == "admin" ? tasks : [],
+                                   error: identity.role == "admin" ? taskError : nil)
+    }
     public func allowForward(host: String, port: Int) async -> Bool {
         guard (try? authorizeAdmin()) != nil else { return false }
         if await runtime.allowIngress(host: host, port: port) { return true }

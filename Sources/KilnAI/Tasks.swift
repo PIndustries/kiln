@@ -73,6 +73,10 @@ public actor AITasks {
             "\($0.id)  \($0.state)  \($0.prompt.prefix(100).replacingOccurrences(of: "\n", with: " "))"
         }.joined(separator: "\n"))
     }
+    public func snapshots() throws -> [AITaskSnapshot] {
+        try load()
+        return index.records.reversed().map { AITaskSnapshot(id: $0.id, prompt: $0.prompt, status: $0.state) }
+    }
     public func show(_ id: String) throws -> String {
         try load()
         guard let record = index.records.first(where: { $0.id == id }) else { throw AIError.message("Unknown task") }

@@ -14,6 +14,36 @@ public struct KilnTerminal {
     public private(set) var busy = false
     private var management = ManagementUI()
     private var accessLabel: String?
+    private var aiWorkspace = AIWorkspaceSnapshot()
+    private var sidebarFocus = false
+    private var sidebarSelected = 0
+    private var reviewID: String?
+    private var reviewButton = 0
+    public mutating func updateAIWorkspace(_ snapshot: AIWorkspaceSnapshot) {
+        let selectedID = workspaceItems.indices.contains(sidebarSelected) ? workspaceItems[sidebarSelected].id : nil
+        aiWorkspace = snapshot
+        sidebarSelected = selectedID.flatMap { id in workspaceItems.firstIndex { $0.id == id } } ?? min(sidebarSelected, max(0, workspaceItems.count - 1))
+    }
+    private struct WorkspaceItem { let id: String; let title: String; let subtitle: String; let approval: Bool }
+    private var workspaceItems: [WorkspaceItem] {
+        aiWorkspace.proposals.map { WorkspaceItem(id: $0.id, title: "APPROVAL / " + $0.operation, subtitle: $0.module, approval: true) } +
+        aiWorkspace.tasks.map { WorkspaceItem(id: $0.id, title: "TASK / " + $0.status, subtitle: $0.prompt, approval: false) }
+    }
+    private mutating func chooseWorkspace(_ index: Int) -> [TerminalEffect] {
+        guard !busy, workspaceItems.indices.contains(index) else { return [] }
+        sidebarSelected = index
+        let item = workspaceItems[index]
+        if item.approval { reviewID = item.id; reviewButton = 0; sidebarFocus = false; return [] }
+        sidebarFocus = false; reviewID = nil
+        return execute("ai task show " + Self.quote(item.id))
+    }
+    private mutating func reviewAction(_ action: Int) -> [TerminalEffect] {
+        guard !busy, let id = reviewID else { return [] }
+        if action == 2 { reviewID = nil; return [] }
+        guard aiWorkspace.proposals.contains(where: { $0.id == id && $0.expires > Date() }) else { return [] }
+        reviewID = nil; sidebarFocus = false
+        return execute("ai " + (action == 0 ? "approve " : "deny ") + Self.quote(id))
+    }
     private var servers: [ServerSnapshot] = []
     private var selectedServer = 0
     public mutating func updateServers(_ servers: [ServerSnapshot], keys: [String]) {
@@ -97,7 +127,7 @@ public struct KilnTerminal {
         }
         host = observation.host
     }
-    private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int) }
+    private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int), workspace(Int), review(Int), newTask }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
         if aiMode { messages.append((status == 0 ? "Kiln" : "Error", text)); messages = Array(messages.suffix(40)) }
@@ -141,11 +171,44 @@ public struct KilnTerminal {
             case .server(let index): selectedServer = index; drawer = false; return handle(.enter)
             case .session(let index): selectedSession = index; drawer = false; return handle(.enter)
             case .action(let index): menu = index; return handle(.enter)
-            case .cursor(let offset): cursor = min(input.count, max(0, offset + column - hit.column)); return []
+            case .workspace(let index): return chooseWorkspace(index)
+            case .review(let action): return reviewAction(action)
+            case .newTask:
+                guard !busy else { return [] }
+                reviewID = nil; sidebarFocus = false
+                if !input.trimmingCharacters(in: .whitespaces).isEmpty { let prompt = input; input = ""; cursor = 0; return execute("ai task new " + Self.quote(prompt)) }
+                input = "/task "; cursor = input.count; return []
+            case .cursor(let offset): sidebarFocus = false; cursor = min(input.count, max(0, offset + column - hit.column)); return []
             }
         }
         if key == .text("`") || key == .text("~") {
             drawer.toggle(); menu = nil; confirmation = nil; return []
+        }
+        if chatVisible {
+            if reviewID != nil {
+                switch key {
+                case .escape: reviewID = nil
+                case .tab, .right, .down: reviewButton = (reviewButton + 1) % 3
+                case .left, .up: reviewButton = (reviewButton + 2) % 3
+                case .enter: return reviewAction(reviewButton)
+                default: break
+                }
+                return []
+            }
+            if key == .tab { sidebarFocus.toggle(); return [] }
+            if sidebarFocus {
+                switch key {
+                case .escape: sidebarFocus = false
+                case .interrupt: sidebarFocus = false; return edit(key)
+                case .up: sidebarSelected = max(0, sidebarSelected - 1)
+                case .down: sidebarSelected = min(max(0, workspaceItems.count - 1), sidebarSelected + 1)
+                case .enter: return chooseWorkspace(sidebarSelected)
+                case .text("n"):
+                    guard !busy else { return [] }; sidebarFocus = false; input = "/task "; cursor = input.count
+                default: break
+                }
+                return []
+            }
         }
         if drawer { return edit(key) }
         if key == .eof || key == .text("q") { return [.disconnect] }
@@ -273,7 +336,7 @@ public struct KilnTerminal {
                 if common.count > input.count { input = common; cursor = input.count }
                 else { transcript += matches; transcript = Array(transcript.suffix(300)) }
             }
-        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: max(1, width - 5)).count : transcript.count) - 1), scroll + 5)
+        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3)).count : transcript.count) - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
@@ -347,14 +410,64 @@ public struct KilnTerminal {
         return body
     }
     private func chatLayout() -> (String, [Hit]) {
-        let columns = width - 5, left = 2
+        let panelWidth = width >= 110 ? min(42, width / 3) : 0
+        let panelOnly = panelWidth == 0 && sidebarFocus && reviewID == nil
+        let left = panelWidth > 0 ? panelWidth + 3 : 2
+        let columns = width - left - 3
+        var hits: [Hit] = []
+        let items = workspaceItems
+        var panel = Array(repeating: "", count: height)
+        panel[0] = "TASKS & APPROVALS" + (sidebarFocus ? " *" : "")
+        panel[1] = "Tab focus / arrows / Enter"
+        panel[2] = String(repeating: "-", count: max(1, (panelOnly ? width - 4 : panelWidth) - 2))
+        panel[3] = "[ + New task from message ]"
+        panel[5] = "\(aiWorkspace.proposals.count) approvals / \(aiWorkspace.tasks.count) tasks"
+        let slots = max(1, (height - 9) / 3)
+        let start = max(0, min(sidebarSelected - slots + 1, max(0, items.count - slots)))
+        for (offset, item) in items.dropFirst(start).prefix(slots).enumerated() {
+            let index = start + offset, row = 7 + offset * 3
+            panel[row] = (index == sidebarSelected ? "> " : "  ") + item.title
+            panel[row + 1] = "  " + item.subtitle
+            if panelWidth > 0 || panelOnly {
+                for line in row...row+1 { hits.append(Hit(row: line + 1, column: 2, width: panelOnly ? width - 4 : panelWidth - 1, click: .workspace(index))) }
+            }
+        }
+        if items.isEmpty { panel[7] = aiWorkspace.error ?? "No pending work" }
+        panel[height - 2] = "\(items.isEmpty ? 0 : sidebarSelected + 1)/\(items.count)  n: new task"
+        if panelWidth > 0 || panelOnly { hits.append(Hit(row: 4, column: 2, width: panelOnly ? width - 4 : panelWidth - 1, click: .newTask)) }
+        if panelOnly {
+            let rows = panel.map { "  " + String(Self.safe($0).prefix(width - 5)).padding(toLength: width - 3, withPad: " ", startingAt: 0) }
+            return ("\u{1b}[?25l\u{1b}[H\u{1b}[0m" + rows.joined(separator: "\r\n"), hits)
+        }
+        var rowIndex = 0
         let accent = "\u{1b}[38;5;215m", muted = "\u{1b}[38;5;245m", normal = "\u{1b}[38;5;252m"
         func row(_ value: String = "", _ color: String = "") -> String {
-            let text = String((String(repeating: " ", count: left) + Self.safe(value)).prefix(width - 1))
+            let sidebar = panelWidth > 0 ? " " + String(Self.safe(panel[min(rowIndex, height - 1)]).prefix(panelWidth - 2)).padding(toLength: panelWidth - 1, withPad: " ", startingAt: 0) + " | " : "  "
+            rowIndex += 1
+            let text = String((sidebar + Self.safe(value)).prefix(width - 1))
             return "\u{1b}[0m\u{1b}[48;5;234m" + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT   /   Erebine   " + state, accent), row("Esc dashboard    /tasks background work    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
+        var lines = [row("KILN AI CHAT   /   Erebine   " + state, accent), row("Esc dashboard    Tab tasks & approvals    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
+        if let id = reviewID {
+            let proposal = aiWorkspace.proposals.first { $0.id == id }
+            let valid = proposal.map { $0.expires > Date() } ?? false
+            var detail = ["REVIEW OPERATION", ""]
+            if let proposal {
+                detail += chatText("app " + proposal.operation + " " + proposal.module, columns: columns)
+                detail += ["", "Approval: " + proposal.id, "Expires in \(max(0, Int(proposal.expires.timeIntervalSinceNow))) seconds", "", "Approving executes this exact operation.", "Restarts/stops can interrupt application traffic."]
+            } else { detail += ["This approval is no longer available."] }
+            for text in detail.prefix(max(0, height - 9)) { lines.append(row(text)) }
+            while lines.count < height - 4 { lines.append(row()) }
+            let buttons = [valid ? "Approve" : "Expired", valid ? "Deny" : "Unavailable", "Back"]
+            for index in 0..<3 {
+                let label = (reviewButton == index ? "> " : "  ") + "[ " + buttons[index] + " ]"
+                hits.append(Hit(row: lines.count + 1, column: left + 1, width: label.count, click: .review(index)))
+                lines.append(row(label, accent))
+            }
+            lines.append(row("Tab / arrows select    Enter activate    Esc back", muted))
+            return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n"), hits)
+        }
         let body = chatBody(columns: columns), capacity = height - 9
         let end = max(0, body.count - scroll)
         for text in body.prefix(end).suffix(capacity) {
@@ -369,8 +482,8 @@ public struct KilnTerminal {
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
         lines.append(row("Enter send   Ctrl-C stop   Ctrl-S select/copy   PgUp/PgDn", muted))
-        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "/task <request>   /approve <id>   /deny <id>", muted))
-        return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
+        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Tab tasks & approvals   /task <request>", muted))
+        return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", hits + [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
     }
 
     public func render() -> String { layout().0 }

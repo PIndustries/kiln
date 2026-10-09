@@ -153,7 +153,7 @@ private final class ShellHandler: ChannelInboundHandler {
                     patch += "\u{1b}[\(index+1);1H" + content
                 }
                 // Restore the composer cursor even when its row did not change.
-                if let tail = new.last, let cursor = tail.range(of: "\u{1b}[", options: .backwards, range: tail.startIndex..<tail.index(tail.endIndex, offsetBy: -6)) {
+                if frame.hasSuffix("\u{1b}[?25h"), let tail = new.last, let cursor = tail.range(of: "\u{1b}[", options: .backwards, range: tail.startIndex..<tail.index(tail.endIndex, offsetBy: -6)) {
                     patch += String(tail[cursor.lowerBound...])
                 }
                 output(patch, channel: channel)
@@ -166,13 +166,15 @@ private final class ShellHandler: ChannelInboundHandler {
         refreshing = true
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = commands
+        let sessionID = owner.uuidString
         Task {
             let modules = await commands.snapshot()
             let management = await commands.management()
+            let workspace = await commands.aiWorkspace(sessionID: sessionID)
             channel.eventLoop.execute {
                 let shell = bound.value; shell.refreshing = false
                 guard channel.isActive else { return }
-                shell.terminal?.update(modules); shell.terminal?.updateManagement(management); shell.paint(channel: channel)
+                shell.terminal?.update(modules); shell.terminal?.updateManagement(management); shell.terminal?.updateAIWorkspace(workspace); shell.paint(channel: channel)
             }
         }
     }
@@ -217,15 +219,18 @@ private final class ShellHandler: ChannelInboundHandler {
                 let bound = NIOLoopBound(self, eventLoop: context.eventLoop)
                 let channel = context.channel
                 let commands = self.commands
+                let sessionID = owner.uuidString
                 refreshTask = Task {
                     for await observation in commands.observations() {
                         guard !Task.isCancelled else { break }
                         guard commands.isAuthorized() else { channel.close(promise: nil); break }
                         let management = await commands.management()
+                        let workspace = await commands.aiWorkspace(sessionID: sessionID)
                         channel.eventLoop.execute {
                             guard channel.isActive else { return }
                             bound.value.terminal?.observe(observation)
                             bound.value.terminal?.updateManagement(management)
+                            bound.value.terminal?.updateAIWorkspace(workspace)
                             bound.value.paint(channel: channel)
                         }
                     }
@@ -380,9 +385,11 @@ private final class ShellHandler: ChannelInboundHandler {
             }
             let modules = await commands.snapshot()
             let management = await commands.management()
+            let workspace = await commands.aiWorkspace(sessionID: sessionID)
             channel.eventLoop.execute {
                 let shell = bound.value
                 shell.terminal?.updateManagement(management)
+                shell.terminal?.updateAIWorkspace(workspace)
                 guard channel.isActive else { return }
                 shell.busy = false
                 if let name = result.attachSession, shell.interactive, shell.terminal != nil {
