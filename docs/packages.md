@@ -68,7 +68,9 @@ in these jobs.
   receives only the `.so` runtime libraries from the official `swift:6.2.3` image.
   The test asserts that neither `swift` nor `swiftc` is on PATH. Only the downloaded
   candidate, those runtime libraries and the integration harness are mounted; there is
-  no compiler image, source checkout or build tree inside the test container.
+  no compiler image, source checkout or build tree inside the test container. The host
+  requires explicit completion, checksum and final integration markers from inside
+  the container; a successful package-manager exit alone is not test evidence.
 
 Linux consumers still need to provision the Swift 6.2.3 shared runtime and the
 appropriate distribution libraries separately. CI records the source image digest;
