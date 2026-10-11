@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/packages.yml'
       - 'scripts/package-release.py'
+      - 'scripts/package-upgrade-integration.py'
+      - 'Sources/KilnKit/Version.swift'
       - 'docs/packages.md'
   push:
     tags: ['v*']
@@ -27,7 +29,7 @@ jobs:
             platform: linux-x86_64
     runs-on: ${{ matrix.runner }}
     container: ${{ matrix.container }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,6 +62,20 @@ jobs:
           export KILN_BIN_DIR
           "$KILN_BIN_DIR/kiln" --version
           python3 scripts/integration.py
+      - name: Rehearse packaged runtime upgrade and compatible rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$(find "$RUNNER_TEMP/installed" -type d -name bin)"
+          python3 scripts/package-upgrade-integration.py --candidate "$(dirname "$candidate")" \
+            </dev/null | tee "$RUNNER_TEMP/package-upgrade.log"
+          grep -Fx KILN_PACKAGE_UPGRADE_ROLLBACK_COMPLETE "$RUNNER_TEMP/package-upgrade.log"
+          {
+            echo '### Packaged runtime upgrade and rollback passed'
+            echo 'Pinned public 26.10.09.1 package → candidate → original package.'
+            echo 'Persistent disposable state, SSH host identity, Vault grants/key, REST/WebSocket, stopped intent and cold backups verified.'
+            echo 'Neither package executable was overwritten; no user node or published release was changed.'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Install pinned secret scanner
         run: |
           python3 scripts/install-gitleaks.py --directory "$RUNNER_TEMP/gitleaks"

@@ -81,3 +81,27 @@ resource job covers actual kernel enforcement.
 
 These clean-install jobs improve candidate evidence but do not publish a release or
 complete the remaining release-note, upgrade/recovery and distribution acceptance gates.
+
+## Upgrade and rollback rehearsal
+
+Package CI runs `scripts/package-upgrade-integration.py --candidate /extracted/package`
+against a pinned public baseline (`360e36e`, release 26.10.09.1). The harness builds
+that exact baseline into a separate temporary package using its own committed
+packaging script; it neither uploads that baseline nor publishes a release. Both
+packages must pass their file manifests and report different release versions.
+
+The rehearsal provisions only disposable state: an SSH identity, encrypted Vault
+with a separately stored key, an explicitly granted REST module, a WebSocket module,
+a deliberately stopped module and an ungranted module. After a clean stop, it makes
+a cold state backup and separate key backup. It starts the candidate against that
+same state, checks health and actual WebSocket traffic, then switches back to the
+original package and repeats the checks. Private state digests, application data,
+secret grant/denial behavior and both package executables must remain unchanged.
+The integration log must contain an explicit completion marker before CI accepts it.
+
+This proves compatible-state binary rollback for this specific version pair; it
+cannot authorize arbitrary downgrades or reverse future schema migrations. It stops
+the runtime and its separate session service between versions, so it does not promise
+live SSH/session continuity. A release with an incompatible state format needs its
+own migration and backup-restore acceptance evidence. The rehearsal does not publish
+a tag, overwrite a running executable or contact a paid provider.
