@@ -1,6 +1,6 @@
 # Release readiness
 
-Kiln remains private while the server foundation is being hardened. Passing tests is evidence for a defined release, not a claim that every planned ecosystem feature is complete. Keep source commits, packaged binaries, CI runs and deployed versions identifiable.
+A Kiln release should identify what was built and what was tested. Passing tests is evidence for that release, not a claim that every planned ecosystem feature is complete. Keep source commits, packaged binaries, CI runs and deployed versions identifiable.
 
 ## Required gates for each server release
 
@@ -24,8 +24,10 @@ The opt-in Erebine tests use a real provider and can incur charges. Run them for
 - Hard module budgets require delegated Linux cgroup v2. macOS rejects requested hard limits. Application-created files, release storage and network traffic are not quota constrained.
 - Live connections do not survive node death. Background AI task records persist; foreground chat history and pending approvals do not.
 
-## Before changing repository visibility
+## Distribution review
 
-Review the current tree and Git history for credentials, private endpoints, customer information and third-party redistribution obligations. Kiln's selected license is Apache-2.0; include the root LICENSE with distributions, preserve required third-party notices, and verify applicable attribution and redistribution obligations. Complete security-reporting policies and document the supported deployment matrix and upgrade/recovery procedure. The license selection does not change repository visibility or constitute a public announcement.
+Review the release tree and any newly published history for credentials, private endpoints, customer information, and third-party redistribution obligations. Include the root Apache-2.0 LICENSE with distributions and preserve applicable dependency notices. Check that [security reporting](../SECURITY.md), the deployment matrix, and upgrade/recovery instructions match the release.
 
-An initial open-source release should advertise only the verified capabilities above. Public ACME/TLS ingress, Cloudflare/Resend integrations, source-build delivery, replicated storage, appliance images and native Apple clients require their own implementation and acceptance gates; documentation must not present them as shipped.
+Publish the source commit, version, checksums, platforms tested, and known limitations with each binary release. Record checks that were skipped or blocked. Keep the previous compatible binary and recovery material available until the upgrade has been verified.
+
+Public documentation should describe only shipped behavior. Public ACME/TLS ingress, Cloudflare/Resend integrations, source-build delivery, replicated storage, appliance images, and native Apple clients need their own implementation and acceptance checks.

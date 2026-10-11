@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Private security report
+    url: https://github.com/PIndustries/kiln/security/advisories/new
+    about: Report vulnerabilities privately; do not include exploits or credentials in public issues.
+  - name: Documentation
+    url: https://github.com/PIndustries/kiln/wiki
+    about: Setup, architecture, operating limits, and contribution workflow.

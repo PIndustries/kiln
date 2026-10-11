@@ -1,0 +1,25 @@
+name: Design proposal
+description: Propose a change to Kiln's behavior or architecture.
+labels: ["stage:proposal"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What fails or becomes difficult in the current system?
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Proposed change and alternatives
+      description: Include compatibility, trust boundaries, and failure behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance checks
+      description: What observable result would establish that this works?
+    validations:
+      required: true

@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible runtime or interface failure.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "For vulnerabilities, use private reporting from the Security tab. Do not post credentials, private state, or customer data."
+  - type: input
+    id: version
+    attributes:
+      label: Kiln revision and environment
+      description: Include kiln --version or commit, OS, architecture, and Swift version.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Smallest sequence that reproduces the failure.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Relevant logs or terminal output. Remove credentials and private paths.
