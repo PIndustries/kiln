@@ -9,26 +9,36 @@ import KilnTerminal
 
 /// No network, credentials, or provider account. Exercise the native URLSession
 /// delegate, SSE decoder and real terminal renderer with separated body deliveries.
-private final class DelayedTerminalProtocol: URLProtocol, @unchecked Sendable {
+private final class ProtocolReference: @unchecked Sendable {
+    let value: URLProtocol
+    init(_ value: URLProtocol) { self.value = value }
+}
+
+private final class DelayedTerminalProtocol: URLProtocol {
     private let lock = NSLock()
     private var delivery: Task<Void, Never>?
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "terminal-fixture.invalid" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
-        let task = Task { @Sendable [self] in
-            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!
-            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-            let chunks = request.url!.path == "/cancel" ? Array(repeating: "still working ", count: 100) : ["First ", "second ", "third ", "fourth ", "complete."]
+        // FoundationNetworking explicitly marks URLProtocol non-Sendable. The
+        // holder confines callbacks to this one delivery task; stopLoading only
+        // cancels its lock-protected handle.
+        let reference = ProtocolReference(self)
+        let task = Task { @Sendable [reference] in
+            let source = reference.value
+            let response = HTTPURLResponse(url: source.request.url!, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "text/event-stream"])!
+            source.client?.urlProtocol(source, didReceive: response, cacheStoragePolicy: .notAllowed)
+            let chunks = source.request.url!.path == "/cancel" ? Array(repeating: "still working ", count: 100) : ["First ", "second ", "third ", "fourth ", "complete."]
             do {
                 for chunk in chunks {
                     try await Task.sleep(for: .milliseconds(40))
                     try Task.checkCancellation()
                     let object: [String: Any] = ["choices": [["delta": ["content": chunk]]]]
                     let bytes = try JSONSerialization.data(withJSONObject: object)
-                    client?.urlProtocol(self, didLoad: Data("data: ".utf8) + bytes + Data("\n\n".utf8))
+                    source.client?.urlProtocol(source, didLoad: Data("data: ".utf8) + bytes + Data("\n\n".utf8))
                 }
-                client?.urlProtocol(self, didLoad: Data("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".utf8))
-                client?.urlProtocolDidFinishLoading(self)
+                source.client?.urlProtocol(source, didLoad: Data("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".utf8))
+                source.client?.urlProtocolDidFinishLoading(source)
             } catch { /* URLSession cancellation owns completion. */ }
         }
         lock.withLock { delivery = task }
