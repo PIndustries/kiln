@@ -29,7 +29,9 @@ On macOS arm64 with OpenSSH 10.3p1 and pyte, the real PTY regression script
 also passed. The delayed offline fixture delivered five distinct partial answer
 frames, then one completed answer. Cancellation stopped further progress callbacks;
 a replacement request completed. The tests also exercised 120/150-column and
-80-column layouts at 24/30 rows, task status refresh and stale approval removal.
+80-column layouts at 24/30 rows, task status refresh and stale approval removal. A deterministic capacity-retry
+fixture also verifies the 2s/1s countdown, task refresh during backoff, rejection
+of busy approval clicks, and exact-operation review after completion.
 The fixture uses only a reserved `.invalid` URL intercepted by URLProtocol: no
 production HTTP exception, fake credential, or runtime test-provider switch exists.
 

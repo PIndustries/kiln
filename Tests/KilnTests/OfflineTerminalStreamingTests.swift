@@ -59,6 +59,10 @@ private final class TerminalFrames: @unchecked Sendable {
         lock.withLock { terminal.progress(event); terminal.tick(); frames.append(terminal.render()) }
     }
     func snapshot() -> [String] { lock.withLock { frames } }
+    func workspace(_ value: AIWorkspaceSnapshot) { lock.withLock { terminal.updateAIWorkspace(value) } }
+    func current() -> String { lock.withLock { terminal.render() } }
+    func handle(_ key: TerminalKey) -> [TerminalEffect] { lock.withLock { terminal.handle(key) } }
+
     func finish(_ text: String, status: Int = 0) -> String {
         lock.withLock { terminal.finish(text: text, status: status); return terminal.render() }
     }
@@ -150,4 +154,37 @@ private func fixtureOptions() -> URLSessionConfiguration {
     #expect(ui.render().contains("line 39"))
     ui.resize(width: 120, height: 30)
     #expect(ui.render().contains("line 39"))
+}
+
+private actor OfflineRetryAttempts {
+    private var count = 0
+    func next() -> Int { count += 1; return count }
+}
+@Test func offlineRetryCountdownKeepsSidebarFreshAndBlocksBusyApproval() async throws {
+    let frames = TerminalFrames(), attempts = OfflineRetryAttempts()
+    let proposal = AIProposalSnapshot(id: "offline-proposal", operation: "restart", module: "fixture/api", expires: Date().addingTimeInterval(300))
+    frames.workspace(AIWorkspaceSnapshot(proposals: [proposal], tasks: [AITaskSnapshot(id: "offline-task", prompt: "Inspect fixture", status: "running")]))
+    let answer: String = try await ProviderRetry.run(emit: { event in frames.receive(event) }, sleep: {
+        #expect(frames.current().contains("Provider busy; retry"))
+        #expect(frames.current().contains("APPROVAL / restart"))
+        frames.workspace(AIWorkspaceSnapshot(proposals: [proposal], tasks: [AITaskSnapshot(id: "offline-task", prompt: "Inspect fixture", status: "completed")]))
+        #expect(frames.current().contains("TASK / completed"))
+        #expect(frames.handle(.mouse(button: 0, column: 4, row: 8, released: false)).isEmpty)
+        #expect(!frames.current().contains("REVIEW OPERATION"))
+    }) {
+        if await attempts.next() == 1 {
+            let response = HTTPURLResponse(url: URL(string: "https://terminal-fixture.invalid/retry")!, statusCode: 429, httpVersion: nil, headerFields: ["Retry-After": "2"])!
+            var failure = ProviderFailure(response: response)
+            _ = failure.append(Data("{\"error\":{\"code\":\"capacity_exceeded\"}}".utf8))
+            throw failure
+        }
+        frames.receive(.answer("Recovered"))
+        return "Recovered"
+    }
+    let final = frames.finish(answer)
+    #expect(final.contains("[ready]") && final.contains("TASK / completed"))
+    #expect(frames.snapshot().contains { $0.contains("retry 1/2 in 2s") })
+    #expect(frames.snapshot().contains { $0.contains("retry 1/2 in 1s") })
+    #expect(frames.handle(.mouse(button: 0, column: 4, row: 8, released: false)).isEmpty)
+    #expect(frames.current().contains("app restart fixture/api"))
 }
