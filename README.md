@@ -164,7 +164,15 @@ See [the ecosystem direction](docs/ecosystem.md) for source/prebuilt distributio
 
 `scripts/crash-recovery-integration.py` verifies supervisor SIGKILL recovery, direct-worker cleanup, stopped intent, interrupted deployment and restart, and seeded AI task recovery without contacting a provider. It uses disposable state; it never reboots the host.
 
-No open-source license has been selected yet.
+## License
+
+Copyright (c) 2026 P.Industries and Kiln contributors.
+
+Kiln's original code and documentation are licensed under the **GNU Affero General Public License, version 3 only** (`AGPL-3.0-only`). See [LICENSE](LICENSE) for the complete terms. Third-party dependencies and any separately marked material retain their respective licenses.
+
+AGPLv3 permits commercial use. If you modify Kiln and let users interact with that modified version remotely over a network, section 13 requires prominently offering those users the Corresponding Source. Distribution carries additional obligations under the license; this summary does not replace its terms.
+
+Repository visibility is separate from licensing: Kiln remains private until its public-release review is complete.
 
 ### Terminal regression tests
 
