@@ -51,6 +51,8 @@ jobs:
         run: python3 scripts/crash-recovery-integration.py
       - name: SSH admission, handshake deadlines and identity recovery
         run: python3 scripts/transport-integration.py
+      - name: SSH authentication diagnostics
+        run: python3 scripts/ssh-auth-integration.py
       - name: Named identities and permission boundaries
         run: python3 scripts/identity-integration.py
       - name: Vault hidden input, credential rotation and scoped delivery
@@ -92,6 +94,8 @@ jobs:
         run: python3 scripts/crash-recovery-integration.py
       - name: SSH admission, handshake deadlines and identity recovery
         run: python3 scripts/transport-integration.py
+      - name: SSH authentication diagnostics
+        run: python3 scripts/ssh-auth-integration.py
       - name: Named identities and permission boundaries
         run: python3 scripts/identity-integration.py
       - name: Vault hidden input, credential rotation and scoped delivery

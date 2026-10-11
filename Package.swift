@@ -41,6 +41,6 @@ let package = Package(
         .target(name: "KilnWebSocket", dependencies: [.product(name: "NIOWebSocket", package: "swift-nio")]),
         .executableTarget(name: "Kiln", dependencies: ["KilnCluster", "KilnVault", "KilnKit", "KilnBastion", "KilnCommands", "KilnSSH", "KilnRuntime"]),
         .executableTarget(name: "ExampleBackend", dependencies: ["KilnKit", "KilnHTTP", "KilnWebSocket", .product(name: "NIOPosix", package: "swift-nio")]),
-        .testTarget(name: "KilnTests", dependencies: ["KilnCluster", "KilnAI", "KilnVault", "KilnKit", "KilnRuntime", "KilnCommands", "KilnTerminal", "KilnTelemetry", "KilnBastion"]),
+        .testTarget(name: "KilnTests", dependencies: ["KilnSSH", "KilnCluster", "KilnAI", "KilnVault", "KilnKit", "KilnRuntime", "KilnCommands", "KilnTerminal", "KilnTelemetry", "KilnBastion"]),
     ]
 )

@@ -116,3 +116,5 @@ Release identifiers use `YY.MM.DD.BUILD`. The build number starts at 1 each day.
 Copyright (c) 2026 P.Industries and Kiln contributors.
 
 Kiln's original code and documentation are licensed under [Apache 2.0](LICENSE). Third-party dependencies and separately marked material retain their own licenses and attribution. Preserve applicable dependency notices when redistributing binaries; the inventory and full texts are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
+
+SSH connection problems: see [authentication troubleshooting](docs/ssh-troubleshooting.md).

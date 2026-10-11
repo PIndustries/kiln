@@ -34,16 +34,18 @@ private final class KeyAuthentication: NIOSSHServerUserAuthenticationDelegate, @
     private let lock = NSLock()
     private var authenticated: KilnCommands?
     private var attempts = 0
+    let diagnostics: SSHAdmissionDiagnostics
+    let connectionID: UUID
     private let channel: Channel
-    init(commands: KilnCommands, channel: Channel) { self.commands = commands; self.channel = channel }
+    init(commands: KilnCommands, channel: Channel, diagnostics: SSHAdmissionDiagnostics, connectionID: UUID) { self.commands = commands; self.channel = channel; self.diagnostics = diagnostics; self.connectionID = connectionID }
     var sessionCommands: KilnCommands? { lock.withLock { authenticated } }
     var supportedAuthenticationMethods: NIOSSHAvailableUserAuthenticationMethods { .publicKey }
     func requestReceived(request: NIOSSHUserAuthenticationRequest, responsePromise: EventLoopPromise<NIOSSHUserAuthenticationOutcome>) {
         let allowed = lock.withLock { attempts += 1; return attempts <= 6 }
-        guard allowed else { responsePromise.succeed(.failure); channel.close(promise: nil); return }
-        guard case .publicKey(let supplied) = request.request else { responsePromise.succeed(.failure); return }
+        guard allowed else { diagnostics.record(.authenticationBudget, connection: connectionID); responsePromise.succeed(.failure); channel.close(promise: nil); return }
+        guard case .publicKey(let supplied) = request.request else { diagnostics.record(.methodRejected, connection: connectionID); responsePromise.succeed(.failure); return }
         let bound = commands.forIdentity(name: request.username, publicKey: String(openSSHPublicKey: supplied.publicKey))
-        guard bound.isAuthorized() else { responsePromise.succeed(.failure); return }
+        guard bound.isAuthorized() else { diagnostics.record(.identityRejected, connection: connectionID); responsePromise.succeed(.failure); return }
         lock.withLock { authenticated = bound }
         responsePromise.succeed(.success)
     }
@@ -59,13 +61,13 @@ private final class AuthenticationDeadline: ChannelInboundHandler {
     func handlerAdded(context: ChannelHandlerContext) {
         let channel = context.channel, authentication = authentication
         deadline = context.eventLoop.scheduleTask(in: .seconds(15)) {
-            if authentication.sessionCommands == nil { channel.close(promise: nil) }
+            if authentication.sessionCommands == nil { authentication.diagnostics.record(.authenticationTimeout, connection: authentication.connectionID); channel.close(promise: nil) }
         }
     }
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         if authentication.sessionCommands == nil {
             received += unwrapInboundIn(data).readableBytes
-            guard received <= 131_072 else { context.close(promise: nil); return }
+            guard received <= 131_072 else { authentication.diagnostics.record(.preauthenticationBytes, connection: authentication.connectionID); context.close(promise: nil); return }
         } else { deadline?.cancel(); deadline = nil }
         context.fireChannelRead(data)
     }
@@ -75,7 +77,10 @@ private final class AuthenticationDeadline: ChannelInboundHandler {
 
 private final class CloseOnError: ChannelInboundHandler, Sendable {
     typealias InboundIn = Any
-    func errorCaught(context: ChannelHandlerContext, error: Error) { context.close(promise: nil) }
+    let diagnostics: SSHAdmissionDiagnostics
+    let connectionID: UUID
+    init(_ diagnostics: SSHAdmissionDiagnostics, _ connectionID: UUID) { self.diagnostics = diagnostics; self.connectionID = connectionID }
+    func errorCaught(context: ChannelHandlerContext, error: Error) { diagnostics.record(.protocolError, connection: connectionID); context.close(promise: nil) }
 }
 
 /// Mutable session state is confined to the channel event loop.
@@ -643,31 +648,33 @@ public final class KilnSSHServer: Sendable {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         let sessions = Sessions(limit: 256)
         let connections = Sessions(limit: 128)
+        let diagnostics = SSHAdmissionDiagnostics()
         do {
             let channel = try await ServerBootstrap(group: group)
                 .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
                 .childChannelInitializer { channel in
-                    guard connections.insert(channel) else { return channel.close() }
+                    let connectionID = UUID()
+                    guard connections.insert(channel) else { diagnostics.record(.connectionCapacity, connection: connectionID); return channel.close() }
                     channel.closeFuture.whenComplete { _ in connections.remove(channel) }
                     let children = Sessions(limit: 16)
                     return channel.eventLoop.makeCompletedFuture {
-                        let authentication = KeyAuthentication(commands: commands, channel: channel)
+                        let authentication = KeyAuthentication(commands: commands, channel: channel, diagnostics: diagnostics, connectionID: connectionID)
                         try channel.pipeline.syncOperations.addHandlers([
                             AuthenticationDeadline(authentication),
                             NIOSSHHandler(role: .server(.init(hostKeys: [hostKey], userAuthDelegate: authentication)), allocator: channel.allocator, inboundChildChannelInitializer: { child, type in
-                                guard let commands = authentication.sessionCommands, commands.isAuthorized() else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
-                                guard children.insert(child) else { return child.eventLoop.makeFailedFuture(SSHError.capacity) }
-                                guard sessions.insert(child) else { children.remove(child); return child.eventLoop.makeFailedFuture(SSHError.capacity) }
+                                guard let commands = authentication.sessionCommands, commands.isAuthorized() else { diagnostics.record(.authorizationRevoked, connection: connectionID); return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
+                                guard children.insert(child) else { diagnostics.record(.channelCapacity, connection: connectionID); return child.eventLoop.makeFailedFuture(SSHError.capacity) }
+                                guard sessions.insert(child) else { diagnostics.record(.sessionCapacity, connection: connectionID); children.remove(child); return child.eventLoop.makeFailedFuture(SSHError.capacity) }
                                 child.closeFuture.whenComplete { _ in sessions.remove(child); children.remove(child) }
                                 if case .directTCPIP(let destination) = type {
                                     return openTunnel(channel: child, host: destination.targetHost, port: destination.targetPort, commands: commands)
                                 }
-                                guard case .session = type else { return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
+                                guard case .session = type else { diagnostics.record(.unsupportedChannel, connection: connectionID); return child.eventLoop.makeFailedFuture(SSHError.unsupportedChannel) }
                                 return child.eventLoop.makeCompletedFuture {
                                     try child.pipeline.syncOperations.addHandler(ShellHandler(commands: commands))
                                 }
                             }),
-                            CloseOnError(),
+                            CloseOnError(diagnostics, connectionID),
                         ])
                     }
                 }.bind(host: host, port: port).get()
