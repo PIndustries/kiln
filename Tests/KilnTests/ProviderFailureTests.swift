@@ -92,8 +92,9 @@ private final class PartialStreamProtocol: URLProtocol, @unchecked Sendable {
 }
 @Test func providerNeverRetriesAPartialStream() async throws {
     let counter = Attempts()
+    let metrics = AIProviderMetrics()
     do {
-        let _: AIMessage = try await ProviderRetry.run(emit: { _ in }, sleep: {}) {
+        let _: AIMessage = try await ProviderRetry.run(metrics: metrics, emit: { _ in }, sleep: {}) {
             _ = await counter.next()
             let options = URLSessionConfiguration.ephemeral; options.protocolClasses = [PartialStreamProtocol.self]
             return try await ErebineClient().streamAttempt(request: URLRequest(url: URL(string: "https://fixture.invalid/partial")!), configuration: options, emit: { _ in })
@@ -101,6 +102,8 @@ private final class PartialStreamProtocol: URLProtocol, @unchecked Sendable {
         Issue.record("Interrupted stream was accepted")
     } catch { #expect(!(error is ProviderFailure)) }
     #expect(await counter.value() == 1)
+    let snapshot = await metrics.snapshot()
+    #expect(snapshot.outcomes["transport"] == 1 && snapshot.active == 0)
 }
 
 @Test func providerDelegatesDecodeBoundedRejectionWithoutLeakingBody() async throws {

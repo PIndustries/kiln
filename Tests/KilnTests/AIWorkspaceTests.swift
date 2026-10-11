@@ -63,3 +63,19 @@ private func propose(_ assistant: KilnAssistant, session: String) async throws {
     #expect(revoked.tasks.isEmpty && revoked.proposals.isEmpty && revoked.error != nil)
     await runtime.shutdown()
 }
+
+@Test func providerMetricsRequireCurrentAdministratorWithoutInference() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = try KilnRuntime(stateDirectory: directory)
+    let commands = KilnCommands(runtime: runtime)
+    try commands.bootstrapIdentity(username: "admin", keys: [workspaceKey])
+    _ = try commands.identities.set(name: "subject", role: "admin", key: workspaceKey, modules: [])
+    let admin = commands.forIdentity(name: "subject", publicKey: workspaceKey)
+    let allowed = await admin.execute("ai metrics")
+    #expect(allowed.status == 0 && allowed.text.contains("Attempts: 0"))
+    _ = try commands.identities.set(name: "subject", role: "viewer", key: nil, modules: [])
+    let denied = await admin.execute("ai metrics")
+    #expect(denied.status != 0 && !denied.text.contains("Attempts:"))
+    await runtime.shutdown()
+}

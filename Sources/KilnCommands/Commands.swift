@@ -341,7 +341,12 @@ private extension KilnCommands {
         let knowledgeURL = runtime.stateDirectory.appendingPathComponent("ai-knowledge.json")
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai concurrency [1-48]        Background worker limit (default 4)\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai concurrency [1-48]        Background worker limit (default 4)\nai metrics                    Redacted provider transport counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+        case ["ai", "metrics"]:
+            try authorizeAdmin()
+            let metrics = await assistant.providerMetrics.snapshot()
+            try authorizeAdmin()
+            return CommandResult(metrics.summary)
         case ["ai", "operations"]: return CommandResult(try await runtime.operationHistory())
         case ["ai", "reset"]: return CommandResult(try await assistant.reset(sessionID))
         default: break
@@ -425,7 +430,7 @@ private extension KilnCommands {
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "concurrency", "configure", "knowledge", "operations", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "concurrency", "configure", "knowledge", "operations", "metrics", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)
@@ -446,7 +451,7 @@ private extension KilnCommands {
         if p.first == "ai" {
             if p.count == 1 || ["help", "status", "ask", "reset", "deny"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
-            if ["task", "concurrency", "configure", "knowledge", "operations"].contains(p[1]) { try authorizeAdmin(); return }
+            if ["task", "concurrency", "configure", "knowledge", "operations", "metrics"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if ["identity", "vault", "server", "key", "session", "node", "cluster"].contains(p[0]) { try authorizeAdmin(); return }
         throw CommandSyntaxError.unknown

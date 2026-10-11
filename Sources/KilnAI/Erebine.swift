@@ -139,7 +139,8 @@ enum BoundedCompletionHTTP {
 
 /// Native Foundation HTTP; no OpenCode process, external SDK or shell transport.
 public struct ErebineClient: Sendable {
-    public init() {}
+    public let metrics: AIProviderMetrics
+    public init(metrics: AIProviderMetrics = AIProviderMetrics()) { self.metrics = metrics }
     public func complete(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool]) async throws -> AIMessage {
         try configuration.validate()
         struct Request: Encodable {

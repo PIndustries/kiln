@@ -13,6 +13,7 @@ public actor KilnAssistant {
     private var conversations: [String: Conversation] = [:]
     private var proposals: [String: Proposal] = [:]
     private var busy: Set<String> = []
+    public let providerMetrics = AIProviderMetrics()
     private let completion: AICompletion?
     public init(completion: AICompletion? = nil) { self.completion = completion }
     public static let tools: [AITool] = [
@@ -102,7 +103,7 @@ public actor KilnAssistant {
                     if let completion { message = try await completion(configuration, key, messages, tools) }
                     else {
                         let isPlanning = !tools.isEmpty
-                        message = try await ErebineClient().stream(configuration: configuration, key: key, messages: messages, tools: tools) { event in
+                        message = try await ErebineClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: messages, tools: tools) { event in
                             if isPlanning, case .answer = event { return }
                             progress(event)
                         }
@@ -125,7 +126,7 @@ public actor KilnAssistant {
                         do {
                             let final: AIMessage
                             if let completion { final = try await completion(configuration, key, presentation, []) }
-                            else { final = try await ErebineClient().stream(configuration: configuration, key: key, messages: presentation, tools: [], emit: progress) }
+                            else { final = try await ErebineClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: presentation, tools: [], emit: progress) }
                             guard final.tool_calls?.isEmpty != false, let content = final.content, !content.isEmpty else { throw AIError.message("Invalid presentation response") }
                             answer = String(content.prefix(24000))
                             messages[messages.count - 1] = AIMessage(role: "assistant", content: answer)
