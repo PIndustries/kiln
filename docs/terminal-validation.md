@@ -38,3 +38,18 @@ include real SSH cancellation/approval interactions against a deterministic prov
 fixture, SSH reconnection during an active stream, native emulator clipboard
 selection, and additional clients beyond OpenSSH/pyte. The pure selection test
 checks input suppression; actual frozen screen painting is a transport concern.
+
+## Live provider check (2026-10-11)
+
+The maintainer's PR #32 binary also passed the opt-in live Erebine + OpenSSH/pyte
+terminal script on macOS: 44 distinct activity frames, 13 partial answer frames,
+and 10 animated waiting frames. Selection mode stayed visually frozen, and a
+background task survived the SSH viewer disconnect with its result available after
+reconnecting. The live command integration also checked proposals, approval,
+single-use replay rejection and background tasks.
+
+This is live provider evidence, not deterministic offline SSH coverage. It does not
+claim native OS clipboard behavior or that an in-progress foreground answer resumes
+after reconnect. These scripts use a temporary node copied from explicitly supplied
+provider configuration; do not run them implicitly in CI or without authorization to
+consume inference credits.
