@@ -17,11 +17,21 @@ public struct AITaskSnapshot: Sendable, Equatable {
     public let status: String
     public init(id: String, prompt: String, status: String) { self.id = id; self.prompt = prompt; self.status = status }
 }
+public struct AIProviderSnapshot: Sendable, Equatable {
+    public let provider: String
+    public let profile: String
+    public var label: String { provider + " / " + profile }
+    public init(provider: String, profile: String) {
+        self.provider = ["erebine", "ollama"].contains(provider) ? provider : "unknown"
+        self.profile = !profile.isEmpty && profile.count <= 32 && profile.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }) ? profile : "invalid"
+    }
+}
 public struct AIWorkspaceSnapshot: Sendable, Equatable {
     public let proposals: [AIProposalSnapshot]
     public let tasks: [AITaskSnapshot]
     public let error: String?
-    public init(proposals: [AIProposalSnapshot] = [], tasks: [AITaskSnapshot] = [], error: String? = nil) {
-        self.proposals = proposals; self.tasks = tasks; self.error = error
+    public let provider: AIProviderSnapshot?
+    public init(proposals: [AIProposalSnapshot] = [], tasks: [AITaskSnapshot] = [], error: String? = nil, provider: AIProviderSnapshot? = nil) {
+        self.proposals = proposals; self.tasks = tasks; self.error = error; self.provider = provider
     }
 }
