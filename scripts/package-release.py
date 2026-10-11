@@ -73,6 +73,34 @@ def main():
             destination.write_bytes(subprocess.check_output(
                 ['git', 'cat-file', 'blob', object_id.decode()], cwd=ROOT))
             destination.chmod(0o755 if mode == b'100755' else 0o644)
+        if system == 'Linux':
+            # Bundle the Swift runtime closure. Keep OS libraries managed by the
+            # distribution; each copied ELF resolves siblings relative to itself.
+            library_dir = stage / 'lib'
+            library_dir.mkdir()
+            pending = list((stage / 'bin').iterdir())
+            copied = set()
+            while pending:
+                executable = pending.pop()
+                for line in run('ldd', str(executable)).splitlines():
+                    if 'not found' in line:
+                        raise SystemExit('unresolved runtime dependency: ' + line)
+                    match = re.search(r'=> (/[^ ]+)', line)
+                    if not match:
+                        continue
+                    source = Path(match.group(1))
+                    if '/swift/' not in str(source) or source.name in copied:
+                        continue
+                    copied.add(source.name)
+                    target = library_dir / source.name
+                    shutil.copy2(source.resolve(), target)
+                    pending.append(target)
+            if 'libswiftCore.so' not in copied:
+                raise SystemExit('Swift runtime closure is missing')
+            for executable in (stage / 'bin').iterdir():
+                subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/../lib', str(executable)], check=True)
+            for library in library_dir.iterdir():
+                subprocess.run(['patchelf', '--set-rpath', '$ORIGIN', str(library)], check=True)
         dependencies = {}
         for executable in sorted((stage / 'bin').iterdir()):
             command = ['otool', '-L', str(executable)] if system == 'Darwin' else ['ldd', str(executable)]
@@ -80,7 +108,7 @@ def main():
         manifest = {
             'version': version, 'sourceRevision': revision, 'platform': targets[(system, machine)],
             'compiler': compiler, 'packageResolvedSHA256': digest(stage / 'Package.resolved'),
-            'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Swift 6.2.3 runtime and matching distribution libraries; see docs/packages.md',
+            'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Ubuntu 24.04 x86_64 OS libraries; Swift runtime bundled; see docs/packages.md',
             'dynamicDependencies': dependencies,
             'files': [{'path': str(p.relative_to(stage)), 'sha256': digest(p)}
                       for p in sorted(stage.rglob('*')) if p.is_file()],
