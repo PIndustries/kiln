@@ -186,7 +186,7 @@ jobs:
           print('PASS downloaded package revision and all manifest file digests')
           PY
           "$KILN_BIN_DIR/kiln" --version
-          python3 /test/integration.py
+          python3 /test/integration.py </dev/null
           echo KILN_CLEAN_INSTALL_COMPLETE
           SH
           # A package-maintainer program must not consume the bash -s script and
