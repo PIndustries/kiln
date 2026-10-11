@@ -1,8 +1,8 @@
 # Working on Kiln
 
-Kiln is licensed under the GNU Affero General Public License, version 3 only (`AGPL-3.0-only`); see [LICENSE](LICENSE). The repository remains private pending public-release review. Keep runtime state, credentials, customer configuration and generated build artifacts outside Git.
+Kiln is licensed under the Apache License, Version 2.0 (`Apache-2.0`); see [LICENSE](LICENSE). The repository remains private pending public-release review. Keep runtime state, credentials, customer configuration and generated build artifacts outside Git.
 
-By submitting a contribution for inclusion, you agree to license it under `AGPL-3.0-only`. Submit only work you have the right to contribute, and preserve third-party copyright and license notices. No copyright assignment is required.
+By submitting a contribution for inclusion, you agree to license it under `Apache-2.0`. Submit only work you have the right to contribute, and preserve third-party copyright and license notices. No copyright assignment is required.
 
 Use Swift 6.2.3, the compiler used by release validation. Preserve `Package.resolved` unless a dependency update is intentional. The platform consists of separate Swift package targets; keep domain authorization in the command/runtime boundaries rather than relying on a terminal view or AI prompt.
 

@@ -26,6 +26,6 @@ The opt-in Erebine tests use a real provider and can incur charges. Run them for
 
 ## Before changing repository visibility
 
-Review the current tree and Git history for credentials, private endpoints, customer information and third-party redistribution obligations. Kiln's selected license is AGPL-3.0-only; include the root LICENSE with distributions, preserve required third-party notices, and verify Corresponding Source obligations. Complete security-reporting policies and document the supported deployment matrix and upgrade/recovery procedure. The license selection does not change repository visibility or constitute a public announcement.
+Review the current tree and Git history for credentials, private endpoints, customer information and third-party redistribution obligations. Kiln's selected license is Apache-2.0; include the root LICENSE with distributions, preserve required third-party notices, and verify applicable attribution and redistribution obligations. Complete security-reporting policies and document the supported deployment matrix and upgrade/recovery procedure. The license selection does not change repository visibility or constitute a public announcement.
 
 An initial open-source release should advertise only the verified capabilities above. Public ACME/TLS ingress, Cloudflare/Resend integrations, source-build delivery, replicated storage, appliance images and native Apple clients require their own implementation and acceptance gates; documentation must not present them as shipped.

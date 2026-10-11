@@ -168,9 +168,9 @@ See [the ecosystem direction](docs/ecosystem.md) for source/prebuilt distributio
 
 Copyright (c) 2026 P.Industries and Kiln contributors.
 
-Kiln's original code and documentation are licensed under the **GNU Affero General Public License, version 3 only** (`AGPL-3.0-only`). See [LICENSE](LICENSE) for the complete terms. Third-party dependencies and any separately marked material retain their respective licenses.
+Kiln's original code and documentation are licensed under the **Apache License, Version 2.0** (`Apache-2.0`). See [LICENSE](LICENSE) for the complete terms. Third-party dependencies and any separately marked material retain their respective licenses.
 
-AGPLv3 permits commercial use. If you modify Kiln and let users interact with that modified version remotely over a network, section 13 requires prominently offering those users the Corresponding Source. Distribution carries additional obligations under the license; this summary does not replace its terms.
+Apache 2.0 permits commercial use, proprietary applications and modules, and private modifications. Redistribution must comply with the license and applicable attribution requirements. The license includes a contributor patent grant and does not generally grant trademark rights. See the complete terms in LICENSE.
 
 Repository visibility is separate from licensing: Kiln remains private until its public-release review is complete.
 
