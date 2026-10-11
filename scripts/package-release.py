@@ -75,33 +75,13 @@ def main():
                 ['git', 'cat-file', 'blob', object_id.decode()], cwd=ROOT))
             destination.chmod(0o755 if mode == b'100755' else 0o644)
         if system == 'Linux':
-            # Bundle the Swift runtime closure. Keep OS libraries managed by the
-            # distribution; each copied ELF resolves siblings relative to itself.
-            library_dir = stage / 'lib'
-            library_dir.mkdir()
-            pending = list((stage / 'bin').iterdir())
-            copied = set()
-            while pending:
-                executable = pending.pop()
-                for line in run('ldd', str(executable)).splitlines():
-                    if 'not found' in line:
-                        raise SystemExit('unresolved runtime dependency: ' + line)
-                    match = re.search(r'=> (/[^ ]+)', line)
-                    if not match:
-                        continue
-                    source = Path(match.group(1))
-                    if '/swift/' not in str(source) or source.name in copied:
-                        continue
-                    copied.add(source.name)
-                    target = library_dir / source.name
-                    shutil.copy2(source.resolve(), target)
-                    pending.append(target)
-            # The static Swift runtime normally removes this closure entirely.
-            # Preserve any toolchain shared dependencies if a future target adds one.
+            # Application installation copies a single executable. Reject any
+            # compiler-runtime dependency instead of producing an archive that
+            # only works while its executable is beside a library directory.
             for executable in (stage / 'bin').iterdir():
-                subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/../lib', str(executable)], check=True)
-            for library in library_dir.iterdir():
-                subprocess.run(['patchelf', '--set-rpath', '$ORIGIN', str(library)], check=True)
+                linked = run('ldd', str(executable))
+                if 'not found' in linked or '/swift/' in linked or 'libswift' in linked or 'libFoundation' in linked:
+                    raise SystemExit('Linux executable still requires an external Swift runtime: ' + executable.name)
         dependencies = {}
         for executable in sorted((stage / 'bin').iterdir()):
             command = ['otool', '-L', str(executable)] if system == 'Darwin' else ['ldd', str(executable)]

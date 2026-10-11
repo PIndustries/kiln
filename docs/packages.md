@@ -28,10 +28,9 @@ package directory); the source-tree default points to a debug build.
 macOS packages require macOS 14 or later (Apple Silicon). They are not currently
 Developer-ID signed or notarized. No source build is needed.
 
-Starting with 26.10.11.2, Linux x86_64 packages include their Swift 6.2.3 shared
-runtime in `lib/`. Keep `bin/` and `lib/` together when moving the extracted package.
-The executables use relative runtime paths; neither Swift nor a compiler needs to
-be installed. Ubuntu 24.04 is the validated Linux distribution. Install its OS
+Starting with 26.10.11.2, Linux x86_64 packages include their Swift 6.2.3 runtime linked into each executable. Neither Swift nor a compiler needs to
+be installed. Packaging rejects executables that still require external Swift
+shared libraries. Ubuntu 24.04 is the validated Linux distribution. Install its OS
 libraries if they are absent (this does not build Kiln):
 
 ```sh
@@ -44,7 +43,7 @@ sudo apt-get install -y libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqli
 Older Linux archives require separately provisioned Swift runtime libraries.
 This is a relocatable package, not a completely static executable or a promise of
 compatibility with every Linux distribution. Bundled runtime notices are under
-`docs/licenses/swift-runtime/`; `build-info.json` hashes each runtime library.
+`docs/licenses/swift-runtime/`; `build-info.json` records executable hashes and OS library dependencies.
 
 ## Upgrade and rollback
 

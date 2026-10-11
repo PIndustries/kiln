@@ -8,7 +8,7 @@ does not imply that every target or component is linked into every Kiln binary.
 
 Binary distributions must carry this complete file. The original license and
 notice files and source provenance are also supplied under docs/licenses/.
-Refresh this inventory when the resolved dependency versions change. Linux archives also include the Swift 6.2.3 runtime dependency closure.
+Refresh this inventory when the resolved dependency versions change. Linux archives also include the Swift 6.2.3 runtime linked into the executables.
 Its upstream licenses and Foundation notice are in docs/licenses/swift-runtime/,
 from the swiftlang repositories at tag swift-6.2.3-RELEASE. Included components
 are Swift, Foundation, Foundation ICU, libdispatch and BlocksRuntime. OS libraries

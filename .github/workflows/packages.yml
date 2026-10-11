@@ -48,7 +48,7 @@ jobs:
       - name: Install Linux test clients
         if: runner.os == 'Linux'
         run: |
-          apt-get update && apt-get install -y --no-install-recommends openssh-client python3 patchelf
+          apt-get update && apt-get install -y --no-install-recommends openssh-client python3
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Build candidate package
         run: python3 scripts/package-release.py --output "$RUNNER_TEMP/packages"
