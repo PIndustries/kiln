@@ -126,3 +126,83 @@ private func fixture() throws -> (URL, KilnVault, URL) {
     try file.truncate(atOffset: 16_777_217); try file.close()
     #expect(throws: (any Error).self) { try vault.list() }
 }
+
+@Test func vaultBackupRestoresSeparateKeyAndPreservesGrantDenials() throws {
+    let files = FileManager.default
+    let root = files.temporaryDirectory.appendingPathComponent("kiln-vault-restore-" + UUID().uuidString)
+    defer { try? files.removeItem(at: root) }
+    let live = root.appendingPathComponent("live")
+    let state = live.appendingPathComponent("state")
+    let keyDirectory = live.appendingPathComponent("keys")
+    let key = keyDirectory.appendingPathComponent("master.key")
+    let backup = root.appendingPathComponent("state-backup")
+    let keyBackupDirectory = root.appendingPathComponent("separate-key-backup")
+    let keyBackup = keyBackupDirectory.appendingPathComponent("master.key")
+    for directory in [root, live, keyDirectory, backup, keyBackupDirectory] {
+        try files.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    }
+    let original = KilnVault(directory: state)
+    _ = try original.initialize(keyFile: key)
+    let canary = "disposable-restore-" + UUID().uuidString
+    _ = try original.put("credential", value: canary)
+    _ = try original.grant("credential", to: "sample/allowed")
+    _ = try original.grant("credential", to: "sample/revoked")
+    _ = try original.revoke("credential", from: "sample/revoked")
+    let stateNames = ["vault-config.json", "vault.enc"]
+    // Quiescent fixture: no writer is running while the backup pair is copied.
+    for name in stateNames {
+        try files.copyItem(at: state.appendingPathComponent(name), to: backup.appendingPathComponent(name))
+    }
+    try files.copyItem(at: key, to: keyBackup)
+    let originalCiphertext = try Data(contentsOf: backup.appendingPathComponent("vault.enc"))
+    try #require(files.fileExists(atPath: keyBackup.path))
+    // Destroy the actual live store AND its key, not merely reopen existing state.
+    try files.removeItem(at: live)
+    #expect(!files.fileExists(atPath: state.path))
+    #expect(!files.fileExists(atPath: key.path))
+    try files.createDirectory(at: live, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try files.copyItem(at: backup, to: state)
+    let restored = KilnVault(directory: state)
+    #expect(throws: (any Error).self) {
+        _ = try restored.environment(for: "sample/allowed", bindings: ["TOKEN": "credential"])
+    }
+    // A new, correctly sized key with correct permissions cannot decrypt old data.
+    try files.createDirectory(at: keyDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    var wrongKey = try Data(contentsOf: keyBackup)
+    wrongKey[0] ^= 1
+    let wrongKeyCreated = files.createFile(atPath: key.path, contents: wrongKey, attributes: [.posixPermissions: 0o600])
+    try #require(wrongKeyCreated)
+    #expect(throws: (any Error).self) {
+        _ = try restored.environment(for: "sample/allowed", bindings: ["TOKEN": "credential"])
+    }
+    let ciphertextUnchanged = try Data(contentsOf: state.appendingPathComponent("vault.enc")) == originalCiphertext
+    #expect(ciphertextUnchanged)
+    try files.removeItem(at: key)
+    try files.copyItem(at: keyBackup, to: key)
+    try files.setAttributes([.posixPermissions: 0o600], ofItemAtPath: key.path)
+    // Compare only a boolean in assertions: failure diagnostics must not print values.
+    let correctValueRecovered = try restored.environment(for: "sample/allowed", bindings: ["TOKEN": "credential"])["TOKEN"] == canary
+    #expect(correctValueRecovered)
+    for denied in ["sample/other", "sample/revoked"] {
+        #expect(throws: (any Error).self) {
+            _ = try restored.environment(for: denied, bindings: ["TOKEN": "credential"])
+        }
+    }
+    #expect(try restored.grants("sample/allowed") == "credential")
+    #expect(try restored.grants("sample/revoked") == "No grants for sample/revoked.")
+    let replacement = "disposable-rotation-" + UUID().uuidString
+    _ = try restored.put("credential", value: replacement)
+    let reopened = KilnVault(directory: state)
+    let replacementRecovered = try reopened.environment(for: "sample/allowed", bindings: ["TOKEN": "credential"])["TOKEN"] == replacement
+    #expect(replacementRecovered)
+    #expect(throws: (any Error).self) {
+        _ = try reopened.environment(for: "sample/revoked", bindings: ["TOKEN": "credential"])
+    }
+    for directory in [state, backup] {
+        for name in stateNames {
+            let bytes = try Data(contentsOf: directory.appendingPathComponent(name))
+            let containsCanary = bytes.range(of: Data(canary.utf8)) != nil || bytes.range(of: Data(replacement.utf8)) != nil
+            #expect(!containsCanary)
+        }
+    }
+}

@@ -17,6 +17,22 @@ Initialization creates a new master key with mode `0600` and refuses to overwrit
 
 The service opens the key without an interactive unlock step, so unattended startup works when the file is available. Protect that file independently; possession of the encrypted store plus its master key permits decryption. Keep a separate protected backup of the key. Losing it makes the secrets unrecoverable. For restore, preserve the configuration, encrypted store and key; restore the key at its configured path with the required ownership and permissions. There is no master-key rotation or automated recovery workflow yet.
 
+## Backup and restore rehearsal
+
+Take backups while Kiln is stopped and local Vault administration is paused. Keep `vault-config.json` and `vault.enc` as a matching pair; their configuration identity is part of authenticated decryption. Store the master key in a separate protected backup location with independent access controls. Do not include it in a release artifact or the ordinary state archive. A Vault-only backup does not include application data, manifests, SSH identities or other runtime state; back those up separately as required.
+
+For recovery:
+
+1. Stop Kiln and pause all local Vault writers. Preserve the damaged files for private investigation; do not run `vault init` over an existing store.
+2. Restore the matching configuration and encrypted store into the state directory. Restore the original master key at the absolute path recorded in the configuration. Recreating that path on the recovery host avoids changing the configuration; automatic path migration is not provided.
+3. Restore ownership to the Kiln service user. Use protected directories (mode `0700`) and regular files with mode `0600` for the configuration, ciphertext and key. Do not substitute symlinks.
+4. Verify Vault access under the service identity, then verify an explicitly granted module can start and an ungranted or revoked module is denied. Use disposable credentials and digest-only checks for rehearsals; do not print a recovered value.
+5. Rotate any exposed upstream credential and update its Vault value through hidden entry or stdin. Restart consumers to receive it. Confirm the old credential is rejected by its issuer; restoring a backup or replacing a Vault value does not revoke the old upstream credential.
+
+A missing key or a different valid 32-byte key must fail closed without changing ciphertext. Only a matching configuration, store and master key can restore access. Backups preserve the grants and revocations present when taken, so review policy before starting restored consumers: an older backup can predate a later revocation. A restored older credential may also have been revoked at its provider. No automated master-key rotation is implied by this procedure.
+
+The disposable `vaultBackupRestoresSeparateKeyAndPreservesGrantDenials` test copies state and key separately, deletes the originals, proves missing/wrong-key denial, restores the correct key, checks grants/revocation and confirms a replacement value after reopen. Assertions compare booleans rather than rendering recovered values. This is a Vault storage recovery test, not proof of full-node recovery, provider acceptance, or replacement delivery to an already-running process.
+
 ## Store credentials through SSH
 
 Connect to Kiln's dashboard, open the backtick command drawer, and enter:
