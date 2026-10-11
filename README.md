@@ -18,6 +18,30 @@ The runtime works without SSH. REST services, WebSocket services, and other trus
 
 Kiln is under active development. It is not a hostile-code sandbox: applications run as the same OS user as the supervisor. Peer administration does not provide a consensus cluster, automatic placement, or failover. Read the [operating boundaries](docs/release-readiness.md#current-operating-boundaries) before putting it on a server.
 
+## Download and run
+
+Prebuilt macOS (Apple Silicon) and Linux (x86_64) archives are available under
+[Releases](https://github.com/PIndustries/kiln/releases). No source checkout or
+compiler is required. Verify the adjacent SHA-256 file, extract the archive, and
+run from its directory:
+
+```sh
+./bin/kiln --version
+./bin/kiln up --state "$HOME/.kiln" --authorized-keys "$HOME/.ssh/id_ed25519.pub"
+```
+
+From another terminal, check the host key and connect:
+
+```sh
+ssh-keygen -lf "$HOME/.kiln/ssh-host-ed25519.pub"
+ssh -e none -i ~/.ssh/id_ed25519 -p 2222 admin@127.0.0.1
+```
+
+Starting with 26.10.11.2, Linux packages include the Swift runtime; Ubuntu 24.04
+system libraries are still required. macOS packages are not yet Developer-ID signed
+or notarized. See [package installation](docs/packages.md) for requirements,
+checksums and safe upgrades. The source workflow below is for development.
+
 ## Build and connect
 
 Release validation uses **Swift 6.2.3** on Apple Silicon macOS and Linux x86_64. The package targets macOS 14 or later; its tools-version declaration is not a promise of compatibility with older compilers. Bastion credential storage currently depends on macOS Keychain. See [Linux service setup](docs/linux-service.md) for Linux deployment.

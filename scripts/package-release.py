@@ -38,7 +38,8 @@ def main():
         parser.error('supported package hosts: Apple Silicon macOS or Linux x86_64')
     revision = run('git', 'rev-parse', 'HEAD')
     epoch = int(run('git', 'show', '-s', '--format=%ct', 'HEAD'))
-    subprocess.run(['swift', 'build', '-c', 'release', '--jobs', '2', '--force-resolved-versions'], cwd=ROOT, check=True)
+    build_flags = ['--static-swift-stdlib'] if system == 'Linux' else []
+    subprocess.run(['swift', 'build', '-c', 'release', '--jobs', '2', '--force-resolved-versions', *build_flags], cwd=ROOT, check=True)
     binary_dir = Path(run('swift', 'build', '-c', 'release', '--show-bin-path'))
     if run('git', 'rev-parse', 'HEAD') != revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise SystemExit('source checkout changed during build')
@@ -73,6 +74,14 @@ def main():
             destination.write_bytes(subprocess.check_output(
                 ['git', 'cat-file', 'blob', object_id.decode()], cwd=ROOT))
             destination.chmod(0o755 if mode == b'100755' else 0o644)
+        if system == 'Linux':
+            # Application installation copies a single executable. Reject any
+            # compiler-runtime dependency instead of producing an archive that
+            # only works while its executable is beside a library directory.
+            for executable in (stage / 'bin').iterdir():
+                linked = run('ldd', str(executable))
+                if 'not found' in linked or '/swift/' in linked or 'libswift' in linked or 'libFoundation' in linked:
+                    raise SystemExit('Linux executable still requires an external Swift runtime: ' + executable.name)
         dependencies = {}
         for executable in sorted((stage / 'bin').iterdir()):
             command = ['otool', '-L', str(executable)] if system == 'Darwin' else ['ldd', str(executable)]
@@ -80,7 +89,7 @@ def main():
         manifest = {
             'version': version, 'sourceRevision': revision, 'platform': targets[(system, machine)],
             'compiler': compiler, 'packageResolvedSHA256': digest(stage / 'Package.resolved'),
-            'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Swift 6.2.3 runtime and matching distribution libraries; see docs/packages.md',
+            'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Ubuntu 24.04 x86_64 OS libraries; Swift runtime included; see docs/packages.md',
             'dynamicDependencies': dependencies,
             'files': [{'path': str(p.relative_to(stage)), 'sha256': digest(p)}
                       for p in sorted(stage.rglob('*')) if p.is_file()],

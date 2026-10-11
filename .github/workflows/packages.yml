@@ -136,7 +136,7 @@ jobs:
             echo 'No additional Swift toolchain installed; hosted macOS includes its standard Xcode installation.'
           } >> "$GITHUB_STEP_SUMMARY"
   clean-linux:
-    name: Clean install / Linux runtime only
+    name: Clean install / Linux bundled runtime
     needs: package
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -148,21 +148,6 @@ jobs:
         with:
           name: kiln-linux-x86_64-${{ github.sha }}
           path: ${{ runner.temp }}/candidate
-      - name: Obtain only shared runtime libraries from the official Swift image
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir "$RUNNER_TEMP/swift-runtime"
-          docker run --rm --entrypoint /bin/bash \
-            -v "$RUNNER_TEMP/swift-runtime:/runtime" swift:6.2.3 \
-            -c 'cp -a /usr/lib/swift/linux/*.so* /runtime/'
-          test -n "$(find "$RUNNER_TEMP/swift-runtime" -name '*.so*' -print -quit)"
-          test -z "$(find "$RUNNER_TEMP/swift-runtime" -type f ! -name '*.so*' -print -quit)"
-          {
-            echo '### Linux runtime library source'
-            docker image inspect swift:6.2.3 --format '{{json .RepoDigests}}'
-            echo 'Only shared libraries are mounted into the test container; the distributed package is unchanged.'
-          } >> "$GITHUB_STEP_SUMMARY"
       - name: Install and exercise package without a Swift compiler
         shell: bash
         env:
@@ -172,7 +157,6 @@ jobs:
           docker run --rm -i --cpus=2 --memory=4g --pids-limit=512 \
             -e EXPECTED_REVISION \
             -v "$RUNNER_TEMP/candidate:/candidate:ro" \
-            -v "$RUNNER_TEMP/swift-runtime:/opt/swift-runtime:ro" \
             -v "$GITHUB_WORKSPACE/scripts/integration.py:/test/integration.py:ro" \
             ubuntu:24.04 bash -s <<'SH' | tee "$RUNNER_TEMP/clean-linux.log"
           set -euo pipefail
@@ -183,8 +167,6 @@ jobs:
             exit 1
           fi
           echo 'PASS no Swift compiler on runtime-only host'
-          echo /opt/swift-runtime > /etc/ld.so.conf.d/kiln-test.conf
-          ldconfig
           cd /candidate
           sha256sum -c ./*.sha256
           mkdir /installed
@@ -213,7 +195,7 @@ jobs:
           {
             echo '### Fresh Linux runtime-only package installation passed'
             echo "Source revision: $EXPECTED_REVISION"
-            echo 'Ubuntu 24.04 container; OS libraries and official Swift 6.2.3 shared runtime only.'
+            echo 'Ubuntu 24.04 container; OS libraries only, Swift runtime comes exclusively from the archive.'
             echo 'swift and swiftc absent from PATH; no checkout/build tree mounted.'
             echo 'Downloaded archive: checksum, manifest digests and real SSH/REST/WebSocket integration passed.'
           } >> "$GITHUB_STEP_SUMMARY"

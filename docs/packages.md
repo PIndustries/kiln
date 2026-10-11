@@ -25,11 +25,25 @@ example manifests with `python3 scripts/example-manifests.py --output /tmp/kiln-
 --executable "$PWD/bin/kiln-example-backend"` (as one command from the extracted
 package directory); the source-tree default points to a debug build.
 
-macOS packages require macOS 14 or later. They are not currently notarized.
-Linux packages require the Swift 6.2.3 runtime and the distribution libraries
-listed in `build-info.json`. They do not bundle a Linux distribution or Swift
-runtime. The CI build uses the official `swift:6.2.3` environment; compatibility
-with another distribution must be tested rather than inferred from architecture.
+macOS packages require macOS 14 or later (Apple Silicon). They are not currently
+Developer-ID signed or notarized. No source build is needed.
+
+Starting with 26.10.11.2, Linux x86_64 packages include their Swift 6.2.3 runtime linked into each executable. Neither Swift nor a compiler needs to
+be installed. Packaging rejects executables that still require external Swift
+shared libraries. Ubuntu 24.04 is the validated Linux distribution. Install its OS
+libraries if they are absent (this does not build Kiln):
+
+```sh
+sudo apt-get update
+sudo apt-get install -y libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqlite3-0 libzstd1 libstdc++6 libncurses6 ca-certificates
+./bin/kiln --version
+./bin/kiln up --state "$HOME/.kiln" --authorized-keys "$HOME/.ssh/id_ed25519.pub"
+```
+
+Older Linux archives require separately provisioned Swift runtime libraries.
+This is a relocatable package, not a completely static executable or a promise of
+compatibility with every Linux distribution. Bundled runtime notices are under
+`docs/licenses/swift-runtime/`; `build-info.json` records executable hashes and OS library dependencies.
 
 ## Upgrade and rollback
 
@@ -64,23 +78,14 @@ in these jobs.
 - **macOS:** a fresh Apple Silicon `macos-15` runner installs no additional Swift
   toolchain. It still has the hosted image's standard Xcode installation and is not
   proof of a machine with all developer tools removed, or the minimum macOS 14 version.
-- **Linux:** a fresh Ubuntu 24.04 container installs distribution runtime libraries and
-  receives only the `.so` runtime libraries from the official `swift:6.2.3` image.
-  The test asserts that neither `swift` nor `swiftc` is on PATH. Only the downloaded
-  candidate, those runtime libraries and the integration harness are mounted; there is
-  no compiler image, source checkout or build tree inside the test container. The host
-  requires explicit completion, checksum and final integration markers from inside
-  the container; a successful package-manager exit alone is not test evidence.
+- **Linux:** a fresh Ubuntu 24.04 container installs distribution libraries only.
+  No Swift image or external runtime directory is mounted. The test asserts that
+  neither `swift` nor `swiftc` is on PATH, verifies every downloaded file digest,
+  and runs real SSH/REST/WebSocket integration using the bundled libraries.
+  Explicit completion markers prevent an accidentally skipped test from passing.
 
-Linux consumers still need to provision the Swift 6.2.3 shared runtime and the
-appropriate distribution libraries separately. CI records the source image digest;
-these libraries are test prerequisites, not newly bundled release contents. This check
-establishes Ubuntu 24.04 user-space execution, not systemd/cgroup enforcement, another
-Linux distribution, an OS reboot or a completely static executable. The separate server
-resource job covers actual kernel enforcement.
-
-These clean-install jobs improve candidate evidence but do not publish a release or
-complete the remaining release-note, upgrade/recovery and distribution acceptance gates.
+These checks validate package execution, not all Linux distributions or every
+macOS version. The separate server resource job covers Linux kernel enforcement.
 
 ## Upgrade and rollback rehearsal
 
