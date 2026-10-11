@@ -1,0 +1,57 @@
+name: Package validation
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/packages.yml'
+      - 'scripts/package-release.py'
+      - 'docs/packages.md'
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            container: null
+            platform: macos-arm64
+          - runner: ubuntu-24.04
+            container: swift:6.2.3
+            platform: linux-x86_64
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Swift on macOS
+        if: runner.os == 'macOS'
+        uses: swift-actions/setup-swift@7591e4f04c00624cb043783da51a7fd6ee0a6bf6
+        with:
+          swift-version: '6.2.3'
+      - name: Install Linux test clients
+        if: runner.os == 'Linux'
+        run: apt-get update && apt-get install -y --no-install-recommends openssh-client python3
+      - name: Build candidate package
+        run: python3 scripts/package-release.py --output "$RUNNER_TEMP/packages"
+      - name: Extract and test packaged executables with disposable state
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/installed"
+          tar -xzf "$RUNNER_TEMP/packages/kiln-"*.tar.gz -C "$RUNNER_TEMP/installed"
+          export KILN_BIN_DIR="$(find "$RUNNER_TEMP/installed" -type d -name bin)"
+          "$KILN_BIN_DIR/kiln" --version
+          python3 scripts/integration.py
+      - name: Upload validated candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiln-${{ matrix.platform }}-${{ github.sha }}
+          path: ${{ runner.temp }}/packages/*
+          if-no-files-found: error
+          retention-days: 14
