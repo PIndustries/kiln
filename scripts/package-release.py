@@ -2,7 +2,6 @@
 """Build a clean revision and package only declared public distribution files."""
 import argparse
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
@@ -44,6 +43,8 @@ def main():
     version = run(str(binary_dir / 'kiln'), '--version')
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}\.[1-9]\d*', version):
         raise SystemExit('runtime returned an invalid release identifier')
+    if os.environ.get('GITHUB_REF_TYPE') == 'tag' and os.environ.get('GITHUB_REF_NAME') != 'v' + version:
+        raise SystemExit('release tag must match v plus the embedded runtime version')
     name = f'kiln-{version}-{targets[(system, machine)]}'
     output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='kiln-package-') as temporary:

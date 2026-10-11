@@ -18,7 +18,10 @@ On macOS, use `shasum -a 256 -c <archive>.sha256`; on Linux, use
 `sha256sum -c <archive>.sha256`. Extract into a new version-specific directory,
 inspect `build-info.json`, and run `bin/kiln --version` before starting a node.
 Use an absolute state directory outside the extracted package. Follow the README
-for public-key enrollment and the REST/WebSocket example.
+for public-key enrollment and the REST/WebSocket example. Generate packaged
+example manifests with `python3 scripts/example-manifests.py --output /tmp/kiln-examples
+--executable "$PWD/bin/kiln-example-backend"` (as one command from the extracted
+package directory); the source-tree default points to a debug build.
 
 macOS packages require macOS 14 or later. They are not currently notarized.
 Linux packages require the Swift 6.2.3 runtime and the distribution libraries
