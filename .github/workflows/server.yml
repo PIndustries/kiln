@@ -4,7 +4,51 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
+  macos:
+    name: macOS arm64 / Swift 6.2.3
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install documented Swift toolchain
+        uses: swift-actions/setup-swift@7591e4f04c00624cb043783da51a7fd6ee0a6bf6 # v2
+        with:
+          swift-version: "6.2.3"
+      - name: Verify toolchain and record validation revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift --version | tee swift-version.txt
+          grep -Eq 'Swift version 6\.2\.3([[:space:]]|$)' swift-version.txt
+          test "$(uname -m)" = arm64
+          python3 --version
+          ssh -V
+          {
+            echo '### macOS server validation'
+            echo "Source revision: $(git rev-parse HEAD)"
+            echo "Host: $(sw_vers -productVersion) / $(uname -m)"
+            cat swift-version.txt
+            echo 'Deterministic local fixtures only; no live AI provider credentials.'
+            echo 'Hard cgroup enforcement is covered separately by linux-resources.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Unit and policy tests with locked dependencies
+        run: swift test --jobs 2 --force-resolved-versions
+      - name: SSH, HTTP, WebSocket, crash recovery and restore
+        run: python3 scripts/integration.py
+      - name: Supervisor SIGKILL and interrupted deployment recovery
+        run: python3 scripts/crash-recovery-integration.py
+      - name: SSH admission, handshake deadlines and identity recovery
+        run: python3 scripts/transport-integration.py
+      - name: Named identities and permission boundaries
+        run: python3 scripts/identity-integration.py
+      - name: Explicit node adoption and durable peer operations
+        run: python3 scripts/cluster-integration.py
+      - name: Managed deployment and rollback
+        run: python3 scripts/deployment-integration.py
   linux:
     runs-on: ubuntu-latest
     container: swift:6.2.3
