@@ -38,7 +38,8 @@ def main():
         parser.error('supported package hosts: Apple Silicon macOS or Linux x86_64')
     revision = run('git', 'rev-parse', 'HEAD')
     epoch = int(run('git', 'show', '-s', '--format=%ct', 'HEAD'))
-    subprocess.run(['swift', 'build', '-c', 'release', '--jobs', '2', '--force-resolved-versions'], cwd=ROOT, check=True)
+    build_flags = ['--static-swift-stdlib'] if system == 'Linux' else []
+    subprocess.run(['swift', 'build', '-c', 'release', '--jobs', '2', '--force-resolved-versions', *build_flags], cwd=ROOT, check=True)
     binary_dir = Path(run('swift', 'build', '-c', 'release', '--show-bin-path'))
     if run('git', 'rev-parse', 'HEAD') != revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
         raise SystemExit('source checkout changed during build')
@@ -95,8 +96,8 @@ def main():
                     target = library_dir / source.name
                     shutil.copy2(source.resolve(), target)
                     pending.append(target)
-            if 'libswiftCore.so' not in copied:
-                raise SystemExit('Swift runtime closure is missing')
+            # The static Swift runtime normally removes this closure entirely.
+            # Preserve any toolchain shared dependencies if a future target adds one.
             for executable in (stage / 'bin').iterdir():
                 subprocess.run(['patchelf', '--set-rpath', '$ORIGIN/../lib', str(executable)], check=True)
             for library in library_dir.iterdir():
@@ -108,7 +109,7 @@ def main():
         manifest = {
             'version': version, 'sourceRevision': revision, 'platform': targets[(system, machine)],
             'compiler': compiler, 'packageResolvedSHA256': digest(stage / 'Package.resolved'),
-            'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Ubuntu 24.04 x86_64 OS libraries; Swift runtime bundled; see docs/packages.md',
+            'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Ubuntu 24.04 x86_64 OS libraries; Swift runtime included; see docs/packages.md',
             'dynamicDependencies': dependencies,
             'files': [{'path': str(p.relative_to(stage)), 'sha256': digest(p)}
                       for p in sorted(stage.rglob('*')) if p.is_file()],
