@@ -44,6 +44,10 @@ Retain the previous compatible package and backup until checks on the new runtim
 pass. A binary rollback does not automatically undo state format changes; review
 release-specific compatibility before pointing an older runtime at newer state.
 
+CI scans the final compressed artifacts for credentials before uploading them.
+A scan failure blocks upload; detection still has the limits described in
+[credential incidents](credential-incidents.md).
+
 CI artifacts are validation candidates. Publishing a binary release requires
 clean-host installation evidence, release notes and the gates in
 [release readiness](release-readiness.md). Artifact production alone does not

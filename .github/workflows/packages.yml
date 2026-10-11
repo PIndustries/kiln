@@ -59,6 +59,12 @@ jobs:
           export KILN_BIN_DIR="$(find "$RUNNER_TEMP/installed" -type d -name bin)"
           "$KILN_BIN_DIR/kiln" --version
           python3 scripts/integration.py
+      - name: Install pinned secret scanner
+        run: |
+          python3 scripts/install-gitleaks.py --directory "$RUNNER_TEMP/gitleaks"
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      - name: Scan final archive bytes before upload
+        run: python3 scripts/secret-scan.py --artifacts "$RUNNER_TEMP/packages" --output "$RUNNER_TEMP/package-secret-reports"
       - name: Upload validated candidate
         uses: actions/upload-artifact@v4
         with:
