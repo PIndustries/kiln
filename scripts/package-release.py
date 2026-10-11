@@ -82,7 +82,8 @@ def main():
             'compiler': compiler, 'packageResolvedSHA256': digest(stage / 'Package.resolved'),
             'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Swift 6.2.3 runtime and matching distribution libraries; see docs/packages.md',
             'dynamicDependencies': dependencies,
-            'files': {str(p.relative_to(stage)): digest(p) for p in sorted(stage.rglob('*')) if p.is_file()},
+            'files': [{'path': str(p.relative_to(stage)), 'sha256': digest(p)}
+                      for p in sorted(stage.rglob('*')) if p.is_file()],
         }
         (stage / 'build-info.json').write_text(json.dumps(manifest, indent=2) + '\n')
         archive = output / (name + '.tar.gz')
