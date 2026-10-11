@@ -35,3 +35,15 @@ Keep changes focused. Explain the failure or use case, what the patch changes, a
 Preserve existing author attribution and license notices. Do not add credentials, runtime state, private endpoints, customer data, or generated binaries. Scrub logs and screenshots before attaching them.
 
 The [Wiki](https://github.com/PIndustries/kiln/wiki) provides the documentation entry point. Detailed implementation and operating notes live in `docs/` and should change with the code.
+
+## Continuous validation
+
+[Server validation](.github/workflows/server.yml) runs the same checked-out revision for each push and pull request. A green macOS job alone does not establish Linux compatibility, or vice versa. Check all three jobs before accepting a release commit:
+
+| Job | Environment | Coverage and boundary |
+| --- | --- | --- |
+| macOS arm64 / Swift 6.2.3 | GitHub-hosted `macos-15`, official signed Swift 6.2.3 installer | Locked-dependency unit/policy tests; real OpenSSH, HTTP, WebSocket, supervisor SIGKILL, admission limits, identities, loopback peers, deployment and rollback. Records the exact checkout revision and compiler in the job summary. macOS rejects requested Linux hard resource limits. |
+| linux | `swift:6.2.3` container on an Ubuntu runner | Locked-dependency unit/policy tests and the corresponding server integration suites, including isolated multicast discovery. This container job does **not** prove systemd delegation or kernel resource enforcement. |
+| linux-resources | Native Ubuntu 24.04 hosted runner with systemd/cgroup v2; binaries built in `swift:6.2.3` | Privileged fixture setup creates an unprivileged delegated Kiln service. Verifies actual CPU/PID/memory enforcement, descendant cleanup, diagnostic-storage obstruction and service crash recovery. This is a disposable hosted Linux VM test, not a container-only simulation or whole-OS reboot test. |
+
+These jobs require no repository secrets and do not run `ai-live-integration.py`, `ai-terminal-integration.py` or `ai-workspace-integration.py`. Live Erebine checks remain explicit, separately authorized runs against a configured disposable Vault; do not add paid-provider credentials to pull-request jobs. Keychain-backed bastion and terminal UI suites remain separate platform-specific checks, not implied by this server workflow.
