@@ -1,0 +1,10 @@
+# Extend the pinned scanner's complete rule set; do not exclude fixture/docs paths.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[[rules.allowlists]]
+description = "Uninitialized Swift key type declarations, not credential values"
+regexTarget = "match"
+regexes = ['''^(?:key|privateKey): Curve25519\.Signing\.PrivateKey$''']
