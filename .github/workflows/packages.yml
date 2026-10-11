@@ -56,7 +56,8 @@ jobs:
           set -euo pipefail
           mkdir "$RUNNER_TEMP/installed"
           tar -xzf "$RUNNER_TEMP/packages/kiln-"*.tar.gz -C "$RUNNER_TEMP/installed"
-          export KILN_BIN_DIR="$(find "$RUNNER_TEMP/installed" -type d -name bin)"
+          KILN_BIN_DIR="$(find "$RUNNER_TEMP/installed" -type d -name bin)"
+          export KILN_BIN_DIR
           "$KILN_BIN_DIR/kiln" --version
           python3 scripts/integration.py
       - name: Install pinned secret scanner
@@ -72,3 +73,124 @@ jobs:
           path: ${{ runner.temp }}/packages/*
           if-no-files-found: error
           retention-days: 14
+  clean-macos:
+    name: Clean install / macOS arm64
+    needs: package
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: kiln-macos-arm64-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate
+      - name: Verify and run downloaded package on a fresh runner
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Intentionally no Swift installer or build step in this job.
+          test "$(uname -m)" = arm64
+          cd "$RUNNER_TEMP/candidate"
+          shasum -a 256 -c ./*.sha256
+          mkdir "$RUNNER_TEMP/clean-installed"
+          tar -xzf ./kiln-*.tar.gz -C "$RUNNER_TEMP/clean-installed"
+          KILN_BIN_DIR="$(find "$RUNNER_TEMP/clean-installed" -type d -name bin)"
+          export KILN_BIN_DIR
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          package = pathlib.Path(os.environ['KILN_BIN_DIR']).parent
+          info = json.loads((package / 'build-info.json').read_text())
+          assert info['sourceRevision'] == os.environ['EXPECTED_REVISION']
+          assert info['platform'] == 'macos-arm64'
+          for entry in info['files']:
+              assert hashlib.sha256((package / entry['path']).read_bytes()).hexdigest() == entry['sha256'], entry['path']
+          print('PASS downloaded package revision and all manifest file digests')
+          PY
+          "$KILN_BIN_DIR/kiln" --version
+          python3 "$GITHUB_WORKSPACE/scripts/integration.py"
+          {
+            echo '### Fresh macOS package installation passed'
+            echo "Source revision: $EXPECTED_REVISION"
+            echo "Host: $(sw_vers -productVersion) / $(uname -m)"
+            echo 'Downloaded archive: checksum, manifest digests and real SSH/REST/WebSocket integration passed.'
+            echo 'No additional Swift toolchain installed; hosted macOS includes its standard Xcode installation.'
+          } >> "$GITHUB_STEP_SUMMARY"
+  clean-linux:
+    name: Clean install / Linux runtime only
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: kiln-linux-x86_64-${{ github.sha }}
+          path: ${{ runner.temp }}/candidate
+      - name: Obtain only shared runtime libraries from the official Swift image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/swift-runtime"
+          docker run --rm --entrypoint /bin/bash \
+            -v "$RUNNER_TEMP/swift-runtime:/runtime" swift:6.2.3 \
+            -c 'cp -a /usr/lib/swift/linux/*.so* /runtime/'
+          test -n "$(find "$RUNNER_TEMP/swift-runtime" -name '*.so*' -print -quit)"
+          test -z "$(find "$RUNNER_TEMP/swift-runtime" -type f ! -name '*.so*' -print -quit)"
+          {
+            echo '### Linux runtime library source'
+            docker image inspect swift:6.2.3 --format '{{json .RepoDigests}}'
+            echo 'Only shared libraries are mounted into the test container; the distributed package is unchanged.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install and exercise package without a Swift compiler
+        shell: bash
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm -i --cpus=2 --memory=4g --pids-limit=512 \
+            -e EXPECTED_REVISION \
+            -v "$RUNNER_TEMP/candidate:/candidate:ro" \
+            -v "$RUNNER_TEMP/swift-runtime:/opt/swift-runtime:ro" \
+            -v "$GITHUB_WORKSPACE/scripts/integration.py:/test/integration.py:ro" \
+            ubuntu:24.04 bash -s <<'SH'
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqlite3-0 libzstd1 libstdc++6 libncurses6 openssh-client python3 ca-certificates
+          if command -v swift || command -v swiftc; then
+            echo 'Unexpected Swift compiler on runtime-only host' >&2
+            exit 1
+          fi
+          echo /opt/swift-runtime > /etc/ld.so.conf.d/kiln-test.conf
+          ldconfig
+          cd /candidate
+          sha256sum -c ./*.sha256
+          mkdir /installed
+          tar -xzf ./kiln-*.tar.gz -C /installed
+          KILN_BIN_DIR="$(find /installed -type d -name bin)"
+          export KILN_BIN_DIR
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          package = pathlib.Path(os.environ['KILN_BIN_DIR']).parent
+          info = json.loads((package / 'build-info.json').read_text())
+          assert info['sourceRevision'] == os.environ['EXPECTED_REVISION']
+          assert info['platform'] == 'linux-x86_64'
+          for entry in info['files']:
+              assert hashlib.sha256((package / entry['path']).read_bytes()).hexdigest() == entry['sha256'], entry['path']
+          print('PASS downloaded package revision and all manifest file digests')
+          PY
+          "$KILN_BIN_DIR/kiln" --version
+          python3 /test/integration.py
+          SH
+          {
+            echo '### Fresh Linux runtime-only package installation passed'
+            echo "Source revision: $EXPECTED_REVISION"
+            echo 'Ubuntu 24.04 container; OS libraries and official Swift 6.2.3 shared runtime only.'
+            echo 'swift and swiftc absent from PATH; no checkout/build tree mounted.'
+            echo 'Downloaded archive: checksum, manifest digests and real SSH/REST/WebSocket integration passed.'
+          } >> "$GITHUB_STEP_SUMMARY"

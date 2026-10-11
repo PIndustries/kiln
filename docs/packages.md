@@ -52,3 +52,30 @@ CI artifacts are validation candidates. Publishing a binary release requires
 clean-host installation evidence, release notes and the gates in
 [release readiness](release-readiness.md). Artifact production alone does not
 satisfy those gates.
+
+## Clean-install CI boundary
+
+The package workflow also downloads each scanned candidate artifact into a separate
+job and verifies its archive checksum, source revision and every manifest file digest
+before running the real OpenSSH/REST/WebSocket integration suite against its extracted
+executables. The test harness is checked out at the same revision; no binaries are rebuilt
+in these jobs.
+
+- **macOS:** a fresh Apple Silicon `macos-15` runner installs no additional Swift
+  toolchain. It still has the hosted image's standard Xcode installation and is not
+  proof of a machine with all developer tools removed, or the minimum macOS 14 version.
+- **Linux:** a fresh Ubuntu 24.04 container installs distribution runtime libraries and
+  receives only the `.so` runtime libraries from the official `swift:6.2.3` image.
+  The test asserts that neither `swift` nor `swiftc` is on PATH. Only the downloaded
+  candidate, those runtime libraries and the integration harness are mounted; there is
+  no compiler image, source checkout or build tree inside the test container.
+
+Linux consumers still need to provision the Swift 6.2.3 shared runtime and the
+appropriate distribution libraries separately. CI records the source image digest;
+these libraries are test prerequisites, not newly bundled release contents. This check
+establishes Ubuntu 24.04 user-space execution, not systemd/cgroup enforcement, another
+Linux distribution, an OS reboot or a completely static executable. The separate server
+resource job covers actual kernel enforcement.
+
+These clean-install jobs improve candidate evidence but do not publish a release or
+complete the remaining release-note, upgrade/recovery and distribution acceptance gates.
