@@ -4,6 +4,7 @@ No tag/release publication and no writes to a running user node.
 """
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -119,6 +120,15 @@ def rehearse(previous, candidate, temporary):
             process.terminate(); process.wait(timeout=20)
             assert process.returncode == 0
         run(str(binary), 'session-service-stop', '--state', str(state), timeout=10)
+        # The command acknowledges a delayed shutdown; do not let the next
+        # release reuse an old service that is still winding down.
+        def service_stopped():
+            if (state / 'session-service.pid').exists():
+                return False
+            with (state / 'session-service.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        wait(service_stopped)
     def health():
         with urllib.request.urlopen(f'http://127.0.0.1:{rest_port}/health', timeout=2) as response:
             return response.status == 200
