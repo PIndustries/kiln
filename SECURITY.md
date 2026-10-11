@@ -18,3 +18,7 @@ Maintainers will use the private report to discuss reproduction and remediation.
 - Default management and example listeners bind to loopback. Managed TCP ingress is not public TLS termination. Do not assume an exposed listener supplies authentication or encryption beyond its documented protocol.
 
 See [identity permissions](docs/identities.md), [Vault](docs/vault.md), [peer adoption](docs/clustering.md), and [release operating boundaries](docs/release-readiness.md) for details.
+
+## Credential exposure
+
+See the [secret-scanning and credential-incident runbook](docs/credential-incidents.md) for coverage, private reporting, containment, issuer-side revocation, rotation and recovery. Removing a leaked value from a commit does not revoke it.
