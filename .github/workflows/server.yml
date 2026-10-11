@@ -47,8 +47,8 @@ jobs:
         run: swift test --jobs 2 --force-resolved-versions
       - name: SSH, HTTP, WebSocket, crash recovery and restore
         run: python3 scripts/integration.py
-      - name: Supervisor SIGKILL and interrupted deployment recovery
-        run: python3 scripts/crash-recovery-integration.py
+      - name: Repeated recovery soak and interrupted deployment recovery
+        run: KILN_SOAK_CYCLES=5 python3 scripts/crash-recovery-integration.py
       - name: SSH admission, handshake deadlines and identity recovery
         run: python3 scripts/transport-integration.py
       - name: Named identities and permission boundaries
@@ -88,8 +88,8 @@ jobs:
         run: swift test --jobs 2 --force-resolved-versions
       - name: SSH, HTTP, WebSocket, crash recovery and restore
         run: python3 scripts/integration.py
-      - name: Supervisor SIGKILL and interrupted deployment recovery
-        run: python3 scripts/crash-recovery-integration.py
+      - name: Repeated recovery soak and interrupted deployment recovery
+        run: KILN_SOAK_CYCLES=5 python3 scripts/crash-recovery-integration.py
       - name: SSH admission, handshake deadlines and identity recovery
         run: python3 scripts/transport-integration.py
       - name: Named identities and permission boundaries

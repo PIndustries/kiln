@@ -48,3 +48,16 @@ The guardian owns a direct worker, not an arbitrary process tree. For legacy unc
 Upgrade a pre-guardian release with one graceful shutdown; this release does not discover or kill unknown processes left by older releases. Embedded users of `KilnRuntime` must distribute the matching `kiln` guardian executable beside their host executable.
 
 `deploy/kiln.service` provides Linux boot startup and bounded supervisor restart. Its control-group shutdown also stops the separate terminal service; full service restart does not preserve those terminals. See [Linux service setup](linux-service.md).
+
+
+## Repeatable recovery and storage-fault workload
+
+Run `KILN_BIN_DIR="$PWD/.build/debug" KILN_SOAK_CYCLES=5 python3 scripts/crash-recovery-integration.py` after building. Both macOS and Linux CI run five cycles; the environment setting accepts 1–30 cycles for a longer disposable local run. The fixture owns its loopback ports, SSH identity, state and workers and never restarts an operator's node.
+
+Each cycle keeps two clients issuing HTTP requests and WebSocket echoes, restarts the REST worker three times, then SIGKILLs the supervisor and starts a replacement. Disconnects during termination are expected and counted. A restored generation must serve at least five more successful requests of each protocol; malformed responses and HTTP error statuses fail. Settled state must contain exactly three workers and three guardians, no previous worker PIDs, a closed explicitly stopped worker port, unchanged host identity and Vault ciphertext, and preserved stopped intent. Existing candidate/draining deployment and ownership checks run afterward.
+
+The fixture reports successful traffic counts, disconnects, supervisor descriptor/socket counts and captured worker-log bytes for each cycle. Descriptor limits are relative to the initial healthy supervisor: at most 24 extra descriptors/12 sockets during the two-client workload, and 16/8 after restoration. Captured worker logs must each remain within 4 MiB, with at most eight files for this workload; the fixture's own supervisor log must remain within 8 MiB. These are regression budgets, not production connection quotas or proof of a long-duration memory soak. Application-created data files remain outside captured-log limits.
+
+The Swift state-file tests inject `ENOSPC`, `EACCES` and `EIO` outcomes at internal transaction checkpoints before writing and before rename. They verify the previous committed bytes survive and temporary files are removed. A separately seeded partial transaction is never promoted by the next write. An injected directory-flush failure after rename must report `CommitUncertain` while the replacement bytes are visible, requiring reconciliation rather than blind replay. The internal seam has no CLI/environment switch.
+
+This evidence models filesystem failures; it does **not** fill a disk, change host permissions, interrupt a real kernel write, simulate device power loss, or establish durable storage guarantees. The fixture performs real process SIGKILLs but does not reboot the host. Actual bounded-filesystem exhaustion, physical power-loss behavior and extended soak durations remain separate validation work.
