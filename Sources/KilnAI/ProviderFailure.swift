@@ -18,6 +18,17 @@ struct ProviderFailure: Error, CustomStringConvertible {
               delay <= 60 else { return nil }
         return delay
     }
+    var outcome: AIProviderMetrics.Outcome {
+        let object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+        let code = (object?["error"] as? [String: Any])?["code"] as? String
+        switch (response.statusCode, code) {
+        case (429, "capacity_exceeded"): return .capacity
+        case (429, "quota_exceeded"), (402, _): return .quota
+        case (429, "rate_limit_exceeded"): return .rateLimited
+        case (401, _), (403, _): return .authentication
+        default: return .rejected
+        }
+    }
     static let maximumBytes = 16_384
     let response: HTTPURLResponse
     private(set) var bytes = Data()
@@ -67,22 +78,30 @@ struct ProviderFailure: Error, CustomStringConvertible {
 // Each attempt is only the HTTP inference call. The assistant's tool execution
 // loop is outside this boundary and is never replayed by this retry policy.
 enum ProviderRetry {
-    static func run<T: Sendable>(emit: @escaping @Sendable (AIProgress) -> Void,
+    static func run<T: Sendable>(metrics: AIProviderMetrics? = nil, emit: @escaping @Sendable (AIProgress) -> Void,
                                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) },
                                 attempt: @escaping @Sendable () async throws -> T) async throws -> T {
         for retry in 0...2 {
             try Task.checkCancellation()
-            do { return try await attempt() }
+            do {
+                if let metrics { return try await metrics.measure(isRetry: retry > 0, attempt) }
+                return try await attempt()
+            }
             catch let failure as ProviderFailure {
                 guard retry < 2, let delay = failure.retrySeconds else { throw failure }
-                if delay > 0 {
-                    for remaining in stride(from: delay, through: 1, by: -1) {
-                        try Task.checkCancellation()
-                        emit(.status("Provider busy; retry \(retry + 1)/2 in \(remaining)s"))
-                        try await sleep()
+                do {
+                    if delay > 0 {
+                        for remaining in stride(from: delay, through: 1, by: -1) {
+                            try Task.checkCancellation()
+                            emit(.status("Provider busy; retry \(retry + 1)/2 in \(remaining)s"))
+                            try await sleep()
+                        }
                     }
+                    try Task.checkCancellation()
+                } catch {
+                    if error is CancellationError || Task.isCancelled { await metrics?.recordBackoffCancellation() }
+                    throw error
                 }
-                try Task.checkCancellation()
                 emit(.status("Retrying provider request \(retry + 1)/2"))
             }
         }

@@ -131,3 +131,20 @@ The SSE parser handles UTF-8 and tool arguments split across network packets, re
 For provider timing diagnostics, set `KILN_LIVE_STATE` to an existing configured state directory and run `swift test --filter optionalLiveProviderStreamTiming`. This opt-in test consumes inference credits and reports only chunk counts, byte counts and arrival times, never credentials or response contents. Provider latency before the first answer is distinct from terminal rendering latency. The SSH UI test requires at least three distinct partial answer frames before completion and an animated waiting state.
 
 Erebine currently emits tool-enabled answers as a single content chunk in our measurements. Kiln therefore uses a bounded tool phase followed by a separate tool-free presentation request. Only the presentation answer is displayed as live text; provider reasoning and activity remain visible during planning. This adds an inference request and provider latency/cost. The presentation receives verified tool results, cannot execute operations, and falls back to the completed draft if it fails. No operation is replayed during fallback.
+
+## Provider transport counters
+
+Administrators can run `ai metrics` without sending an inference request. Counters are
+in-memory and reset when the process restarts. They aggregate the assistant's native
+streaming attempts across sessions, with fixed categories for completion, capacity,
+rate limits, quota, authentication, other rejection, timeout, cancellation, transport
+failure and invalid response. Retried attempts count separately. Cancellation while
+waiting to retry has its own counter and does not invent another HTTP attempt.
+Elapsed totals and maxima measure attempts, excluding retry waits; no percentile or
+billing estimate is inferred. Counters saturate rather than wrap.
+
+There are no prompt, credential, model, account, endpoint or provider-error labels.
+Injected test completions and standalone nonstreaming clients are outside these
+assistant counters. An HTTP/stream completion does not prove a tool operation ran:
+`ai operations` remains the separate record of approved operation outcomes. Task
+states remain available in `ai task list` and the task sidebar.

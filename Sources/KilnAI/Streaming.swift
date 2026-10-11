@@ -39,7 +39,7 @@ struct ErebineStreamDecoder {
         }
         guard let choices = object["choices"] as? [[String: Any]], let first = choices.first else { return }
         if let finish = first["finish_reason"] as? String {
-            guard ["stop", "tool_calls"].contains(finish) else { throw AIError.message("Erebine response was cut short (\(finish)); no partial tool call executed") }
+            guard ["stop", "tool_calls"].contains(finish) else { throw AIError.message("Erebine response was cut short; no partial tool call executed") }
             finished = true
         }
         guard let delta = first["delta"] as? [String: Any] else { return }
@@ -116,7 +116,7 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard !rejected else { return }
         if let rejection { continuation.finish(throwing: rejection); return }
-        if error != nil { continuation.finish(throwing: AIError.message("Erebine stream failed or timed out; no automatic retry")) }
+        if let error { continuation.finish(throwing: ProviderTransportFailure(error)) }
         else { continuation.finish() }
     }
 }
@@ -138,7 +138,7 @@ extension ErebineClient {
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages, tools: tools))
         let preparedRequest = request
-        return try await ProviderRetry.run(emit: emit) {
+        return try await ProviderRetry.run(metrics: metrics, emit: emit) {
             try await streamAttempt(request: preparedRequest, emit: emit)
         }
     }
