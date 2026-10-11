@@ -102,7 +102,17 @@ Values are delivered at startup. Rotation applies on the next start/deployment. 
 
 ## Verification
 
-`swift test` covers encrypted persistence, explicit grants, denial, rotation, revocation, tampering, missing keys and module startup enforcement. `scripts/vault-integration.py` exercises hidden entry and cancellation using real OpenSSH, checks a launched worker's received credential by digest, and verifies that raw values are absent from captured SSH output and runtime state/log files. Test credentials are disposable.
+`swift test` covers encrypted persistence, explicit grants, denial, rotation, revocation, tampering, missing keys and module startup enforcement. `scripts/vault-integration.py` exercises hidden entry and cancellation using real OpenSSH, checks a launched worker's received credential by digest, and verifies that raw values are absent from captured SSH output and runtime state/log files. Test credentials are disposable. The SSH fixture also checks a fresh observation from the running worker after rotation still uses its original value, then requires a new worker PID and replacement digest after restart. Other-module and revoked-grant starts are denied without writing a delivery proof.
+
+`vaultCanariesStayOutOfAuditsTelemetryAndAIContext` combines a real disposable Vault, command auditing, host metrics and an injected offline AI completion. It checks that provider credential rotation reaches the next AI turn, revocation prevents another completion, an unregistered Vault-read tool is denied, and all three random credential values remain absent from captured model messages, command output and audit records. It does not call Erebine or claim that a credential is accepted by an external provider.
+
+Both macOS and Linux CI run the hidden-entry/rotation fixture with a test-only virtual environment and hash-pinned dependencies from `scripts/terminal-test-requirements.txt`. To repeat locally after building:
+
+```sh
+python3 -m venv /tmp/kiln-terminal-tests
+/tmp/kiln-terminal-tests/bin/python -m pip install --require-hashes --only-binary=:all: -r scripts/terminal-test-requirements.txt
+/tmp/kiln-terminal-tests/bin/python scripts/vault-integration.py
+```
 
 State replacement flushes encrypted contents and configuration before reporting success. If initialization cannot confirm its final write, Kiln retains the newly created key and state files instead of deleting potentially committed data. Inspect the existing files or restore a matching backup before attempting initialization again. The master-key parent must be owned by the runtime user and must not allow group/other writes.
 
