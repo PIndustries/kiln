@@ -158,14 +158,15 @@ jobs:
             -v "$RUNNER_TEMP/candidate:/candidate:ro" \
             -v "$RUNNER_TEMP/swift-runtime:/opt/swift-runtime:ro" \
             -v "$GITHUB_WORKSPACE/scripts/integration.py:/test/integration.py:ro" \
-            ubuntu:24.04 bash -s <<'SH'
+            ubuntu:24.04 bash -s <<'SH' | tee "$RUNNER_TEMP/clean-linux.log"
           set -euo pipefail
-          apt-get update -qq
-          apt-get install -y --no-install-recommends libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqlite3-0 libzstd1 libstdc++6 libncurses6 openssh-client python3 ca-certificates
+          apt-get update -qq </dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqlite3-0 libzstd1 libstdc++6 libncurses6 openssh-client python3 ca-certificates </dev/null
           if command -v swift || command -v swiftc; then
             echo 'Unexpected Swift compiler on runtime-only host' >&2
             exit 1
           fi
+          echo 'PASS no Swift compiler on runtime-only host'
           echo /opt/swift-runtime > /etc/ld.so.conf.d/kiln-test.conf
           ldconfig
           cd /candidate
@@ -186,7 +187,13 @@ jobs:
           PY
           "$KILN_BIN_DIR/kiln" --version
           python3 /test/integration.py
+          echo KILN_CLEAN_INSTALL_COMPLETE
           SH
+          # A package-maintainer program must not consume the bash -s script and
+          # turn a skipped test into exit 0. Require proof from inside the container.
+          grep -Fx 'KILN_CLEAN_INSTALL_COMPLETE' "$RUNNER_TEMP/clean-linux.log"
+          grep -Fx 'PASS downloaded package revision and all manifest file digests' "$RUNNER_TEMP/clean-linux.log"
+          grep -Fx 'PASS: runtime and modules work with SSH disabled' "$RUNNER_TEMP/clean-linux.log"
           {
             echo '### Fresh Linux runtime-only package installation passed'
             echo "Source revision: $EXPECTED_REVISION"
