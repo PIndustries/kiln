@@ -37,7 +37,7 @@ jobs:
           ssh -V
           {
             echo '### macOS server validation'
-            echo "Source revision: $(git rev-parse HEAD)"
+            echo "Source revision: $(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)"
             echo "Host: $(sw_vers -productVersion) / $(uname -m)"
             cat "$RUNNER_TEMP/swift-version.txt"
             echo 'Deterministic local fixtures only; no live AI provider credentials.'
@@ -73,7 +73,7 @@ jobs:
           grep -Eq 'Swift version 6\.2\.3([[:space:]]|$)' "$RUNNER_TEMP/swift-version.txt"
           {
             echo '### Linux container server validation'
-            echo "Source revision: $(git rev-parse HEAD)"
+            echo "Source revision: $(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)"
             echo "Architecture: $(uname -m)"
             cat "$RUNNER_TEMP/swift-version.txt"
             echo 'Container checks do not establish kernel cgroup enforcement; see linux-resources.'
@@ -108,7 +108,7 @@ jobs:
         run: |
           {
             echo '### Native Linux systemd/cgroup validation'
-            echo "Source revision: $(git rev-parse HEAD)"
+            echo "Source revision: $(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse HEAD)"
             echo "Host architecture: $(uname -m)"
             docker run --rm swift:6.2.3 swift --version
             echo 'The Docker-built executable is tested on the hosted VM, outside the container.'
