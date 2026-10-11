@@ -45,6 +45,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Unit and policy tests with locked dependencies
         run: swift test --jobs 2 --force-resolved-versions
+      - name: Verify real non-root permission denial
+        shell: bash
+        run: |
+          set -euo pipefail
+          swift test --skip-build --filter RealStorageFailureTests.testRealPermissionDenialPreservesCommittedState \
+            | tee "$RUNNER_TEMP/kiln-real-eacces.log"
+          grep -Fx KILN_REAL_EACCES_COMPLETE "$RUNNER_TEMP/kiln-real-eacces.log"
       - name: SSH, HTTP, WebSocket, crash recovery and restore
         run: python3 scripts/integration.py
       - name: Repeated recovery soak and interrupted deployment recovery
@@ -137,3 +144,17 @@ jobs:
           sudo ldconfig
       - name: Kernel-enforced budgets and descendant recovery
         run: sudo env KILN_BIN_DIR=/opt/kiln-test/bin python3 scripts/resource-integration.py
+
+      - name: Real bounded filesystem exhaustion
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Docker owns this anonymous 8 MiB tmpfs. Never fill a bind-mounted
+          # host path; --rm removes the mount even if the test process fails.
+          docker run --rm --cpus=2 --memory=6g --pids-limit=512 \
+            --tmpfs /kiln-enospc:rw,size=8m,mode=0700,noexec,nosuid,nodev \
+            -e KILN_ENOSPC_MOUNT=/kiln-enospc \
+            -v "$PWD:/workspace" -w /workspace swift:6.2.3 \
+            swift test --jobs 2 --force-resolved-versions --filter RealStorageFailureTests.testRealENOSPCPreservesCommittedState \
+            | tee "$RUNNER_TEMP/kiln-real-enospc.log"
+          grep '^KILN_REAL_ENOSPC_COMPLETE ' "$RUNNER_TEMP/kiln-real-enospc.log"
