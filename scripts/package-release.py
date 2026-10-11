@@ -40,6 +40,8 @@ def main():
     epoch = int(run('git', 'show', '-s', '--format=%ct', 'HEAD'))
     subprocess.run(['swift', 'build', '-c', 'release', '--jobs', '2', '--force-resolved-versions'], cwd=ROOT, check=True)
     binary_dir = Path(run('swift', 'build', '-c', 'release', '--show-bin-path'))
+    if run('git', 'rev-parse', 'HEAD') != revision or run('git', 'status', '--porcelain', '--untracked-files=all'):
+        raise SystemExit('source checkout changed during build')
     version = run(str(binary_dir / 'kiln'), '--version')
     if not re.fullmatch(r'\d{2}\.\d{2}\.\d{2}\.[1-9]\d*', version):
         raise SystemExit('runtime returned an invalid release identifier')
@@ -52,18 +54,32 @@ def main():
         (stage / 'bin').mkdir(parents=True)
         for executable in ('kiln', 'kiln-example-backend'):
             shutil.copy2(binary_dir / executable, stage / 'bin' / executable)
-        for filename in ('LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'Package.resolved'):
-            shutil.copy2(ROOT / filename, stage / filename)
-        shutil.copytree(ROOT / 'docs', stage / 'docs')
-        (stage / 'scripts').mkdir()
-        shutil.copy2(ROOT / 'scripts/example-manifests.py', stage / 'scripts/example-manifests.py')
+        # Read distribution inputs from the recorded commit, never ignored local
+        # files or symlink targets that happen to exist under the checkout.
+        entries = subprocess.check_output([
+            'git', 'ls-tree', '-rz', '--full-tree', revision, '--',
+            'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'Package.resolved',
+            'docs', 'scripts/example-manifests.py'], cwd=ROOT).split(b'\0')
+        for entry in filter(None, entries):
+            metadata, raw_path = entry.split(b'\t', 1)
+            mode, kind, object_id = metadata.split()
+            if mode not in (b'100644', b'100755') or kind != b'blob':
+                raise SystemExit('distribution inputs must be regular tracked files')
+            relative = Path(os.fsdecode(raw_path))
+            if relative.is_absolute() or '..' in relative.parts:
+                raise SystemExit('invalid distribution path')
+            destination = stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(subprocess.check_output(
+                ['git', 'cat-file', 'blob', object_id.decode()], cwd=ROOT))
+            destination.chmod(0o755 if mode == b'100755' else 0o644)
         dependencies = {}
         for executable in sorted((stage / 'bin').iterdir()):
             command = ['otool', '-L', str(executable)] if system == 'Darwin' else ['ldd', str(executable)]
             dependencies[executable.name] = run(*command).replace(str(stage), '<package>')
         manifest = {
             'version': version, 'sourceRevision': revision, 'platform': targets[(system, machine)],
-            'compiler': compiler, 'packageResolvedSHA256': digest(ROOT / 'Package.resolved'),
+            'compiler': compiler, 'packageResolvedSHA256': digest(stage / 'Package.resolved'),
             'runtimeRequirements': 'macOS 14 or later' if system == 'Darwin' else 'Swift 6.2.3 runtime and matching distribution libraries; see docs/packages.md',
             'dynamicDependencies': dependencies,
             'files': {str(p.relative_to(stage)): digest(p) for p in sorted(stage.rglob('*')) if p.is_file()},

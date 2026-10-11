@@ -3,7 +3,9 @@
 `python3 scripts/package-release.py --output /absolute/path/outside-checkout`
 builds an optimized package from a clean Git revision using Swift 6.2.3 and
 `Package.resolved`. Supported build hosts are Apple Silicon macOS and Linux
-x86_64. The script never packages local runtime state or a whole working directory.
+x86_64. Distribution documents are read from the recorded Git commit, so ignored local
+files and symlink targets cannot enter the archive. The script never packages
+local runtime state or a whole working directory.
 
 Each archive contains the runtime, example backend, documentation, Apache license,
 dependency notices and `build-info.json`. The manifest records the source revision,
