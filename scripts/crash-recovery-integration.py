@@ -18,12 +18,35 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import urllib.request
+import urllib.error
 import uuid
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = pathlib.Path(os.environ.get('KILN_BIN_DIR', ROOT / '.build/debug')).resolve()
 ISSUED_PORTS = set()
+SOAK_CYCLES = int(os.environ.get('KILN_SOAK_CYCLES', '5'))
+assert 1 <= SOAK_CYCLES <= 30, 'KILN_SOAK_CYCLES must be between 1 and 30'
+
+
+def descriptors(pid):
+    """Count real open descriptors/socket descriptors without process mutation."""
+    proc = pathlib.Path(f'/proc/{pid}/fd')
+    if proc.exists():
+        entries = list(proc.iterdir())
+        sockets = 0
+        for entry in entries:
+            try:
+                sockets += os.readlink(entry).startswith('socket:')
+            except FileNotFoundError:
+                pass  # descriptor closed between listing and inspection
+        return len(entries), sockets
+    result = subprocess.run(['lsof', '-nP', '-a', '-p', str(pid), '-Fft'],
+                            capture_output=True, text=True, timeout=5, check=True)
+    lines = result.stdout.splitlines()
+    return (sum(line.startswith('f') and line[1:].isdigit() for line in lines),
+            sum(line in ('tIPv4', 'tIPv6') for line in lines))
 
 
 def port():
@@ -225,6 +248,93 @@ with tempfile.TemporaryDirectory(prefix='kiln-crash-') as directory:
         assert json.loads((state / 'ai-tasks.json').read_text())['records'][0]['state'] == 'interrupted'
         print('PASS: SIGKILL restores REST/WebSocket/ingress with fresh workers, stopped intent, stable SSH identity and unchanged encrypted Vault/grants', flush=True)
         print('PASS: seeded persisted running task becomes interrupted; no provider configuration or automatic replay', flush=True)
+
+        # Repeated real failures while two bounded clients keep producing HTTP
+        # and WebSocket traffic. Connection losses during restart are expected;
+        # every restored generation must separately pass both live protocols.
+        samples = []
+        baseline = descriptors(process.pid)
+        for cycle in range(SOAK_CYCLES):
+            stop = threading.Event()
+            counts = {'http': 0, 'websocket': 0, 'disconnects': 0}
+            failure = []
+
+            def traffic(kind):
+                while not stop.is_set():
+                    try:
+                        if kind == 'http':
+                            observed = version(restport)
+                            assert observed == '1.0.0', 'Unexpected HTTP generation'
+                        else:
+                            with websocket(wsport) as connection:
+                                echo(connection)
+                        counts[kind] += 1
+                    except urllib.error.HTTPError:
+                        failure.append('HTTP error response')
+                        return
+                    except (OSError, EOFError, AssertionError) as error:
+                        # A malformed successful response is not an expected
+                        # disconnect: record and fail after the clients stop.
+                        if isinstance(error, AssertionError) and str(error) != 'WebSocket closed unexpectedly':
+                            failure.append(type(error).__name__)
+                            return
+                        counts['disconnects'] += 1
+                    except Exception as error:
+                        failure.append(type(error).__name__)
+                        return
+                    stop.wait(.02)
+
+            threads = [threading.Thread(target=traffic, args=(kind,), daemon=True)
+                       for kind in ('http', 'websocket')]
+            try:
+                for thread in threads:
+                    thread.start()
+                wait(lambda: counts['http'] >= 5 and counts['websocket'] >= 5)
+                for _ in range(3):
+                    previous = workers()
+                    command('app restart crash/rest')
+                    wait(lambda: len(workers()) == 3 and set(workers()) != set(previous))
+                live_fd, live_connections = descriptors(process.pid)
+                assert live_fd <= baseline[0] + 24, 'Supervisor leaked descriptors across worker restarts'
+                assert live_connections <= baseline[1] + 12, 'Supervisor connections exceeded active workload budget'
+                old = workers()
+                crash(); restore(3, old)
+                recovered_counts = counts.copy()
+                wait(lambda: all(counts[k] >= recovered_counts[k] + 5 for k in ('http', 'websocket')))
+            finally:
+                stop.set()
+                for thread in threads:
+                    thread.join(timeout=5)
+                assert not any(thread.is_alive() for thread in threads), 'Traffic client did not stop'
+            assert not failure, 'Traffic returned malformed or wrong-generation data'
+            wait(lambda: version(restport) == version(ingress) == '1.0.0')
+            with websocket(wsport) as connection:
+                echo(connection)
+            # Measure settled descriptors, not in-flight client descriptors.
+            fd, connections = wait(lambda: descriptors(process.pid))
+            assert fd <= baseline[0] + 16, ('Descriptor growth', baseline, fd)
+            assert connections <= baseline[1] + 8, ('Connection growth', baseline, connections)
+            assert len(workers()) == 3
+            listing = subprocess.run(['ps', '-axo', 'args='], capture_output=True, text=True, check=True).stdout
+            guardians = 0
+            for row in listing.splitlines():
+                arguments = row.split()
+                if len(arguments) >= 3 and arguments[1] == 'worker-guardian' and os.path.realpath(arguments[2]) == str(state):
+                    guardians += 1
+            assert guardians == 3, ('Guardian process growth', guardians)
+            assert closed(stoppedport)
+            assert (state / 'ssh-host-ed25519.pub').read_bytes() == original_host_key
+            ledger = json.loads((state / 'applications.json').read_text())
+            assert ledger['crash/stopped']['desiredRunning'] is False
+            for name, digest in vault_files.items():
+                assert hashlib.sha256((state / name).read_bytes()).hexdigest() == digest
+            worker_logs = [p for p in (state / 'logs').rglob('*') if p.is_file()]
+            assert all(p.stat().st_size <= 4 * 1024 * 1024 for p in worker_logs), 'Worker log exceeded its 4 MiB bound'
+            assert len(worker_logs) <= 8, 'Unexpected per-generation log proliferation'
+            assert (tmp / 'runtime.log').stat().st_size <= 8 * 1024 * 1024, 'Fixture supervisor log exceeded workload budget'
+            samples.append(dict(cycle=cycle + 1, workers=3, descriptors=fd,
+                                connections=connections, log_bytes=sum(p.stat().st_size for p in worker_logs), **counts))
+        print('PASS: repeated HTTP/WebSocket worker restart + supervisor SIGKILL soak ' + json.dumps(samples), flush=True)
 
         # Candidate is listening but /missing cannot pass readiness, so durable
         # active manifest is still v1 when we kill the supervisor.
