@@ -448,7 +448,7 @@ public struct KilnTerminal {
             return "\u{1b}[0m\u{1b}[48;5;234m" + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT   /   provider   " + state, accent), row("Esc dashboard    Tab tasks & approvals    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
+        var lines = [row("KILN AI CHAT   /   selected: " + (aiWorkspace.provider?.label ?? "not configured") + "   " + state, accent), row("Esc dashboard    Tab tasks & approvals    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
         if let id = reviewID {
             let proposal = aiWorkspace.proposals.first { $0.id == id }
             let valid = proposal.map { $0.expires > Date() } ?? false

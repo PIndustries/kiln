@@ -9,6 +9,7 @@ public enum AIError: Error, CustomStringConvertible, Sendable {
 }
 public enum AIProvider: String, Codable, Sendable { case erebine, ollama }
 public struct AIConfiguration: Codable, Sendable, Equatable {
+    public let schemaVersion: Int
     public let baseURL: String
     public let model: String
     public let secret: String
@@ -18,12 +19,15 @@ public struct AIConfiguration: Codable, Sendable, Equatable {
     public var credentialScope: String { profile == "default" ? "kiln/ai" : "kiln/ai-" + profile }
     public init(baseURL: String, model: String, secret: String, provider: AIProvider = .erebine,
                 profile: String = "default", contextID: String = "legacy") {
+        self.schemaVersion = 1
         self.baseURL = baseURL; self.model = model; self.secret = secret
         self.provider = provider; self.profile = profile; self.contextID = contextID
     }
-    enum CodingKeys: String, CodingKey { case baseURL, model, secret, provider, profile, contextID }
+    enum CodingKeys: String, CodingKey { case schemaVersion, baseURL, model, secret, provider, profile, contextID }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try c.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard schemaVersion == 1 else { throw AIError.message("Unsupported AI profile schema version") }
         baseURL = try c.decode(String.self, forKey: .baseURL); model = try c.decode(String.self, forKey: .model)
         secret = try c.decodeIfPresent(String.self, forKey: .secret) ?? ""
         provider = try c.decodeIfPresent(AIProvider.self, forKey: .provider) ?? .erebine

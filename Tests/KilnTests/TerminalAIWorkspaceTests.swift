@@ -81,3 +81,13 @@ private func click(_ column: Int, _ row: Int) -> TerminalKey { .mouse(button: 0,
     ui.updateAIWorkspace(AIWorkspaceSnapshot(tasks: sidebarSnapshot().tasks))
     #expect(ui.handle(.enter) == [.command("ai task show \"" + taskID + "\"")])
 }
+
+@Test func providerHeaderShowsSelectedProfileAndRejectsControlCharacters() {
+    var ui = sidebarUI(snapshot: AIWorkspaceSnapshot(provider: AIProviderSnapshot(provider: "ollama", profile: "local")))
+    #expect(ui.render().contains("selected: ollama / local"))
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(provider: AIProviderSnapshot(provider: "erebine", profile: "work")))
+    #expect(ui.render().contains("selected: erebine / work"))
+    #expect(!ui.render().contains("selected: ollama / local"))
+    let hostile = AIProviderSnapshot(provider: "\u{1b}[2J", profile: "\u{1b}[2J")
+    #expect(hostile.label == "unknown / invalid")
+}

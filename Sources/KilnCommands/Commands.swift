@@ -63,8 +63,9 @@ public struct KilnCommands: Sendable {
             $0.expires > Date() && identity.role != "viewer" &&
             (identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.module))
         }
+        let provider = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile) }
         return AIWorkspaceSnapshot(proposals: visible, tasks: identity.role == "admin" ? tasks : [],
-                                   error: identity.role == "admin" ? taskError : nil)
+                                   error: identity.role == "admin" ? taskError : nil, provider: provider)
     }
     public func allowForward(host: String, port: Int) async -> Bool {
         guard (try? authorizeAdmin()) != nil else { return false }
@@ -191,7 +192,7 @@ public struct KilnCommands: Sendable {
                 app restart <name>      Stop and start an application
                 app health <name>       Check its configured HTTP health endpoint
                 app logs <name>         Last 8 KiB of application logs
-                ai help                 Native Erebine chat, reports and proposed operations
+                ai help                 Native provider chat, reports and proposed operations
                 vault help              Encrypted credentials and per-module grants
                 server help             Saved servers, jump forwarding and managed SSH
                 key help                Keychain-backed Ed25519 keys
@@ -463,14 +464,14 @@ private extension KilnCommands {
         case "key": return ["create", "delete"].contains(p[1])
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
-        case "ai": return ["configure", "knowledge", "approve", "profile"].contains(p[1]) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
+        case "ai": return ["configure", "knowledge", "approve"].contains(p[1]) || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
         }
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "concurrency", "configure", "knowledge", "operations", "metrics", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)

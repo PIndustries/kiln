@@ -114,7 +114,7 @@ public actor KilnAssistant {
         do {
             for round in 0..<9 {
                 try Task.checkCancellation()
-                progress(.status(round == 8 ? "Summarizing collected results" : "Erebine · turn \(round + 1)"))
+                progress(.status(round == 8 ? "Summarizing collected results" : "\(configuration.provider.rawValue) / \(configuration.profile) · turn \(round + 1)"))
                 if round == 8 { messages.append(AIMessage(role: "user", content: "Tool budget is complete. Summarize the verified results already returned. State any unknowns. Do not call more tools.")) }
                 let tools = round == 8 ? [] : Self.tools.filter { allowProposals || !["request_operation", "create_task"].contains($0.function.name) }
                 let message: AIMessage

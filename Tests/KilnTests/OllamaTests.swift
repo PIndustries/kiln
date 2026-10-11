@@ -15,6 +15,11 @@ private func localConfiguration(_ model: String = "fixture") -> AIConfiguration 
     let legacy = try JSONDecoder().decode(AIConfiguration.self, from: Data(#"{"baseURL":"https://example.invalid/v1","model":"fixture","secret":"api"}"#.utf8))
     #expect(legacy.provider == .erebine && legacy.credentialScope == "kiln/ai")
     try legacy.validate(); try localConfiguration().validate()
+    let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as? [String: Any]
+    #expect(encoded?["schemaVersion"] as? Int == 1)
+    #expect(throws: AIError.self) {
+        _ = try JSONDecoder().decode(AIConfiguration.self, from: Data(#"{"schemaVersion":99,"baseURL":"https://example.invalid","model":"fixture","secret":"api"}"#.utf8))
+    }
     for url in ["http://localhost:11434", "http://192.168.1.1:11434", "https://ollama.com", "http://127.0.0.1@remote.invalid", "http://127.0.0.1/api", "http://127.0.0.1?token=x"] {
         #expect(throws: AIError.self) { try AIConfiguration(baseURL: url, model: "fixture", secret: "", provider: .ollama).validate() }
     }
@@ -34,6 +39,8 @@ private func localConfiguration(_ model: String = "fixture") -> AIConfiguration 
     let request = try OllamaClient().request(configuration: localConfiguration(), messages: [message, AIMessage(role: "tool", content: "verified", tool_call_id: call.id)], tools: [])
     #expect(request.url?.path == "/api/chat" && request.value(forHTTPHeaderField: "Authorization") == nil)
     let json = try #require(JSONSerialization.jsonObject(with: request.httpBody!) as? [String: Any])
+    #expect(json["keep_alive"] as? String == "1m")
+    #expect((json["options"] as? [String: Int])?["num_ctx"] == 8192)
     let messages = try #require(json["messages"] as? [[String: Any]])
     #expect(messages[1]["tool_name"] as? String == "system_status")
     #expect(messages[0]["thinking"] as? String == "checking")
@@ -106,9 +113,19 @@ private actor ProfileCapture {
     #expect(await commands.execute("ai profile use local --new-context").status == 0)
     let active = try JSONDecoder().decode(AIConfiguration.self, from: Data(contentsOf: directory.appendingPathComponent("ai.json")))
     #expect(active.provider == .ollama && active.secret.isEmpty)
+    #expect(await commands.aiWorkspace().provider?.label == "ollama / local")
     #expect(await commands.execute("ai profile add hosted erebine https://example.invalid/v1 fixture scoped-key").status == 0)
     let hosted = try JSONDecoder().decode(AIConfiguration.self, from: Data(contentsOf: directory.appendingPathComponent("ai-profiles/hosted.json")))
     #expect(hosted.credentialScope == "kiln/ai-hosted")
+    #expect(await commands.execute("ai profile use hosted --new-context").status == 0)
+    #expect(await commands.aiWorkspace().provider?.label == "erebine / hosted")
+    let auditURL = directory.appendingPathComponent("audit")
+    let records = try FileManager.default.contentsOfDirectory(at: auditURL, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+    let audit = try records.map { try String(contentsOf: $0, encoding: .utf8) }.joined()
+    #expect(audit.contains("ai profile") && !audit.contains("ai unknown"))
+    #expect(await commands.execute("ai profile list").status == 0)
+    let afterList = try FileManager.default.contentsOfDirectory(at: auditURL, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
+    #expect(afterList.count == records.count)
     _ = try commands.identities.set(name: "viewer", role: "viewer", key: key, modules: [])
     #expect(await commands.forIdentity(name: "viewer", publicKey: key).execute("ai profile use local --new-context").status != 0)
     await runtime.shutdown()

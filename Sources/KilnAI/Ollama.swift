@@ -98,7 +98,7 @@ struct OllamaClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/x-ndjson", forHTTPHeaderField: "Accept")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["model": configuration.model, "messages": normalized,
-            "tools": schemas, "stream": true, "options": ["num_predict": 4096]])
+            "tools": schemas, "stream": true, "keep_alive": "1m", "options": ["num_predict": 4096, "num_ctx": 8192]])
         return request
     }
     func stream(configuration: AIConfiguration, messages: [AIMessage], tools: [AITool],
