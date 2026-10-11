@@ -48,19 +48,19 @@ struct ProviderFailure: Error, CustomStringConvertible {
         case (429, "rate_limit_exceeded"):
             detail = "Request rate limit reached; reduce concurrency and wait before trying again."
         case (429, "quota_exceeded"), (402, "insufficient_quota"), (402, "billing_delinquent"):
-            detail = "Account or endpoint quota/billing limit reached; check the Erebine dashboard before retrying."
+            detail = "Account or endpoint quota/billing limit reached; check the provider dashboard before retrying."
         case (429, _):
-            detail = "The provider limited this request; check capacity, rate limits and quota in Erebine."
+            detail = "The provider limited this request; check capacity, rate limits and quota with the provider."
         case (401, _): detail = "Authentication was rejected; check the configured Vault credential."
         case (403, _): detail = "Access was denied; check the API key's endpoint permissions."
         case (404, _): detail = "Endpoint or model was not found; check the AI configuration."
-        case (503, _): detail = "The provider backend is unavailable; check Erebine status before retrying."
+        case (503, _): detail = "The provider backend is unavailable; check provider status before retrying."
         default: detail = "The provider rejected this request; check endpoint, model and provider status."
         }
         let header = response.value(forHTTPHeaderField: "Retry-After")
         let delay = Self.retryDelay(header, now: now)
         let wait = delay.map { " Retry-After: \($0) seconds." } ?? ""
-        return "Erebine HTTP \(status): \(detail)\(wait)"
+        return "Provider HTTP \(status): \(detail)\(wait)"
     }
     static func retryDelay(_ raw: String?, now: Date) -> Int? {
         guard let raw, raw.utf8.count <= 128 else { return nil }

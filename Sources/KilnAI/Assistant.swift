@@ -8,14 +8,26 @@ public struct AIAction: Sendable {
 }
 public typealias AICompletion = @Sendable (AIConfiguration, String, [AIMessage], [AITool]) async throws -> AIMessage
 public actor KilnAssistant {
-    private struct Conversation { var messages: [AIMessage] = []; var touched = Date() }
+    private struct Conversation { var messages: [AIMessage] = []; var touched = Date(); var configuration: AIConfiguration }
     private struct Proposal { let session: String; let action: AIAction; let expires: Date }
     private var conversations: [String: Conversation] = [:]
     private var proposals: [String: Proposal] = [:]
     private var busy: Set<String> = []
     public let providerMetrics = AIProviderMetrics()
+    private var activeContextID: String?
+    private var configurationUncertain = false
     private let completion: AICompletion?
     public init(completion: AICompletion? = nil) { self.completion = completion }
+    public func activate(_ configuration: AIConfiguration, at url: URL) throws {
+        guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
+        try configuration.validate()
+        do { try KilnStateFile.write(JSONEncoder().encode(configuration), to: url) }
+        catch let error as KilnStateFile.CommitUncertain {
+            configurationUncertain = true; proposals.removeAll(); conversations.removeAll(); throw error
+        }
+        activeContextID = configuration.contextID
+        conversations.removeAll(); proposals.removeAll()
+    }
     public static let tools: [AITool] = [
         AITool("create_task", "Create a background investigation when the user explicitly requests a task or background work. It uses read-only Kiln tools; no mutations or recursive agents. Return its ID and watch command.", properties: ["request": .init("The specific investigation requested by the user")]),
         AITool("list_tasks", "List background AI tasks and their states."),
@@ -45,6 +57,7 @@ public actor KilnAssistant {
         proposals.removeValue(forKey: id); return "Proposal declined. No operation executed."
     }
     public func takeApproval(_ id: String, session: String) throws -> AIAction {
+        guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
         guard let proposal = proposals[id], proposal.session == session else { throw AIError.message("Unknown proposal for this session") }
         proposals.removeValue(forKey: id)
         guard proposal.expires > Date() else { throw AIError.message("Proposal expired; ask again") }
@@ -58,6 +71,7 @@ public actor KilnAssistant {
                     progress: @escaping @Sendable (AIProgress) -> Void = { _ in },
                     allowProposals: Bool = true,
                     read: @escaping @Sendable (String, String?) async throws -> String) async throws -> String {
+        guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
         if session.hasPrefix("task:"), busy.count >= 48 {
             progress(.status("Waiting for inference capacity"))
             while busy.count >= 48 { try await Task.sleep(for: .milliseconds(200)); try Task.checkCancellation() }
@@ -65,6 +79,11 @@ public actor KilnAssistant {
         guard !busy.contains(session), busy.count < 48 else { throw AIError.message("AI is busy; try again after the current turn") }
         guard !prompt.isEmpty, prompt.utf8.count <= 8192 else { throw AIError.message("Prompt must contain 1-8192 bytes") }
         try configuration.validate(); try knowledge?.validate()
+        if activeContextID == nil { activeContextID = configuration.contextID }
+        if conversations[session]?.configuration != configuration {
+            conversations.removeValue(forKey: session)
+            proposals = proposals.filter { $0.value.session != session }
+        }
         let now = Date()
         proposals = proposals.filter { $0.value.expires > now }
         conversations = conversations.filter { busy.contains($0.key) || now.timeIntervalSince($0.value.touched) < 3600 }
@@ -103,7 +122,7 @@ public actor KilnAssistant {
                     if let completion { message = try await completion(configuration, key, messages, tools) }
                     else {
                         let isPlanning = !tools.isEmpty
-                        message = try await ErebineClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: messages, tools: tools) { event in
+                        message = try await AIProviderClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: messages, tools: tools) { event in
                             if isPlanning, case .answer = event { return }
                             progress(event)
                         }
@@ -126,7 +145,7 @@ public actor KilnAssistant {
                         do {
                             let final: AIMessage
                             if let completion { final = try await completion(configuration, key, presentation, []) }
-                            else { final = try await ErebineClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: presentation, tools: [], emit: progress) }
+                            else { final = try await AIProviderClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: presentation, tools: [], emit: progress) }
                             guard final.tool_calls?.isEmpty != false, let content = final.content, !content.isEmpty else { throw AIError.message("Invalid presentation response") }
                             answer = String(content.prefix(24000))
                             messages[messages.count - 1] = AIMessage(role: "assistant", content: answer)
@@ -135,7 +154,7 @@ public actor KilnAssistant {
                             answer += "\n\nLive presentation unavailable; showing the completed draft."
                         }
                     }
-                    conversations[session] = Conversation(messages: Array(messages.dropFirst()), touched: Date())
+                    conversations[session] = Conversation(messages: Array(messages.dropFirst()), touched: Date(), configuration: configuration)
                     return ([answer] + receipts).joined(separator: "\n\n")
                 }
                 if round == 8 { messages.removeLast(); break }
@@ -163,7 +182,7 @@ public actor KilnAssistant {
                             catch { result = "Task could not be created. Inspect ai task list before retrying." }
                         } else if ["module_health", "release_info", "module_resources"].contains(name), Set(args.keys) == ["module"], validModule != nil {
                             do { result = try await read(name, module) } catch { result = "Read denied or unavailable; inspect your module permissions and runtime status." }
-                        } else if allowProposals, name == "request_operation", Set(args.keys) == ["module", "operation"], let current = validModule,
+                        } else if allowProposals, !configurationUncertain, activeContextID == configuration.contextID, name == "request_operation", Set(args.keys) == ["module", "operation"], let current = validModule,
                                   let operation = args["operation"], ["start", "stop", "restart", "rollback"].contains(operation), proposals.count < 128 {
                             let id = UUID().uuidString.lowercased()
                             proposals[id] = Proposal(session: session, action: AIAction(operation: operation, module: current.id, fingerprint: current.generationFingerprint), expires: Date().addingTimeInterval(300))
@@ -177,13 +196,13 @@ public actor KilnAssistant {
                 }
                 if let taskReceipt {
                     messages.append(AIMessage(role: "assistant", content: taskReceipt))
-                    conversations[session] = Conversation(messages: Array(messages.dropFirst()), touched: Date())
+                    conversations[session] = Conversation(messages: Array(messages.dropFirst()), touched: Date(), configuration: configuration)
                     return ([taskReceipt] + receipts).joined(separator: "\n\n")
                 }
             }
             let summary = "Tool budget reached. Verified results collected this turn:\n" + results.keys.sorted().map { $0 + "\n" + results[$0]! }.joined(separator: "\n\n")
             messages.append(AIMessage(role: "assistant", content: String(summary.prefix(24000))))
-            conversations[session] = Conversation(messages: Array(messages.dropFirst()), touched: Date())
+            conversations[session] = Conversation(messages: Array(messages.dropFirst()), touched: Date(), configuration: configuration)
             return ([String(summary.prefix(24000))] + receipts).joined(separator: "\n\n")
         } catch {
             for id in created { proposals.removeValue(forKey: id) }

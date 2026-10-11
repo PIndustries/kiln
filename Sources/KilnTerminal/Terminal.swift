@@ -284,7 +284,7 @@ public struct KilnTerminal {
     private mutating func openAIChat() {
         guard !busy else { return }
         if !aiMode {
-            transcript = ["KILN AI / Erebine", "Ask about Kiln or request an operation.", "Prompts and read-tool results go to Erebine. Do not paste credentials.", "/exit returns to commands; /reset clears context; /approve ID or /deny ID handles proposals."]
+            transcript = ["KILN AI / selected provider", "Ask about Kiln or request an operation.", "Prompts and read-tool results go to the selected provider. Do not paste credentials.", "/exit returns to commands; /reset clears context; /approve ID or /deny ID handles proposals."]
         }
         aiMode = true; drawer = true; menu = nil; confirmation = nil
         input = ""; cursor = 0; historyPosition = nil; scroll = 0
@@ -404,9 +404,9 @@ public struct KilnTerminal {
             body += ["KILN"]
             if !liveAnswer.isEmpty { body += chatText(liveAnswer, columns: columns) }
             else if !liveReasoning.isEmpty { body += ["Provider reasoning"] + Array(chatText(liveReasoning, columns: columns).suffix(3)) }
-            else { body += ["Waiting for Erebine..."] }
+            else { body += ["Waiting for provider..."] }
         }
-        if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools run automatically. Changes require your approval.", "Prompts and tool results go to Erebine; keep credentials in Vault."] }
+        if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools run automatically. Changes require your approval.", "Prompts and tool results go to the selected provider; keep credentials in Vault."] }
         return body
     }
     private func chatLayout() -> (String, [Hit]) {
@@ -448,7 +448,7 @@ public struct KilnTerminal {
             return "\u{1b}[0m\u{1b}[48;5;234m" + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT   /   Erebine   " + state, accent), row("Esc dashboard    Tab tasks & approvals    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
+        var lines = [row("KILN AI CHAT   /   provider   " + state, accent), row("Esc dashboard    Tab tasks & approvals    /reset new chat", muted), row(String(repeating: "-", count: columns), muted), row()]
         if let id = reviewID {
             let proposal = aiWorkspace.proposals.first { $0.id == id }
             let valid = proposal.map { $0.expires > Date() } ?? false
@@ -475,7 +475,7 @@ public struct KilnTerminal {
         }
         while lines.count < height - 5 { lines.append(row()) }
         let backingOff = liveStatus.hasPrefix("Provider busy;")
-        let phase = backingOff ? liveStatus : !liveAnswer.isEmpty ? "Receiving response" : !liveReasoning.isEmpty ? "Reasoning" : !liveStatus.isEmpty ? liveStatus : toolCount > 0 ? "Inspecting system" : "Waiting for Erebine"
+        let phase = backingOff ? liveStatus : !liveAnswer.isEmpty ? "Receiving response" : !liveReasoning.isEmpty ? "Reasoning" : !liveStatus.isEmpty ? liveStatus : toolCount > 0 ? "Inspecting system" : "Waiting for provider"
         let spinner = ["|", "/", "-", "\\"][animation]
         let activity = busy ? "\(spinner) \(phase)  \(Int(Date().timeIntervalSince(started)))s  /  \(toolCount) tool calls" : "Ready" + (toolCount > 0 ? "  /  \(toolCount) tool calls" : "")
         lines += [row(selectingText ? "SELECT TEXT: drag to copy; Ctrl-S resumes" : activity, muted), row(String(repeating: "-", count: columns), accent)]

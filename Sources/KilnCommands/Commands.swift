@@ -306,13 +306,22 @@ private extension KilnCommands {
 
 
 private extension KilnCommands {
-    func createAITask(_ prompt: String) async throws -> String {
+    func activeAIConfiguration() throws -> AIConfiguration {
+        let url = runtime.stateDirectory.appendingPathComponent("ai.json")
+        guard let bytes = try? Data(contentsOf: url), bytes.count <= 16384,
+              let configuration = try? JSONDecoder().decode(AIConfiguration.self, from: bytes) else {
+            throw AIError.message("AI is not configured. Run ai help.")
+        }
+        try configuration.validate(); return configuration
+    }
+    func createAITask(_ prompt: String, configuration: AIConfiguration? = nil) async throws -> String {
         try authorizeAdmin()
         let requestID = UUID().uuidString.lowercased()
         try identities.audit(principal, verb: "ai task new", outcome: "authorized", requestID: requestID)
+        let pinnedConfiguration = try configuration ?? activeAIConfiguration()
         let result = try await aiTasks.submit(prompt) { id, request, progress in
             try authorizeAdmin()
-            let result = try await aiCommand(["ai", "ask", request], sessionID: "task:" + id, progress: progress)
+            let result = try await aiCommand(["ai", "ask", request], sessionID: "task:" + id, progress: progress, pinnedConfiguration: pinnedConfiguration)
             guard result.status == 0 else { throw AIError.message("Task failed") }
             return result.text
         }
@@ -320,7 +329,7 @@ private extension KilnCommands {
         catch { throw AIError.message("Task was created but completion audit failed. Inspect ai task list before retrying.") }
         return result
     }
-    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }) async throws -> CommandResult {
+    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil) async throws -> CommandResult {
         if parts.count >= 3, parts[1] == "task" {
             switch parts {
             case ["ai", "task", "list"]: return CommandResult(try await aiTasks.list())
@@ -339,9 +348,37 @@ private extension KilnCommands {
         if parts.count == 3, parts[1] == "concurrency", let limit = Int(parts[2]) { return CommandResult(try await aiTasks.limit(limit)) }
         let configURL = runtime.stateDirectory.appendingPathComponent("ai.json")
         let knowledgeURL = runtime.stateDirectory.appendingPathComponent("ai-knowledge.json")
+        if parts.count >= 3, parts[1] == "profile" {
+            try authorizeAdmin()
+            let directory = runtime.stateDirectory.appendingPathComponent("ai-profiles")
+            if parts == ["ai", "profile", "list"] {
+                let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+                return CommandResult(names.filter { $0.hasSuffix(".json") }.sorted().map { String($0.dropLast(5)) }.joined(separator: "\n"))
+            }
+            if parts.count == 5, parts[2] == "use", parts[4] == "--new-context" {
+                let name = parts[3]
+                try KilnVault.validateName(name)
+                guard name.count <= 32 else { throw AIError.message("Invalid profile name") }
+                let bytes = try Data(contentsOf: directory.appendingPathComponent(name + ".json"))
+                guard bytes.count <= 16384 else { throw AIError.message("Oversized AI profile") }
+                let config = try JSONDecoder().decode(AIConfiguration.self, from: bytes).freshContext()
+                try await assistant.activate(config, at: configURL)
+                return CommandResult("Selected " + name + ". Future turns start fresh; existing tasks stay bound to their original profile. Pending proposals cleared.")
+            }
+            if (parts.count == 7 || parts.count == 8), parts[2] == "add", let provider = AIProvider(rawValue: parts[4]) {
+                let config = AIConfiguration(baseURL: parts[5], model: parts[6], secret: parts.count == 8 ? parts[7] : "", provider: provider, profile: parts[3])
+                try config.validate(); if !config.secret.isEmpty { try KilnVault.validateName(config.secret) }
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                let existing = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                guard existing.count < 16 || existing.contains(config.profile + ".json") else { throw AIError.message("AI profile limit reached (16)") }
+                try KilnStateFile.write(JSONEncoder().encode(config), to: directory.appendingPathComponent(config.profile + ".json"))
+                return CommandResult("Profile saved, not selected. Use ai profile use " + config.profile + " --new-context. " + (config.provider == .erebine ? "Grant " + config.credentialScope + " its Vault secret." : "Local Ollama uses no credential."))
+            }
+            throw AIError.message("Use ai profile list | add NAME erebine|ollama URL MODEL [VAULT-SECRET] | use NAME --new-context")
+        }
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai concurrency [1-48]        Background worker limit (default 4)\nai metrics                    Redacted provider transport counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the configured Erebine endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai concurrency [1-48]        Background worker limit (default 4)\nai metrics                    Redacted provider transport counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
         case ["ai", "metrics"]:
             try authorizeAdmin()
             let metrics = await assistant.providerMetrics.snapshot()
@@ -354,7 +391,7 @@ private extension KilnCommands {
         if parts.count == 5, parts[1] == "configure" {
             let config = AIConfiguration(baseURL: parts[2], model: parts[3], secret: parts[4]); try config.validate()
             try KilnVault.validateName(config.secret)
-            try KilnStateFile.write(JSONEncoder().encode(config), to: configURL)
+            try await assistant.activate(config.freshContext(), at: configURL)
             return CommandResult("AI configured. Grant kiln/ai the named Vault secret. Credentials are never stored in ai.json.")
         }
         if parts.count == 4, parts[1] == "knowledge", parts[2] == "install" {
@@ -377,27 +414,30 @@ private extension KilnCommands {
                 throw error
             }
         }
-        guard let data = try? Data(contentsOf: configURL), let configuration = try? JSONDecoder().decode(AIConfiguration.self, from: data) else {
-            throw AIError.message("AI is not configured. Run ai help.")
-        }
+        let configuration = try pinnedConfiguration ?? activeAIConfiguration()
         try configuration.validate()
         let knowledge: AIKnowledgePack?
         if FileManager.default.fileExists(atPath: knowledgeURL.path) {
             knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
         } else { knowledge = nil }
         if parts == ["ai", "status"] {
-            return CommandResult("Provider: Erebine (native Swift HTTP)\nModel: \(configuration.model)\nCredential: Vault reference, granted to kiln/ai\nBuilt-in knowledge: 4\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+            return CommandResult("Provider: \(configuration.provider.rawValue) / profile \(configuration.profile) (native Swift HTTP)\nModel: \(configuration.model)\nCredential: \(configuration.provider == .ollama ? "none (local loopback)" : "Vault grant to " + configuration.credentialScope)\nBuilt-in knowledge: 4\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
         }
         guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
-        let values = try runtime.vault.environment(for: "kiln/ai", bindings: ["API_KEY": configuration.secret])
-        guard let key = values["API_KEY"] else { throw AIError.message("AI credential unavailable") }
+        let key: String
+        if configuration.provider == .ollama { key = "" }
+        else {
+            let values = try runtime.vault.environment(for: configuration.credentialScope, bindings: ["API_KEY": configuration.secret])
+            guard let value = values["API_KEY"] else { throw AIError.message("AI credential unavailable") }
+            key = value
+        }
         let modules = await snapshot()
         let context = "Kiln release \(KilnVersion.current)\n" + (await visibleModules())
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
             modules: modules, context: context, knowledge: knowledge, progress: progress, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer")) { name, module in
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources"].contains(name) ? $0 : nil })
                 switch name {
-                case "create_task": try authorizeAdmin(); return try await createAITask(module!)
+                case "create_task": try authorizeAdmin(); return try await createAITask(module!, configuration: configuration)
                 case "list_tasks": try authorizeAdmin(); return try await aiTasks.list()
                 case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; opt-in bounded worker restart; cluster \(cluster == nil ? "disabled" : "enabled for explicit peer adoption and typed operations; no scheduling/failover")."
                 case "list_modules": return await visibleModules()
@@ -423,7 +463,7 @@ private extension KilnCommands {
         case "key": return ["create", "delete"].contains(p[1])
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
-        case "ai": return ["configure", "knowledge", "approve"].contains(p[1]) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
+        case "ai": return ["configure", "knowledge", "approve", "profile"].contains(p[1]) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
         }
@@ -451,7 +491,7 @@ private extension KilnCommands {
         if p.first == "ai" {
             if p.count == 1 || ["help", "status", "ask", "reset", "deny"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
-            if ["task", "concurrency", "configure", "knowledge", "operations", "metrics"].contains(p[1]) { try authorizeAdmin(); return }
+            if ["task", "concurrency", "configure", "knowledge", "operations", "metrics", "profile"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if ["identity", "vault", "server", "key", "session", "node", "cluster"].contains(p[0]) { try authorizeAdmin(); return }
         throw CommandSyntaxError.unknown

@@ -81,13 +81,14 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
     private var rejection: ProviderFailure?
     private var rejected = false
     let continuation: AsyncThrowingStream<Data, Error>.Continuation
-    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation) { self.continuation = continuation }
+    let mimeType: String
+    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation, mimeType: String = "text/event-stream") { self.continuation = continuation; self.mimeType = mimeType }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
         guard let http = response as? HTTPURLResponse else {
-            continuation.finish(throwing: AIError.message("Invalid Erebine stream response")); completionHandler(.cancel); return
+            continuation.finish(throwing: AIError.message("Invalid Provider stream response")); completionHandler(.cancel); return
         }
         if http.statusCode != 200 {
             rejection = ProviderFailure(response: http)
@@ -96,8 +97,8 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
             } else { completionHandler(.allow) }
             return
         }
-        guard http.mimeType == "text/event-stream" else {
-            continuation.finish(throwing: AIError.message("Erebine returned an invalid stream content type")); completionHandler(.cancel); return
+        guard http.mimeType == mimeType else {
+            continuation.finish(throwing: AIError.message("Provider returned an invalid stream content type")); completionHandler(.cancel); return
         }
         completionHandler(.allow)
     }
@@ -110,7 +111,7 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
             return
         }
         if case .dropped = continuation.yield(data) {
-            continuation.finish(throwing: AIError.message("Erebine stream consumer fell behind")); dataTask.cancel()
+            continuation.finish(throwing: AIError.message("Provider stream consumer fell behind")); dataTask.cancel()
         }
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {

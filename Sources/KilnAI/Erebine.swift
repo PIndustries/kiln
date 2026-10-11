@@ -7,16 +7,47 @@ public enum AIError: Error, CustomStringConvertible, Sendable {
     case message(String)
     public var description: String { switch self { case .message(let text): return text } }
 }
-public struct AIConfiguration: Codable, Sendable {
+public enum AIProvider: String, Codable, Sendable { case erebine, ollama }
+public struct AIConfiguration: Codable, Sendable, Equatable {
     public let baseURL: String
     public let model: String
     public let secret: String
-    public init(baseURL: String, model: String, secret: String) { self.baseURL = baseURL; self.model = model; self.secret = secret }
+    public let provider: AIProvider
+    public let profile: String
+    public let contextID: String
+    public var credentialScope: String { profile == "default" ? "kiln/ai" : "kiln/ai-" + profile }
+    public init(baseURL: String, model: String, secret: String, provider: AIProvider = .erebine,
+                profile: String = "default", contextID: String = "legacy") {
+        self.baseURL = baseURL; self.model = model; self.secret = secret
+        self.provider = provider; self.profile = profile; self.contextID = contextID
+    }
+    enum CodingKeys: String, CodingKey { case baseURL, model, secret, provider, profile, contextID }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        baseURL = try c.decode(String.self, forKey: .baseURL); model = try c.decode(String.self, forKey: .model)
+        secret = try c.decodeIfPresent(String.self, forKey: .secret) ?? ""
+        provider = try c.decodeIfPresent(AIProvider.self, forKey: .provider) ?? .erebine
+        profile = try c.decodeIfPresent(String.self, forKey: .profile) ?? "default"
+        contextID = try c.decodeIfPresent(String.self, forKey: .contextID) ?? "legacy"
+    }
+    public func freshContext() -> AIConfiguration {
+        AIConfiguration(baseURL: baseURL, model: model, secret: secret, provider: provider, profile: profile, contextID: UUID().uuidString)
+    }
     public func validate() throws {
-        guard let url = URL(string: baseURL), url.scheme == "https", url.host != nil,
+        guard let url = URL(string: baseURL), let host = url.host,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,
-              !model.isEmpty, model.count < 256, !secret.isEmpty, secret.count <= 80 else {
-            throw AIError.message("AI configuration requires an HTTPS base URL, model ID and Vault secret reference")
+              !model.isEmpty, model.utf8.count < 256, secret.count <= 80,
+              !profile.isEmpty, profile.count <= 32,
+              profile.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }),
+              contextID.count <= 80 else { throw AIError.message("Invalid AI provider configuration") }
+        switch provider {
+        case .erebine:
+            guard url.scheme == "https", !secret.isEmpty else { throw AIError.message("Erebine requires HTTPS and a Vault secret reference") }
+        case .ollama:
+            guard url.scheme == "http", ["127.0.0.1", "[::1]", "::1"].contains(host),
+                  url.path.isEmpty || url.path == "/", secret.isEmpty else {
+                throw AIError.message("Local Ollama requires a literal loopback HTTP origin and no credential; remote/cloud endpoints are not enabled")
+            }
         }
     }
 }
