@@ -14,6 +14,8 @@ struct AIProviderClient {
         case .erebine:
             return try await ErebineClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .ollama:
+            try configuration.validate()
+            try OllamaClient.validateProxyEnvironment(ProcessInfo.processInfo.environment)
             return try await metrics.measure {
                 try await OllamaClient().stream(configuration: configuration, messages: messages, tools: tools, emit: emit)
             }
@@ -71,6 +73,15 @@ struct OllamaStreamDecoder {
 }
 
 struct OllamaClient: Sendable {
+    static func validateProxyEnvironment(_ environment: [String: String]) throws {
+        // libcurl may use proxy environment variables independently of
+        // URLSessionConfiguration. Do not mutate process-wide NO_PROXY or risk
+        // sending local context to an intermediary, even with an exemption set.
+        let proxyKeys = Set(["http_proxy", "https_proxy", "all_proxy"])
+        guard !environment.contains(where: { proxyKeys.contains($0.key.lowercased()) && !$0.value.isEmpty }) else {
+            throw AIError.message("Local Ollama is disabled while proxy environment variables are configured; launch Kiln without HTTP_PROXY, HTTPS_PROXY or ALL_PROXY (including lowercase variants)")
+        }
+    }
     func request(configuration: AIConfiguration, messages: [AIMessage], tools: [AITool]) throws -> URLRequest {
         try configuration.validate()
         guard configuration.provider == .ollama else { throw AIError.message("Wrong provider for Ollama transport") }
@@ -104,6 +115,7 @@ struct OllamaClient: Sendable {
     func stream(configuration: AIConfiguration, messages: [AIMessage], tools: [AITool],
                 sessionConfiguration: URLSessionConfiguration? = nil,
                 emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
+        try Self.validateProxyEnvironment(ProcessInfo.processInfo.environment)
         let request = try request(configuration: configuration, messages: messages, tools: tools)
         let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(128))
         let delegate = StreamingDelegate(pair.continuation, mimeType: "application/x-ndjson")

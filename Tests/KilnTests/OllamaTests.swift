@@ -205,3 +205,19 @@ func ollamaLiveLocalStreamingAndToolRound() async throws {
     let snapshot = await metrics.snapshot()
     #expect(snapshot.started == 2 && snapshot.outcomes["completed"] == 2 && snapshot.active == 0)
 }
+
+@Test func localOllamaRefusesProxyEnvironmentWithoutExposingValues() throws {
+    try OllamaClient.validateProxyEnvironment([:])
+    try OllamaClient.validateProxyEnvironment(["NO_PROXY": "127.0.0.1", "HTTP_PROXY": ""])
+    let canary = "http://synthetic-private-proxy.invalid:8765"
+    for key in ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"] {
+        do {
+            try OllamaClient.validateProxyEnvironment([key: canary, "NO_PROXY": "*"])
+            Issue.record("Proxy-configured local transport was admitted")
+        } catch {
+            let withheld = !String(describing: error).contains(canary)
+            #expect(withheld)
+            #expect(String(describing: error).contains("Local Ollama is disabled"))
+        }
+    }
+}
