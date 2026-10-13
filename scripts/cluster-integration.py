@@ -18,9 +18,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BIN = pathlib.Path(os.environ.get('KILN_BIN_DIR', ROOT / '.build/debug')).resolve()
 PORTS = set()
 
-def port():
+def port(kind=socket.SOCK_STREAM):
     while True:
-        with socket.socket() as s:
+        with socket.socket(socket.AF_INET, kind) as s:
             s.bind(('127.0.0.1', 0)); value = s.getsockname()[1]
         if value not in PORTS:
             PORTS.add(value); return value
@@ -47,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-cluster-') as folder:
     folder = pathlib.Path(folder); key = folder / 'admin'
     subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
     clients = []
-    discovery_port = port() if os.environ.get('KILN_TEST_MULTICAST') == '1' else None
+    discovery_port = port(socket.SOCK_DGRAM) if os.environ.get('KILN_TEST_MULTICAST') == '1' else None
     class Node:
         def __init__(self, name):
             self.state = folder / name; self.sshport = port(); self.peerport = port()

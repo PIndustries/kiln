@@ -67,9 +67,11 @@ public struct ModuleSnapshot: Sendable, Equatable {
     public let version: String
     public let state: String
     public let pid: Int32?
-    public var generationFingerprint: String { "\(id)|\(version)|\(state)|\(pid.map(String.init) ?? "-")" }
+    public let generation: String?
+    public var generationFingerprint: String { "\(id)|\(version)|\(state)|\(pid.map(String.init) ?? "-")" + (generation.map { "|" + $0 } ?? "") }
     public var id: String { "\(application)/\(name)" }
-    public init(application: String, name: String, version: String, state: String, pid: Int32?) {
+    public init(application: String, name: String, version: String, state: String, pid: Int32?, generation: String? = nil) {
+        self.generation = generation
         self.application = application; self.name = name; self.version = version
         self.state = state; self.pid = pid
     }

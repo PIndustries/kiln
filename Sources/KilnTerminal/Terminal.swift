@@ -350,6 +350,7 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/exit" { aiMode = false; transcript.append("Left AI chat."); return [] }
+                if command.hasPrefix("/recover ") { return execute("ai recovery new " + Self.quote(String(command.dropFirst(9)))) }
                 if command == "/tasks" { return execute("ai task list") }
                 if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
                 if command.hasPrefix("/watch ") { return execute("ai task watch " + Self.quote(String(command.dropFirst(7)))) }
