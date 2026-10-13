@@ -47,7 +47,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
   self.send_response(200 if n >= 2 else 503); self.end_headers(); self.wfile.write(b'fixture')
  def log_message(self, *args): pass
-http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+class Server(http.server.HTTPServer):
+ allow_reuse_address = True
+Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
 '''
     source = root/'worker.py'; source.write_text(python)
     worker.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' ' + shlex.quote(str(source)) + ' "$@"\n')
@@ -99,6 +101,11 @@ http.server.HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         print('PASS recovery: cold restore retains evidence and does not replay approval', flush=True)
         print('KILN_AI_RECOVERY_COMPLETE', flush=True)
     except Exception:
+        # Disposable fixture state only; never collect real provider configuration.
+        for diagnostic in [state/'ai-recovery.json', *state.glob('logs/**/*.log')]:
+            if diagnostic.is_file():
+                print(f'Fixture diagnostic {diagnostic.name}:', file=sys.stderr)
+                print(diagnostic.read_text(errors='replace')[-12000:], file=sys.stderr)
         log.flush(); log.seek(0); print(log.read()[-12000:], file=sys.stderr)
         raise
     finally:
