@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-recovery-e2e-') as temporary:
     worker = root/'worker.sh'
     # The fixture runs in Kiln's separate worker process. First generation is
     # deliberately unhealthy; the second generation returns HTTP 200.
-    python = '''import http.server, os, pathlib, sys
+    python = '''import http.server, os, pathlib, sys, socketserver
 p = pathlib.Path(os.environ['KILN_DATA_DIR']) / 'starts'
 n = int(p.read_text()) + 1 if p.exists() else 1
 p.write_text(str(n))
@@ -50,6 +50,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
  def log_message(self, *args): print('health request', n, flush=True)
 class Server(http.server.ThreadingHTTPServer):
  allow_reuse_address = True
+ def server_bind(self):
+  # HTTPServer performs getfqdn() here. This loopback fixture needs no DNS;
+  # hosted macOS resolver delays can leave a bound socket unable to serve.
+  socketserver.TCPServer.server_bind(self)
+  self.server_name = 'localhost'
+  self.server_port = self.server_address[1]
 Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
 '''
     source = root/'worker.py'; source.write_text(python)
