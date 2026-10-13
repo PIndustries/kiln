@@ -2,6 +2,8 @@
 
 Kiln AI is a Swift library and SSH chat interface using Foundation HTTP directly against Erebine's chat-completions API or the native Ollama chat API. OpenCode is not invoked or required at runtime. The module implements conversation history, a bounded tool loop, local operation proposals, Vault-backed credentials and versioned operator knowledge.
 
+For investigations that need a restart and proof of recovery, use the [durable recovery workflow](ai-recovery.md). These approvals survive reconnects for the same administrator identity; ordinary conversation proposals remain session-bound.
+
 ## Chat
 
 In Kiln's SSH dashboard, click **7 AI Chat** (or **7 AI** on smaller terminals), or press **7**. You can also open the backtick drawer and type:

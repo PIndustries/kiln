@@ -27,19 +27,21 @@ public struct KilnCommands: Sendable {
     private let telemetry: KilnTelemetry
     private let assistant: KilnAssistant
     private let aiTasks: AITasks
+    private let recoveries: AIRecoveryTasks
     public let identities: KilnIdentityStore
     public private(set) var principal: KilnPrincipal? = nil
     public func forIdentity(name: String, publicKey: String) -> KilnCommands { var copy = self; copy.principal = KilnPrincipal(name: name, publicKey: (try? KilnIdentityStore.canonicalKey(publicKey)) ?? "invalid"); return copy }
     public func bootstrapIdentity(username: String, keys: [String]) throws { try identities.bootstrap(name: username, keys: keys) }
     public func isAuthorized() -> Bool { (try? identities.resolve(principal)) != nil }
     public func authorizeAdmin() throws { try identities.require(principal, admin: true) }
-    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.assistant = KilnAssistant(); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.assistant = KilnAssistant(); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     // Internal dependency injection keeps snapshot tests deterministic without
     // granting the presentation layer authority to create proposals.
     init(runtime: KilnRuntime, assistant: KilnAssistant) {
         self.runtime = runtime; self.assistant = assistant; self.cluster = nil
         self.identities = KilnIdentityStore(directory: runtime.stateDirectory)
         self.aiTasks = AITasks(directory: runtime.stateDirectory)
+        self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory)
         self.bastion = BastionClient(directory: runtime.stateDirectory)
         self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path)
     }
@@ -47,11 +49,19 @@ public struct KilnCommands: Sendable {
         guard (try? identities.resolve(principal)) != nil else {
             return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized")
         }
-        let proposals = await assistant.pendingProposals(session: (principal?.name ?? "local-console") + ":" + sessionID)
+        var proposals = await assistant.pendingProposals(session: (principal?.name ?? "local-console") + ":" + sessionID)
         var tasks: [AITaskSnapshot] = []
         var taskError: String?
         if (try? authorizeAdmin()) != nil {
-            do { tasks = try await aiTasks.snapshots() }
+            do {
+                tasks = try await aiTasks.snapshots()
+                let recovery = try await recoveries.inventory(owner: recoveryOwner)
+                tasks += recovery.map { AITaskSnapshot(id: "recovery:" + $0.id, prompt: "Recover " + $0.module, status: $0.state.rawValue) }
+                proposals += recovery.compactMap { r in
+                    guard r.state == .awaitingApproval, let expires = r.expires, expires > Date() else { return nil }
+                    return AIProposalSnapshot(id: "recovery:" + r.id, operation: "restart", module: r.module, expires: expires)
+                }
+            }
             catch { taskError = "AI task state unavailable" }
         }
         // Re-resolve after actor suspension so an in-flight refresh cannot
@@ -60,7 +70,7 @@ public struct KilnCommands: Sendable {
             return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized")
         }
         let visible = proposals.filter {
-            $0.expires > Date() && identity.role != "viewer" &&
+            (!$0.id.hasPrefix("recovery:") || identity.role == "admin") && $0.expires > Date() && identity.role != "viewer" &&
             (identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.module))
         }
         let provider = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile) }
@@ -307,6 +317,32 @@ private extension KilnCommands {
 
 
 private extension KilnCommands {
+    var recoveryOwner: AIRecoveryTasks.Owner {
+        .init(name: principal?.name ?? "local-console", publicKey: principal?.publicKey ?? "local-console")
+    }
+    var recoveryController: AIRecoveryTasks.Controller {
+        .init(authorize: { module in
+            try authorizeAdmin()
+            try identities.require(principal, mutation: true, module: module)
+        }, inspect: { module in
+            try authorizeAdmin()
+            return try await runtime.recoveryEvidence(module)
+        }, execute: { id, module, fingerprint in
+            _ = try await runtime.performApprovedOperation("restart", name: module, fingerprint: fingerprint, requestID: id) {
+                try authorizeAdmin()
+                try identities.require(principal, mutation: true, module: module)
+            }
+        }, receipt: { id in
+            try authorizeAdmin()
+            return try await runtime.recoveryReceipt(id)
+        })
+    }
+    func recoveryList() async throws -> String {
+        try authorizeAdmin()
+        let rows = try await recoveries.inventory(owner: recoveryOwner)
+        try authorizeAdmin()
+        return rows.map { "recovery:\($0.id)  \($0.state.rawValue)  \($0.module)" }.joined(separator: "\n")
+    }
     func activeAIConfiguration() throws -> AIConfiguration {
         let url = runtime.stateDirectory.appendingPathComponent("ai.json")
         guard let bytes = try? Data(contentsOf: url), bytes.count <= 16384,
@@ -314,6 +350,15 @@ private extension KilnCommands {
             throw AIError.message("AI is not configured. Run ai help.")
         }
         try configuration.validate(); return configuration
+    }
+    func createRecoveryTask(_ module: String) async throws -> String {
+        try authorizeAdmin()
+        let requestID = UUID().uuidString.lowercased()
+        try identities.audit(principal, verb: "ai recovery new", outcome: "authorized", target: module, requestID: requestID)
+        let result = try await recoveries.submit(module: module, owner: recoveryOwner, controller: recoveryController)
+        do { try identities.audit(principal, verb: "ai recovery new", outcome: "returned", target: module, requestID: requestID) }
+        catch { throw AIError.message("Recovery task was created but completion audit failed. Inspect ai recovery list before retrying.") }
+        return result
     }
     func createAITask(_ prompt: String, configuration: AIConfiguration? = nil) async throws -> String {
         try authorizeAdmin()
@@ -331,9 +376,38 @@ private extension KilnCommands {
         return result
     }
     func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil) async throws -> CommandResult {
+        if parts.count >= 3, parts[1] == "recovery" {
+            try authorizeAdmin()
+            if parts == ["ai", "recovery", "list"] { return CommandResult(try await recoveryList()) }
+            if parts.count == 4, parts[2] == "new" {
+                return CommandResult(try await createRecoveryTask(parts[3]))
+            }
+            if parts.count == 4, parts[2] == "close" {
+                let id = parts[3].hasPrefix("recovery:") ? String(parts[3].dropFirst(9)) : parts[3]
+                return CommandResult(try await recoveries.close(id, owner: recoveryOwner))
+            }
+            if parts.count == 4, parts[2] == "reconcile" {
+                let id = parts[3].hasPrefix("recovery:") ? String(parts[3].dropFirst(9)) : parts[3]
+                return CommandResult(try await recoveries.reconcile(id, owner: recoveryOwner, controller: recoveryController))
+            }
+            throw AIError.message("Use ai recovery new <application/module> | list | reconcile <task-id> | close <task-id>")
+        }
+        if parts.count == 3, ["approve", "deny"].contains(parts[1]), parts[2].hasPrefix("recovery:") {
+            try authorizeAdmin()
+            let id = String(parts[2].dropFirst(9))
+            if parts[1] == "deny" { return CommandResult(try await recoveries.deny(id, owner: recoveryOwner)) }
+            return CommandResult(try await recoveries.approve(id, owner: recoveryOwner, controller: recoveryController))
+        }
+        if parts.count == 4, parts[1] == "task", parts[3].hasPrefix("recovery:") {
+            try authorizeAdmin()
+            let id = String(parts[3].dropFirst(9))
+            if parts[2] == "show" { return CommandResult(try await recoveries.show(id, owner: recoveryOwner)) }
+            if parts[2] == "remove" { return CommandResult(try await recoveries.remove(id, owner: recoveryOwner)) }
+            throw AIError.message("Use ai task show/remove or ai recovery reconcile for a recovery task; executing operations cannot be cancelled")
+        }
         if parts.count >= 3, parts[1] == "task" {
             switch parts {
-            case ["ai", "task", "list"]: return CommandResult(try await aiTasks.list())
+            case ["ai", "task", "list"]: return CommandResult(try await aiTasks.list() + "\n" + recoveryList())
             case let p where p.count == 4 && p[2] == "show": return CommandResult(try await aiTasks.show(p[3]))
             case let p where p.count == 4 && p[2] == "cancel": return CommandResult(try await aiTasks.cancel(p[3]))
             case let p where p.count == 4 && p[2] == "remove": return CommandResult(try await aiTasks.remove(p[3]))
@@ -379,7 +453,7 @@ private extension KilnCommands {
         }
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai concurrency [1-48]        Background worker limit (default 4)\nai metrics                    Redacted provider transport counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai metrics                    Redacted provider transport counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
         case ["ai", "metrics"]:
             try authorizeAdmin()
             let metrics = await assistant.providerMetrics.snapshot()
@@ -407,7 +481,9 @@ private extension KilnCommands {
             let action = try await assistant.takeApproval(parts[2], session: sessionID)
             try identities.require(principal, mutation: true, module: action.module)
             do {
-                let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint)
+                let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint, requestID: parts[2]) {
+                    try identities.require(principal, mutation: true, module: action.module)
+                }
                 await assistant.record(result, session: sessionID)
                 return CommandResult("Executed approved operation: " + result)
             } catch {
@@ -436,10 +512,13 @@ private extension KilnCommands {
         let context = "Kiln release \(KilnVersion.current)\n" + (await visibleModules())
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
             modules: modules, context: context, knowledge: knowledge, progress: progress, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer")) { name, module in
-                try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources"].contains(name) ? $0 : nil })
+                try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {
                 case "create_task": try authorizeAdmin(); return try await createAITask(module!, configuration: configuration)
-                case "list_tasks": try authorizeAdmin(); return try await aiTasks.list()
+                case "list_tasks": try authorizeAdmin(); return try await aiTasks.list() + "\n" + recoveryList()
+                case "create_recovery_task":
+                    try authorizeAdmin()
+                    return try await createRecoveryTask(module!)
                 case "system_status": return "Kiln \(KilnVersion.current); single node; OS process workers; opt-in bounded worker restart; cluster \(cluster == nil ? "disabled" : "enabled for explicit peer adoption and typed operations; no scheduling/failover")."
                 case "list_modules": return await visibleModules()
                 case "host_metrics": return await telemetry.sample().summary
@@ -464,14 +543,14 @@ private extension KilnCommands {
         case "key": return ["create", "delete"].contains(p[1])
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
-        case "ai": return ["configure", "knowledge", "approve"].contains(p[1]) || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
+        case "ai": return ["configure", "knowledge", "approve", "deny"].contains(p[1]) || (p[1] == "recovery" && p.count > 2 && p[2] != "list") || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
         }
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)
@@ -492,7 +571,7 @@ private extension KilnCommands {
         if p.first == "ai" {
             if p.count == 1 || ["help", "status", "ask", "reset", "deny"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
-            if ["task", "concurrency", "configure", "knowledge", "operations", "metrics", "profile"].contains(p[1]) { try authorizeAdmin(); return }
+            if ["task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if ["identity", "vault", "server", "key", "session", "node", "cluster"].contains(p[0]) { try authorizeAdmin(); return }
         throw CommandSyntaxError.unknown

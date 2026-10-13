@@ -34,7 +34,10 @@ public actor KilnRuntime {
     }
     private struct IndexHeader: Decodable { let formatVersion: Int? }
     private var versionedIndex = false
+    private let bootGeneration = UUID().uuidString.lowercased()
+    private var installationGenerations: [String: String] = [:]
     private struct Running {
+        let generation = UUID().uuidString.lowercased()
         var process: Process
         var log: FileHandle
         var lifetime: FileHandle
@@ -224,6 +227,7 @@ public actor KilnRuntime {
             try flushRelease(destination)
             manifest.executable = destination.path
             installed[id] = Installation(manifest: manifest, desiredRunning: false)
+            installationGenerations[id] = UUID().uuidString.lowercased()
             try save()
         } catch {
             if !persistenceFault {
@@ -440,7 +444,8 @@ public actor KilnRuntime {
                 state: persistenceFault ? "recovery-required" : stopping.contains(id) ? "stopping" : alive ? "running" :
                     installed[id]!.desiredRunning ? (manifest.restartPolicy == .always ?
                         ((recovery[id]?.attempts ?? 0) >= 3 ? "failed" : "recovering") : "exited") : "stopped",
-                pid: alive ? running[id]?.workerPID : nil)
+                pid: alive ? running[id]?.workerPID : nil,
+                generation: bootGeneration + ":" + (installationGenerations[id] ?? "restored") + ":" + (running[id]?.generation ?? "stopped"))
         }
     }
 
@@ -466,6 +471,23 @@ public actor KilnRuntime {
         let (_, response) = try await session.data(for: request)
         guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw KilnError.message("Health check failed") }
         return "\(name): healthy (HTTP 200)"
+    }
+
+    public func recoveryEvidence(_ name: String) async throws -> RecoveryEvidence {
+        guard let before = snapshot().first(where: { $0.id == name }), let item = installed[name] else {
+            throw KilnError.message("Unknown application")
+        }
+        let health: RecoveryEvidence.Health
+        if item.manifest.healthURL == nil { health = .unconfigured }
+        else {
+            do { _ = try await self.health(name); health = .healthy }
+            catch { try Task.checkCancellation(); health = .unhealthy }
+        }
+        guard let after = snapshot().first(where: { $0.id == name }), after == before else {
+            throw KilnError.message("Module changed during health inspection; inspect again")
+        }
+        return RecoveryEvidence(module: name, generation: after.generationFingerprint,
+                                processState: after.state, health: health)
     }
 
     public func resourceStatus(_ name: String) throws -> String {
@@ -662,17 +684,43 @@ extension KilnRuntime {
         }.joined(separator: "\n")
     }
 
-    public func performApprovedOperation(_ operation: String, name: String, fingerprint: String) async throws -> String {
-        guard snapshot().first(where: { $0.id == name })?.generationFingerprint == fingerprint else {
-            throw KilnError.message("Module changed since proposal; ask AI for a fresh proposal")
-        }
+    public func recoveryReceipt(_ requestID: String) throws -> RecoveryReceipt? {
+        guard UUID(uuidString: requestID) != nil else { throw KilnError.message("Invalid operation ID") }
+        let path = stateDirectory.appendingPathComponent("operations/" + requestID.lowercased() + ".json")
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        let data = try Data(contentsOf: path)
+        guard data.count <= 65536 else { throw KilnError.message("Invalid operation receipt") }
+        let record = try JSONDecoder().decode([String: String].self, from: data)
+        return RecoveryReceipt(state: record["state"] ?? "unknown", generation: record["resultGeneration"])
+    }
+
+    public func performApprovedOperation(_ operation: String, name: String, fingerprint: String,
+                                         requestID: String? = nil,
+                                         authorize: @Sendable () throws -> Void = {}) async throws -> String {
+        try authorize()
         guard ["start", "stop", "restart", "rollback"].contains(operation) else {
             throw KilnError.message("Unsupported AI operation")
         }
+        let id = (requestID ?? UUID().uuidString).lowercased()
+        guard UUID(uuidString: id) != nil else { throw KilnError.message("Invalid operation ID") }
         let directory = stateDirectory.appendingPathComponent("operations")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let id = UUID().uuidString
         let path = directory.appendingPathComponent(id + ".json")
+        if FileManager.default.fileExists(atPath: path.path) {
+            let data = try Data(contentsOf: path)
+            guard data.count <= 65536 else { throw KilnError.message("Invalid operation receipt") }
+            let prior = try JSONDecoder().decode([String: String].self, from: data)
+            guard prior["module"] == name, prior["operation"] == operation, prior["generation"] == fingerprint else {
+                throw KilnError.message("Operation ID is already bound to different arguments")
+            }
+            guard prior["state"] == "succeeded" else {
+                throw KilnError.message("Operation already attempted; reconcile its receipt before any new operation")
+            }
+            return "Previously executed operation: " + id + ". No operation repeated; health must be verified separately."
+        }
+        guard snapshot().first(where: { $0.id == name })?.generationFingerprint == fingerprint else {
+            throw KilnError.message("Module changed since proposal; ask AI for a fresh proposal")
+        }
         var record = ["id": id, "source": "approved-ai", "operation": operation, "module": name,
                       "generation": fingerprint, "startedAt": Date().ISO8601Format(), "state": "started"]
         func persist(_ value: [String: String]) throws {
@@ -698,6 +746,7 @@ extension KilnRuntime {
             throw error
         }
         record["state"] = "succeeded"
+        record["resultGeneration"] = snapshot().first(where: { $0.id == name })?.generationFingerprint
         record["finishedAt"] = Date().ISO8601Format()
         do { try persist(record) }
         catch { throw KilnError.message("Operation \(id) completed but its outcome could not be recorded. Inspect module state before retrying.") }
