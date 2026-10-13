@@ -89,7 +89,7 @@ private final class GrokCancelProbe: @unchecked Sendable {
     }
 }
 
-@Test func grokSandboxDeniesOutsideReadAndAllowsScratchRead() throws {
+@Test func grokSandboxDeniesOutsideReadAndAllowsScratchRead() async throws {
     #if os(macOS) || os(Linux)
     // Explicit opt-in because some hosts prohibit sandbox/user namespace creation.
     guard ProcessInfo.processInfo.environment["KILN_TEST_GROK_SANDBOX"] == "1" else { return }
@@ -100,23 +100,25 @@ private final class GrokCancelProbe: @unchecked Sendable {
     defer { try? fm.removeItem(at: scratch); try? fm.removeItem(at: outside) }
     let inside = scratch.appendingPathComponent("allowed.txt")
     try Data("allowed".utf8).write(to: inside); try Data("outside-marker".utf8).write(to: outside)
-    func read(_ path: String) throws -> (Int32, String) {
-        let p = Process(), pipe = Pipe()
-        #if os(Linux)
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/bwrap")
-        p.arguments = GrokCLISandbox.linuxArguments(executable: "/bin/cat", scratch: scratch.path) + [path.hasPrefix(scratch.path + "/") ? "/workspace/" + URL(fileURLWithPath: path).lastPathComponent : path]
-        #else
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-        p.arguments = ["-p", GrokCLISandbox.profile(executable: "/bin/cat", scratch: scratch.path), "/bin/cat", path]
-        #endif
-        p.environment = ["PATH": "/usr/bin:/bin"]
-        p.currentDirectoryURL = scratch
-        p.standardOutput = pipe; p.standardError = pipe
-        try p.run()
-        let output = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
-        return (p.terminationStatus, String(decoding: output, as: UTF8.self))
+    func read(_ path: String) async throws -> (Int32, String) {
+        try await grokFixtureBlocking {
+            let p = Process(), pipe = Pipe()
+            #if os(Linux)
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/bwrap")
+            p.arguments = GrokCLISandbox.linuxArguments(executable: "/bin/cat", scratch: scratch.path) + [path.hasPrefix(scratch.path + "/") ? "/workspace/" + URL(fileURLWithPath: path).lastPathComponent : path]
+            #else
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+            p.arguments = ["-p", GrokCLISandbox.profile(executable: "/bin/cat", scratch: scratch.path), "/bin/cat", path]
+            #endif
+            p.environment = ["PATH": "/usr/bin:/bin"]
+            p.currentDirectoryURL = scratch
+            p.standardOutput = pipe; p.standardError = pipe
+            try p.run()
+            let output = pipe.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+            return (p.terminationStatus, String(decoding: output, as: UTF8.self))
+        }
     }
-    let permitted = try read(inside.path), denied = try read(outside.path)
+    let permitted = try await read(inside.path), denied = try await read(outside.path)
     #expect(permitted.0 == 0 && permitted.1 == "allowed", "status=\(permitted.0), output=\(permitted.1)")
     #expect(denied.0 != 0 && !denied.1.contains("outside-marker"))
     #endif
@@ -143,11 +145,8 @@ private final class GrokCancelProbe: @unchecked Sendable {
     // Both parent and child retain stdout. Receiving an exit receipt requires
     // both pipes to close after cancellation, not merely the outer bwrap PID.
     try Data("#include <unistd.h>\n#include <stdio.h>\nint main(){if(fork()==0){while(1)sleep(1);}puts(\"ready\");fflush(stdout);while(1)sleep(1);}".utf8).write(to: source)
-    let compiler = Process()
-    compiler.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
-    compiler.arguments = [source.path, "-o", executable.path]
-    try compiler.run(); compiler.waitUntilExit()
-    #expect(compiler.terminationStatus == 0)
+    let compiled = try await grokCompileFixture(source: source, executable: executable)
+    try #require(compiled == 0)
     let execution = try GrokCLISandbox(executable: executable).start(GrokCLIRequest(prompt: "fixture", model: "fixture", timeoutSeconds: 3), apiKey: "fixture")
     defer { execution.cancel() }
     let receipt = try await withThrowingTaskGroup(of: Bool.self) { group in
@@ -176,5 +175,29 @@ private final class GrokCancelProbe: @unchecked Sendable {
     #expect(!args.contains("/etc/ssl") && !args.contains("/etc/ssl/private") && !args.contains("/etc/pki"))
     for index in args.indices where args[index] == "--ro-bind" || args[index] == "--bind" {
         #expect(args[index + 1] != "/")
+    }
+}
+
+// These fixtures launch real blocking OS processes. Never occupy Swift's
+// cooperative executor while the compiler, pipe, or child exit is pending.
+func grokFixtureBlocking<Value: Sendable>(
+    _ operation: @escaping @Sendable () throws -> Value
+) async throws -> Value {
+    try await withCheckedThrowingContinuation { continuation in
+        Thread.detachNewThread {
+            do { continuation.resume(returning: try operation()) }
+            catch { continuation.resume(throwing: error) }
+        }
+    }
+}
+
+func grokCompileFixture(source: URL, executable: URL) async throws -> Int32 {
+    try await grokFixtureBlocking {
+        let compiler = Process()
+        compiler.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
+        compiler.arguments = [source.path, "-o", executable.path]
+        try compiler.run()
+        compiler.waitUntilExit()
+        return compiler.terminationStatus
     }
 }

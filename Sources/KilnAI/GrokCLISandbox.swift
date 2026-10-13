@@ -78,7 +78,9 @@ public struct GrokCLISandbox: Sendable {
         let readers = DispatchGroup()
         for (pipe, diagnostic) in [(stdout, false), (stderr, true)] {
             readers.enter()
-            DispatchQueue.global().async {
+            // Blocking pipe IO must not occupy the shared Dispatch/Swift
+            // executor: parallel workers can otherwise starve live token reads.
+            Thread.detachNewThread {
                 defer { try? pipe.fileHandleForReading.close(); readers.leave() }
                 var buffer = [UInt8](repeating: 0, count: 4096)
                 while true {
@@ -100,7 +102,7 @@ public struct GrokCLISandbox: Sendable {
                 }
             }
         }
-        DispatchQueue.global().async {
+        Thread.detachNewThread {
             process.waitUntilExit()
             readers.wait()
             continuation.yield(.exited(process.terminationStatus)); continuation.finish()
