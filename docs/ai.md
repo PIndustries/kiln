@@ -1,6 +1,6 @@
 # Kiln AI — native provider integration
 
-Kiln AI is a Swift library and SSH chat interface using Foundation HTTP directly against Erebine's chat-completions API or the native Ollama chat API. OpenCode is not invoked or required at runtime. The module implements conversation history, a bounded tool loop, local operation proposals, Vault-backed credentials and versioned operator knowledge.
+Kiln AI is a Swift library and SSH chat interface with six native provider adapters: Erebine, OpenAI, Anthropic Claude, xAI Grok, DeepSeek and local Ollama. Requests use Foundation HTTP directly; hosted API access does not require a provider CLI. The module implements conversation history, a bounded tool loop, local operation proposals, Vault-backed credentials and versioned operator knowledge.
 
 For investigations that need a restart and proof of recovery, use the [durable recovery workflow](ai-recovery.md). These approvals survive reconnects for the same administrator identity; ordinary conversation proposals remain session-bound.
 
@@ -19,7 +19,7 @@ AI opens a dedicated conversation screen. Ask naturally, for example:
 - "Explain how rollback works in Kiln."
 - "Propose restarting storefront/rest."
 
-Chat uses the available terminal width with a small two-column inset, resizing its transcript, dividers, and composer with the viewport. Incoming and completed answers preserve line breaks and render common Markdown markers as readable terminal text. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. Answers stream through native SSE (Erebine) or NDJSON (Ollama) as they arrive, alongside a compact tool-call count. Provider reasoning is shown transiently only when the provider sends it; Kiln does not fabricate a thinking trace. Ctrl-C cancels a foreground response or stops watching a task. Ctrl-S freezes the display and disables mouse capture for native terminal selection/copy; press Ctrl-S again to resume.
+Chat uses the available terminal width with a small two-column inset, resizing its transcript, dividers, and composer with the viewport. Incoming and completed answers preserve line breaks and render common Markdown markers as readable terminal text. Page Up/Down scrolls output. `/exit` returns to commands, `/reset` clears that session's context and proposals. Answers stream through native SSE (hosted providers) or NDJSON (Ollama) as they arrive, alongside a compact tool-call count. Provider reasoning is shown transiently only when the provider sends it; Kiln does not fabricate a thinking trace. Ctrl-C cancels a foreground response or stops watching a task. Ctrl-S freezes the display and disables mouse capture for native terminal selection/copy; press Ctrl-S again to resume.
 
 The chat sidebar lists session-owned pending approvals and administrator-visible background tasks, refreshed every second. Click a proposal to review the exact operation, then click **Approve** or **Deny**; the same server-side authorization, expiry, single-use and generation checks apply as `/approve` and `/deny`. Click a task to inspect its current record. Type a request into the composer and click **+ New task from message** to run it as a background investigation. With an empty composer, this button prepares `/task` input.
 
@@ -50,13 +50,60 @@ ai configure https://api.erebine.ai/PROJECT/WORKSPACE/_direct/v1 MODEL_ID erebin
 ai status
 ```
 
-Use the base URL and model ID supplied by your Erebine endpoint or OpenCode provider configuration. A direct-routing endpoint's model ID must match its model catalog. Erebine accepts only HTTPS; credential-bearing URLs and redirects are rejected. `ai.json` stores the base URL, model and secret reference, never the API key. Each turn resolves the named grant from Vault, so rotating the key applies to the next turn without a runtime restart.
+Use the base URL and model ID supplied by your Erebine endpoint. A direct-routing endpoint's model ID must match its model catalog. Erebine accepts only HTTPS; credential-bearing URLs and redirects are rejected. `ai.json` stores the base URL, model and secret reference, never the API key. Each turn resolves the named grant from Vault, so rotating the key applies to the next turn without a runtime restart.
 
 Provision an Erebine API credential into the encrypted Vault using hidden terminal entry or redirected stdin. Provider configuration and credentials are local operator state and must never be included in a distributable package.
 
-## Named profiles and local Ollama
+## Native providers and named profiles
 
-Provider support in this release is explicit: Erebine and local Ollama only. ChatGPT subscription sign-in, OpenAI adapters and Claude adapters are not implemented by this slice. There is no automatic provider fallback.
+Each provider has an explicit wire adapter. The provider name in `ai profile add` selects the adapter; the endpoint and model remain operator-configured. The following are standard base URLs, not a promise that every model supports tools:
+
+| Profile provider | Protocol | Standard base URL | Credential |
+| --- | --- | --- | --- |
+| `erebine` | Chat Completions / SSE | Your project/workspace endpoint | Vault API key |
+| `openai` | Responses / SSE | `https://api.openai.com/v1` | Vault API key |
+| `anthropic` | Messages / SSE | `https://api.anthropic.com/v1` | Vault API key |
+| `grok` | Responses / SSE | `https://api.x.ai/v1` | Vault API key |
+| `deepseek` | Chat Completions / SSE | `https://api.deepseek.com` | Vault API key |
+| `ollama` | Native chat / NDJSON | `http://127.0.0.1:11434` | None |
+
+Hosted profiles require HTTPS. Redirects and URLs containing credentials, query parameters or fragments are rejected. Operators must trust the configured endpoint: Kiln sends that profile's API key and conversation to it. There is no automatic provider fallback or account failover.
+
+The new OpenAI, Claude, Grok and DeepSeek adapters are validated with deterministic request/stream fixtures. No paid live-provider calls were performed for this expansion; account access, model availability and provider behavior still require operator validation. API-key support does not include ChatGPT, Claude or Grok subscription sign-in. Local Ollama remains a separately managed daemon.
+
+Claude uses `x-api-key` and `anthropic-version` headers, maps system instructions to the top-level system field, and preserves tool-use/result history. OpenAI and Grok use Responses input/output items and function-call outputs. DeepSeek uses its Chat Completions contract. Claude and DeepSeek thinking are explicitly disabled in this implementation; Kiln does not claim signed-thinking replay support. All adapters return normalized messages to the same registered tools and approval checks.
+
+The separate [experimental Grok CLI worker](grok-cli.md) uses an installed CLI in a macOS isolation profile. It is an administrator-invoked, inference-only worker, not a seventh native HTTP provider or a chat profile. Authenticated CLI inference has not been verified; Linux has no launcher or unsandboxed fallback.
+
+### Hosted profile examples
+
+Replace `MODEL_ID` with a tool-capable model available to the corresponding account. Run `vault put` interactively for hidden credential entry; never append key values to these commands.
+
+```text
+vault put openai-api
+vault grant kiln/ai-openai openai-api
+ai profile add openai openai https://api.openai.com/v1 MODEL_ID openai-api
+
+vault put claude-api
+vault grant kiln/ai-claude claude-api
+ai profile add claude anthropic https://api.anthropic.com/v1 MODEL_ID claude-api
+
+vault put grok-api
+vault grant kiln/ai-grok grok-api
+ai profile add grok grok https://api.x.ai/v1 MODEL_ID grok-api
+
+vault put deepseek-api
+vault grant kiln/ai-deepseek deepseek-api
+ai profile add deepseek deepseek https://api.deepseek.com MODEL_ID deepseek-api
+
+ai profile list
+ai profile use claude --new-context
+ai status
+```
+
+Vault grants follow the **profile name**, not the provider: `claude` uses `kiln/ai-claude`; a profile named `work` uses `kiln/ai-work`. The special `default` profile uses `kiln/ai`.
+
+### Local Ollama
 
 ```text
 ai profile add local ollama http://127.0.0.1:11434 qwen3:0.6b
@@ -125,7 +172,7 @@ The model can still make mistakes or write misleading prose. The locally generat
 
 ## Data, cost and operational boundaries
 
-Prompts, the built-in/operator knowledge, runtime context and selected tool results are sent to the selected provider endpoint. Erebine API credentials are used only in the authorization header. Requests set `store: false`; this does not replace the provider's retention policy or establish zero-data-retention by itself. Inference may consume account credits.
+Prompts, the built-in/operator knowledge, runtime context and selected tool results are sent to the selected provider endpoint. Hosted API credentials are used in the provider authentication header, never added to prompts. Erebine and Responses requests set `store: false`; that option is not sent indiscriminately to other wire protocols and does not replace any provider's retention policy or establish zero-data-retention by itself. Inference may consume account credits.
 
 Conversations and pending proposals stay in runtime memory. Up to 32 idle conversations are retained, with a one-hour idle expiry; context is reset when its configured size limit is reached. At most 48 conversations can perform inference concurrently. Background concurrency defaults to four and is operator-configurable from 1–48. Each turn has up to eight tool-capable model calls followed by one summarization call with tools disabled, six tool calls per model response, and 4096 output tokens per model request. Identical tools are cached within the turn; an exhausted budget returns collected results instead of discarding them. Requests have bounded timeouts. Streaming requests rejected with HTTP 429 and the documented `capacity_exceeded` or `rate_limit_exceeded` code may retry twice when a valid `Retry-After` is at most 60 seconds. Chat shows a cancellable countdown. Quota failures, unknown errors, timeouts and interrupted streams are not retried; completed tool operations are never replayed by this policy. Error bodies are bounded and only reviewed error categories reach the terminal. A timeout may still consume provider credits. Disconnecting cancels foreground inference and task watchers; background tasks continue until finished or explicitly cancelled.
 
@@ -137,7 +184,7 @@ This is an integrated runtime module, not yet an independently hot-replaceable A
 
 The opt-in scripts `ai-live-integration.py` and `ai-terminal-integration.py` use real Erebine inference and disposable Swift workers, with an operator-supplied configured Vault. They can consume API credits. They verify live reports, tool calls, proposal-before-execution, explicit approval, rejected replay, knowledge reload and the real SSH chat view.
 
-API implementation references: [Erebine Chat Completions](https://erebine.ai/docs/api-reference), [Tool Calling](https://erebine.ai/docs/tool-calling), and [OpenCode provider configuration](https://erebine.ai/docs/opencode).
+API implementation references: [Erebine Chat Completions](https://erebine.ai/docs/api-reference), [OpenAI Responses](https://platform.openai.com/docs/api-reference/responses), [Claude Messages streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), [xAI API](https://docs.x.ai/), and [DeepSeek API](https://api-docs.deepseek.com/).
 
 Approved operations now persist private outcome receipts before execution; use `ai operations` to inspect them. See [supervision and operation receipts](supervision.md) for interruption semantics. Pending approvals are still in memory and session-bound.
 

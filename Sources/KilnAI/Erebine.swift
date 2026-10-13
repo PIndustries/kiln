@@ -7,7 +7,20 @@ public enum AIError: Error, CustomStringConvertible, Sendable {
     case message(String)
     public var description: String { switch self { case .message(let text): return text } }
 }
-public enum AIProvider: String, Codable, Sendable { case erebine, ollama }
+public enum AIProvider: String, Codable, Sendable, CaseIterable {
+    case erebine, ollama, openai, anthropic, grok, deepseek
+    public var requiresCredential: Bool { self != .ollama }
+    public var defaultBaseURL: String? {
+        switch self {
+        case .erebine: return nil
+        case .ollama: return "http://127.0.0.1:11434"
+        case .openai: return "https://api.openai.com/v1"
+        case .anthropic: return "https://api.anthropic.com/v1"
+        case .grok: return "https://api.x.ai/v1"
+        case .deepseek: return "https://api.deepseek.com"
+        }
+    }
+}
 public struct AIConfiguration: Codable, Sendable, Equatable {
     public let schemaVersion: Int
     public let baseURL: String
@@ -45,8 +58,8 @@ public struct AIConfiguration: Codable, Sendable, Equatable {
               profile.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }),
               contextID.count <= 80 else { throw AIError.message("Invalid AI provider configuration") }
         switch provider {
-        case .erebine:
-            guard url.scheme == "https", !secret.isEmpty else { throw AIError.message("Erebine requires HTTPS and a Vault secret reference") }
+        case .erebine, .openai, .anthropic, .grok, .deepseek:
+            guard url.scheme == "https", !secret.isEmpty else { throw AIError.message("Remote AI providers require HTTPS and a Vault secret reference") }
         case .ollama:
             guard url.scheme == "http", ["127.0.0.1", "[::1]", "::1"].contains(host),
                   url.path.isEmpty || url.path == "/", secret.isEmpty else {
@@ -67,8 +80,24 @@ public struct AIMessage: Codable, Sendable {
     public var tool_calls: [AIToolCall]?
     public var tool_call_id: String?
     public var reasoning_content: String?
+    /// Opaque provider-native history, consumed only by its matching adapter.
+    public var providerItems: [String]?
     public init(role: String, content: String?, tool_calls: [AIToolCall]? = nil, tool_call_id: String? = nil) {
         self.role = role; self.content = content; self.tool_calls = tool_calls; self.tool_call_id = tool_call_id
+    }
+}
+/// Chat-completions fields only: provider-native opaque history is never sent
+/// to Erebine (or accidentally accepted as an extension to its wire schema).
+struct ErebineWireMessage: Encodable {
+    let role: String
+    let content: String?
+    let tool_calls: [AIToolCall]?
+    let tool_call_id: String?
+    let reasoning_content: String?
+    init(_ message: AIMessage) {
+        role = message.role; content = message.content
+        tool_calls = message.tool_calls; tool_call_id = message.tool_call_id
+        reasoning_content = message.reasoning_content
     }
 }
 public struct AITool: Encodable, Sendable {
@@ -179,7 +208,7 @@ public struct ErebineClient: Sendable {
     public func complete(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool]) async throws -> AIMessage {
         try configuration.validate()
         struct Request: Encodable {
-            let model: String; let messages: [AIMessage]; let tools: [AITool]
+            let model: String; let messages: [ErebineWireMessage]; let tools: [AITool]
             let stream = false; let store = false; let max_completion_tokens = 4096
             let parallel_tool_calls = false
         }
@@ -189,7 +218,7 @@ public struct ErebineClient: Sendable {
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("KilnAI/1", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages, tools: tools))
+        request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages.map(ErebineWireMessage.init), tools: tools))
         let options = URLSessionConfiguration.ephemeral
         options.httpCookieStorage = nil; options.urlCache = nil; options.timeoutIntervalForResource = 120
         let data = try await BoundedCompletionHTTP.data(for: request, configuration: options)

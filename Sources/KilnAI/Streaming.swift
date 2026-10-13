@@ -17,7 +17,7 @@ struct ErebineStreamDecoder {
     private var finished = false
     mutating func feed(_ data: Data, emit: @Sendable (AIProgress) -> Void) throws {
         total += data.count
-        guard total <= 4_194_304 else { throw AIError.message("Erebine stream exceeded its size limit") }
+        guard total <= 4_194_304 else { throw AIError.message("Provider stream exceeded its size limit") }
         pending.append(data)
         while let newline = pending.firstIndex(of: 10) {
             let lineData = pending[..<newline]
@@ -35,11 +35,11 @@ struct ErebineStreamDecoder {
         if payload == "[DONE]" { done = true; return }
         guard !done, let data = payload.data(using: .utf8),
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil else {
-            throw AIError.message("Erebine reported an invalid or failed stream")
+            throw AIError.message("Provider reported an invalid or failed stream")
         }
         guard let choices = object["choices"] as? [[String: Any]], let first = choices.first else { return }
         if let finish = first["finish_reason"] as? String {
-            guard ["stop", "tool_calls"].contains(finish) else { throw AIError.message("Erebine response was cut short; no partial tool call executed") }
+            guard ["stop", "tool_calls"].contains(finish) else { throw AIError.message("Provider response was cut short; no partial tool call executed") }
             finished = true
         }
         guard let delta = first["delta"] as? [String: Any] else { return }
@@ -61,10 +61,10 @@ struct ErebineStreamDecoder {
             guard call.id.count <= 256, call.name.count <= 128, call.arguments.utf8.count <= 4096 else { throw AIError.message("Oversized streamed tool call") }
             calls[index] = call
         }
-        guard answer.utf8.count + reasoning.utf8.count <= 65536 else { throw AIError.message("Erebine message exceeded its limit") }
+        guard answer.utf8.count + reasoning.utf8.count <= 65536 else { throw AIError.message("Provider message exceeded its limit") }
     }
     func message() throws -> AIMessage {
-        guard done, finished else { throw AIError.message("Erebine stream interrupted; no partial tool call executed") }
+        guard done, finished else { throw AIError.message("Provider stream interrupted; no partial tool call executed") }
         let tools = try calls.keys.sorted().map { index -> AIToolCall in
             let call = calls[index]!
             guard !call.id.isEmpty, !call.name.isEmpty else { throw AIError.message("Incomplete streamed tool call") }
@@ -127,7 +127,7 @@ extension ErebineClient {
                        emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
         try configuration.validate()
         struct Request: Encodable {
-            let model: String; let messages: [AIMessage]; let tools: [AITool]
+            let model: String; let messages: [ErebineWireMessage]; let tools: [AITool]
             let stream = true; let store = false; let max_completion_tokens = 4096
             let parallel_tool_calls = true
             var tool_choice: String { tools.isEmpty ? "none" : "auto" }
@@ -137,7 +137,7 @@ extension ErebineClient {
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages, tools: tools))
+        request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages.map(ErebineWireMessage.init), tools: tools))
         let preparedRequest = request
         return try await ProviderRetry.run(metrics: metrics, emit: emit) {
             try await streamAttempt(request: preparedRequest, emit: emit)
