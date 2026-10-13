@@ -8,13 +8,13 @@ public enum AIError: Error, CustomStringConvertible, Sendable {
     public var description: String { switch self { case .message(let text): return text } }
 }
 public enum AIProvider: String, Codable, Sendable, CaseIterable {
-    case erebine, ollama, openai, anthropic, grok, deepseek
-    public var requiresCredential: Bool { self != .ollama }
+    case erebine, ollama, openai, anthropic, grok, deepseek, chatgpt
+    public var requiresCredential: Bool { self != .ollama && self != .chatgpt }
     public var defaultBaseURL: String? {
         switch self {
         case .erebine: return nil
         case .ollama: return "http://127.0.0.1:11434"
-        case .openai: return "https://api.openai.com/v1"
+        case .openai, .chatgpt: return "https://api.openai.com/v1"
         case .anthropic: return "https://api.anthropic.com/v1"
         case .grok: return "https://api.x.ai/v1"
         case .deepseek: return "https://api.deepseek.com"
@@ -60,6 +60,10 @@ public struct AIConfiguration: Codable, Sendable, Equatable {
         switch provider {
         case .erebine, .openai, .anthropic, .grok, .deepseek:
             guard url.scheme == "https", !secret.isEmpty else { throw AIError.message("Remote AI providers require HTTPS and a Vault secret reference") }
+        case .chatgpt:
+            guard baseURL == "https://api.openai.com/v1", UUID(uuidString: secret) != nil else {
+                throw AIError.message("ChatGPT profiles require the official endpoint and a signed-in account ID")
+            }
         case .ollama:
             guard url.scheme == "http", ["127.0.0.1", "[::1]", "::1"].contains(host),
                   url.path.isEmpty || url.path == "/", secret.isEmpty else {

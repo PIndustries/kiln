@@ -69,11 +69,13 @@ Each provider has an explicit wire adapter. The provider name in `ai profile add
 
 Hosted profiles require HTTPS. Redirects and URLs containing credentials, query parameters or fragments are rejected. Operators must trust the configured endpoint: Kiln sends that profile's API key and conversation to it. There is no automatic provider fallback or account failover.
 
-The new OpenAI, Claude, Grok and DeepSeek adapters are validated with deterministic request/stream fixtures. No paid live-provider calls were performed for this expansion; account access, model availability and provider behavior still require operator validation. API-key support does not include ChatGPT, Claude or Grok subscription sign-in. Local Ollama remains a separately managed daemon.
+OpenAI, Claude, Grok and DeepSeek API-key adapters are validated with deterministic request/stream fixtures; their authenticated checks await available API credentials. Real Erebine and local Ollama checks passed a read-only tool round, streamed answer and cancellation after incoming content. [Provider validation](provider-validation.md) records the evidence and remaining limits. Local Ollama remains a separately managed daemon.
+
+[ChatGPT account sign-in](sign-in.md) is implemented separately from API-key profiles. [Grok CLI device sign-in](grok-cli.md) uses the installed vendor CLI in an isolated worker. Both flows await user consent and authenticated end-to-end acceptance; implemented login code is not a claim of verified subscription inference. Claude and DeepSeek use their native API-key paths here.
 
 Claude uses `x-api-key` and `anthropic-version` headers, maps system instructions to the top-level system field, and preserves tool-use/result history. OpenAI and Grok use Responses input/output items and function-call outputs. DeepSeek uses its Chat Completions contract. Claude and DeepSeek thinking are explicitly disabled in this implementation; Kiln does not claim signed-thinking replay support. All adapters return normalized messages to the same registered tools and approval checks.
 
-The separate [experimental Grok CLI worker](grok-cli.md) uses an installed CLI in a macOS isolation profile. It is an administrator-invoked, inference-only worker, not a seventh native HTTP provider or a chat profile. Authenticated CLI inference has not been verified; Linux has no launcher or unsandboxed fallback.
+The separate [experimental Grok CLI worker](grok-cli.md) uses an installed CLI with macOS sandbox-exec or Linux bubblewrap isolation. Linux requires working user namespaces; unsupported hosts fail closed with no unsandboxed fallback. It is an administrator-invoked, inference-only worker, not another native HTTP provider or a chat profile. Authenticated CLI inference awaits user consent and verification.
 
 ### Hosted profile examples
 
@@ -176,7 +178,7 @@ Prompts, the built-in/operator knowledge, runtime context and selected tool resu
 
 Conversations and pending proposals stay in runtime memory. Up to 32 idle conversations are retained, with a one-hour idle expiry; context is reset when its configured size limit is reached. At most 48 conversations can perform inference concurrently. Background concurrency defaults to four and is operator-configurable from 1–48. Each turn has up to eight tool-capable model calls followed by one summarization call with tools disabled, six tool calls per model response, and 4096 output tokens per model request. Identical tools are cached within the turn; an exhausted budget returns collected results instead of discarding them. Requests have bounded timeouts. Streaming requests rejected with HTTP 429 and the documented `capacity_exceeded` or `rate_limit_exceeded` code may retry twice when a valid `Retry-After` is at most 60 seconds. Chat shows a cancellable countdown. Quota failures, unknown errors, timeouts and interrupted streams are not retried; completed tool operations are never replayed by this policy. Error bodies are bounded and only reviewed error categories reach the terminal. A timeout may still consume provider credits. Disconnecting cancels foreground inference and task watchers; background tasks continue until finished or explicitly cancelled.
 
-This is an integrated runtime module, not yet an independently hot-replaceable AI service. The framework target uses Foundation/FoundationNetworking and supports headless design; runtime and live-provider validation were performed on macOS. Linux compilation and AI policy tests now pass; live Erebine calls were verified on macOS.
+This is an integrated runtime module, not yet an independently hot-replaceable AI service. The framework target uses Foundation/FoundationNetworking and supports headless design; live-provider acceptance for Erebine and local Ollama was performed on macOS. Linux build/runtime validation is tracked by the release checks; this does not imply live subscription or every provider was verified on Linux.
 
 ## Verification and references
 
@@ -186,7 +188,7 @@ The opt-in scripts `ai-live-integration.py` and `ai-terminal-integration.py` use
 
 API implementation references: [Erebine Chat Completions](https://erebine.ai/docs/api-reference), [OpenAI Responses](https://platform.openai.com/docs/api-reference/responses), [Claude Messages streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), [xAI API](https://docs.x.ai/), and [DeepSeek API](https://api-docs.deepseek.com/).
 
-Approved operations now persist private outcome receipts before execution; use `ai operations` to inspect them. See [supervision and operation receipts](supervision.md) for interruption semantics. Pending approvals are still in memory and session-bound.
+Approved operations now persist private outcome receipts before execution; use `ai operations` to inspect them. See [supervision and operation receipts](supervision.md) for interruption semantics. Ordinary conversation approvals remain in memory and session-bound; durable recovery approvals have their own persisted owner-bound lifecycle.
 
 ## Background tasks
 

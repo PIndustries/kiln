@@ -42,8 +42,10 @@ public enum GrokCLIOutput: Sendable {
 public struct GrokCLIExecution: Sendable {
     public let output: AsyncThrowingStream<GrokCLIOutput, Error>
     public let cancel: @Sendable () -> Void
-    public init(output: AsyncThrowingStream<GrokCLIOutput, Error>, cancel: @escaping @Sendable () -> Void) {
-        self.output = output; self.cancel = cancel
+    public let waitForExit: @Sendable () async -> Void
+    public init(output: AsyncThrowingStream<GrokCLIOutput, Error>, cancel: @escaping @Sendable () -> Void,
+                waitForExit: @escaping @Sendable () async -> Void = {}) {
+        self.output = output; self.cancel = cancel; self.waitForExit = waitForExit
     }
 }
 
@@ -58,7 +60,8 @@ public struct GrokCLIWorker: Sendable {
         }
         try Task.checkCancellation()
         let execution = try await supervisor(request)
-        return try await withTaskCancellationHandler {
+        do {
+        let result = try await withTaskCancellationHandler {
             defer { execution.cancel() }
             return try await withThrowingTaskGroup(of: AIMessage.self) { group in
                 group.addTask {
@@ -93,6 +96,13 @@ public struct GrokCLIWorker: Sendable {
                 return result
             }
         } onCancel: { execution.cancel() }
+        await execution.waitForExit()
+        return result
+        } catch {
+            execution.cancel()
+            await execution.waitForExit()
+            throw error
+        }
     }
 }
 
