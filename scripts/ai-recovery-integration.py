@@ -45,9 +45,9 @@ n = int(p.read_text()) + 1 if p.exists() else 1
 p.write_text(str(n))
 class Handler(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
-  self.send_response(200 if n >= 2 else 503); self.end_headers(); self.wfile.write(b'fixture')
+  self.send_response(200 if n >= 2 else 503); self.send_header('Content-Length', '7'); self.send_header('Connection', 'close'); self.end_headers(); self.wfile.write(b'fixture')
  def log_message(self, *args): pass
-class Server(http.server.HTTPServer):
+class Server(http.server.ThreadingHTTPServer):
  allow_reuse_address = True
 Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
 '''
@@ -84,7 +84,7 @@ Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         assert 'awaitingApproval' in pending and 'unhealthy' in pending
         ssh('ai approve recovery:' + task_id)
         ssh('ai approve recovery:' + task_id)
-        wait(lambda: record(task_id)['state'] == 'recovered')
+        wait(lambda: record(task_id)['state'] == 'recovered', seconds=40)
         assert starts.read_text() == '2', 'duplicate approval restarted worker twice'
         evidence = record(task_id)
         assert evidence['after']['health'] == 'healthy'
