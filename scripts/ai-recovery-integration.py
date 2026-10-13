@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real SSH recovery: unhealthy HTTP worker, reconnect, approval, verification and cold restore."""
 import json
+import http.client
 import os
 from pathlib import Path
 import re
@@ -46,7 +47,7 @@ p.write_text(str(n))
 class Handler(http.server.BaseHTTPRequestHandler):
  def do_GET(self):
   self.send_response(200 if n >= 2 else 503); self.send_header('Content-Length', '7'); self.send_header('Connection', 'close'); self.end_headers(); self.wfile.write(b'fixture')
- def log_message(self, *args): pass
+ def log_message(self, *args): print('health request', n, flush=True)
 class Server(http.server.ThreadingHTTPServer):
  allow_reuse_address = True
 Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
@@ -67,6 +68,15 @@ Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         result = subprocess.run(['ssh', '-F', '/dev/null', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', f'UserKnownHostsFile={known}', '-o', 'ConnectTimeout=2', '-i', str(key), '-p', str(ssh_port), 'admin@127.0.0.1', command], capture_output=True, text=True, timeout=12)
         if check: assert result.returncode == 0, (command, result.stdout, result.stderr)
         return result.stdout
+    def probe():
+        connection = http.client.HTTPConnection('127.0.0.1', http_port, timeout=2)
+        try:
+            connection.request('GET', '/health')
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
     def record(task_id):
         return next(r for r in json.loads((state/'ai-recovery.json').read_text())['records'] if r['id'] == task_id)
     try:
@@ -74,6 +84,8 @@ Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         ssh('app install ' + str(manifest)); ssh('app start demo/api')
         starts = state/'data/demo/api/starts'
         wait(lambda: starts.read_text() == '1')
+        wait(lambda: probe() == 503)
+        print('Fixture first generation directly verified HTTP 503', flush=True)
         receipt = ssh('ai recovery new demo/api')
         task_id = re.search(r'recovery:([0-9a-f-]{36})', receipt).group(1)
         wait(lambda: record(task_id)['state'] == 'awaitingApproval')
@@ -84,6 +96,9 @@ Server(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
         assert 'awaitingApproval' in pending and 'unhealthy' in pending
         ssh('ai approve recovery:' + task_id)
         ssh('ai approve recovery:' + task_id)
+        wait(lambda: probe() == 200)
+        print('Fixture replacement directly verified HTTP 200', flush=True)
+        print(ssh('app health demo/api', check=False), flush=True)
         wait(lambda: record(task_id)['state'] == 'recovered', seconds=40)
         assert starts.read_text() == '2', 'duplicate approval restarted worker twice'
         evidence = record(task_id)
