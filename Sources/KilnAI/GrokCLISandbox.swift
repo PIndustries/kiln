@@ -30,7 +30,10 @@ public struct GrokCLISandbox: Sendable {
     }
     func start(_ request: GrokCLIRequest, apiKey: String) throws -> GrokCLIExecution {
         guard Self.supported else { throw AIError.message("Grok headless OS isolation is currently supported on macOS only") }
-        guard !apiKey.isEmpty, apiKey.utf8.count <= 8192, !apiKey.contains("\0") else { throw AIError.message("Grok headless requires a Vault API credential") }
+        let credential = apiKey
+        guard !credential.isEmpty, credential.utf8.count <= 8192, !credential.contains("\0") else {
+            throw AIError.message("Grok headless requires a Vault API credential")
+        }
         let scratch = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("kiln-grok-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let process = Process()
