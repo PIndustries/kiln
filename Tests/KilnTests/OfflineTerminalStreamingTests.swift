@@ -90,13 +90,37 @@ private func fixtureOptions() -> URLSessionConfiguration {
 
 @Test func offlineStreamCancellationStopsDeliveryAndNextRequestWorks() async throws {
     let frames = TerminalFrames()
+    let readiness = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingOldest(2))
     let task = Task {
-        try await ErebineClient().streamAttempt(request: URLRequest(url: URL(string: "https://terminal-fixture.invalid/cancel")!), configuration: fixtureOptions(), emit: { frames.receive($0) })
+        try await ErebineClient().streamAttempt(request: URLRequest(url: URL(string: "https://terminal-fixture.invalid/cancel")!), configuration: fixtureOptions(), emit: { event in
+            frames.receive(event)
+            if case .answer = event { readiness.continuation.yield(()) }
+        })
     }
-    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-    while frames.snapshot().count < 2 && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-    #expect(frames.snapshot().count >= 2)
+    defer { task.cancel(); readiness.continuation.finish() }
+    // Cancel only after the renderer receives real partial answers. This is an
+    // event barrier, not a provider latency SLA: parallel CI setup may temporarily
+    // delay the cooperative executor before the fixture starts delivering.
+    let receivedPartialAnswers = try await withThrowingTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            var answers = 0
+            for await _ in readiness.stream {
+                answers += 1
+                if answers == 2 { return true }
+            }
+            return false
+        }
+        group.addTask { try await Task.sleep(for: .seconds(10)); return false }
+        let ready = try await group.next() ?? false
+        group.cancelAll()
+        return ready
+    }
     task.cancel()
+    if !receivedPartialAnswers {
+        _ = try? await task.value
+        try #require(receivedPartialAnswers, "Fixture did not deliver two actual partial answers before the bounded readiness timeout")
+    }
+    #expect(frames.snapshot().count >= 2)
     do { _ = try await task.value; Issue.record("Cancelled stream unexpectedly completed") }
     catch { #expect(error is CancellationError) }
     let count = frames.snapshot().count

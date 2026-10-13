@@ -43,7 +43,7 @@ private func runGrokAccountFixture() async throws {
     defer { try? fm.removeItem(at: root) }
     let source = root.appendingPathComponent("fixture.c"), executable = root.appendingPathComponent("fixture")
     let gate = try GrokFixtureGate()
-    defer { _ = gate.release() }
+    defer { gate.closeListener() }
     let code = #"""
     #include <stdio.h>
     #include <string.h>
@@ -67,9 +67,8 @@ private func runGrokAccountFixture() async throws {
     }
     """#
     try Data(code.replacingOccurrences(of: "FIXTURE_PORT", with: String(gate.port)).utf8).write(to: source)
-    let compile = Process(); compile.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
-    compile.arguments = [source.path, "-o", executable.path]; try compile.run(); compile.waitUntilExit()
-    #expect(compile.terminationStatus == 0)
+    let compiled = try await grokCompileFixture(source: source, executable: executable)
+    try #require(compiled == 0)
     let vault = KilnVault(directory: root.appendingPathComponent("vault"))
     _ = try vault.initialize(keyFile: root.appendingPathComponent("key"))
     let directory = root.appendingPathComponent("accounts")
@@ -85,7 +84,8 @@ private func runGrokAccountFixture() async throws {
         try await Task.sleep(for: .milliseconds(10))
     }
     try #require(sawLiveCode)
-    #expect(gate.release())
+    let acknowledged = await gate.release()
+    #expect(acknowledged)
     var state = ""
     for _ in 0..<300 {
         state = try await accounts.status(id: id, owner: "owner")
@@ -150,7 +150,7 @@ private final class GrokFixtureGate {
         port = UInt16(bigEndian: address.sin_port)
         _ = fcntl(listener, F_SETFL, O_NONBLOCK)
     }
-    func release() -> Bool {
+    func release() async -> Bool {
         guard listener >= 0 else { return true }
         defer { close(listener); listener = -1 }
         for _ in 0..<200 {
@@ -167,9 +167,10 @@ private final class GrokFixtureGate {
                 #endif
             }
             if errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR { return false }
-            Thread.sleep(forTimeInterval: 0.01)
+            do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
         }
         return false
     }
+    func closeListener() { if listener >= 0 { close(listener); listener = -1 } }
     deinit { if listener >= 0 { close(listener) } }
 }
