@@ -13,6 +13,12 @@ struct AIProviderClient {
         switch configuration.provider {
         case .erebine:
             return try await ErebineClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+        case .openai, .grok:
+            return try await OpenAIResponsesClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+        case .anthropic:
+            return try await AnthropicClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+        case .deepseek:
+            return try await ChatCompletionsClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .ollama:
             try configuration.validate()
             try OllamaClient.validateProxyEnvironment(ProcessInfo.processInfo.environment)

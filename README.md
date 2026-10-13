@@ -13,7 +13,7 @@ The runtime works without SSH. REST services, WebSocket services, and other trus
 - **Access control:** named public-key users, administrator/operator/viewer roles, module scopes, live revocation, and bounded audit records.
 - **Credentials:** an encrypted server-side Vault with explicit per-module grants. On macOS, the bastion integration also supports Keychain-backed SSH keys and pinned destinations.
 - **Remote terminals:** named sessions, switching, and two-pane layouts. A separate session service keeps remote shells alive across viewer disconnects and dashboard restarts.
-- **AI operations:** native Erebine chat with streaming, task and approval controls, and a fixed set of Kiln tools. Application changes require explicit approval; background investigations are read-only.
+- **AI operations:** native Erebine, OpenAI, Claude, Grok, DeepSeek and local Ollama chat with streaming, task and approval controls, and a fixed set of Kiln tools. Application changes require explicit approval; background investigations are read-only.
 - **Peer administration:** explicit mutual node adoption, pinned encrypted transport, typed remote operations, and durable operation receipts.
 
 Kiln is under active development. It is not a hostile-code sandbox: applications run as the same OS user as the supervisor. Peer administration does not provide a consensus cluster, automatic placement, or failover. Read the [operating boundaries](docs/release-readiness.md#current-operating-boundaries) before putting it on a server.

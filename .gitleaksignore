@@ -2,3 +2,5 @@
 # Exact historical fingerprints only; future findings still require review.
 39048268dfe08daf31115258e672a84032e163f5:Sources/KilnCluster/Cluster.swift:generic-api-key:61
 62dc6b23bebfeb0d254b9f2e3e9fdd5d66a78e95:Sources/KilnSSH/SSHServer.swift:generic-api-key:142
+# Reviewed Swift credential validation expression, not a credential value.
+8a4f868c0ff0969584fb57f44374843afbc19c58:Sources/KilnAI/GrokCLISandbox.swift:generic-api-key:33
