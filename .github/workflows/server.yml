@@ -162,3 +162,38 @@ jobs:
             swift test --jobs 2 --force-resolved-versions --filter RealStorageFailureTests.testRealENOSPCPreservesCommittedState \
             | tee "$RUNNER_TEMP/kiln-real-enospc.log"
           grep '^KILN_REAL_ENOSPC_COMPLETE ' "$RUNNER_TEMP/kiln-real-enospc.log"
+  linux-grok-isolation:
+    name: Linux Grok namespace isolation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tests and native Swift runtime libraries
+        run: |
+          sudo mkdir -p /opt/kiln-grok/lib
+          docker run --rm --cpus=2 --memory=6g --pids-limit=512 \
+            -v "$PWD:/workspace" -v /opt/kiln-grok/lib:/runtime -w /workspace swift:6.2.3 \
+            bash -c 'swift build --build-tests --jobs 2 --force-resolved-versions && cp -a /usr/lib/swift/linux/*.so* /runtime/'
+      - name: Install sandbox and permit this sandbox's user namespace
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap gcc libcurl4t64 libxml2 libedit2 libatomic1 libicu74 libsqlite3-0 libzstd1 libstdc++6 libncurses6
+          # Ubuntu 24 restricts unprivileged user namespaces. Grant only the
+          # installed sandbox executable permission; do not disable the host policy.
+          if command -v apparmor_parser >/dev/null; then
+            printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' > "$RUNNER_TEMP/kiln-bwrap.apparmor"
+            sudo apparmor_parser -r "$RUNNER_TEMP/kiln-bwrap.apparmor"
+          fi
+      - name: Real namespace filesystem, descendant and encrypted account tests
+        env:
+          KILN_TEST_GROK_SANDBOX: '1'
+          LD_LIBRARY_PATH: /opt/kiln-grok/lib
+        run: .build/debug/KilnPackageTests.xctest --testing-library swift-testing --filter grok
+      - name: Record validation boundary
+        run: |
+          {
+            echo '### Linux Grok isolation'
+            echo "Source revision: $(git rev-parse HEAD)"
+            echo 'Real bubblewrap namespace tests outside Docker; no provider credentials.'
+            echo 'Scratch-only data access, descendant cancellation, encrypted CLI account refresh.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -65,6 +65,7 @@ struct OpenAIResponsesDecoder {
                         else { throw AIError.message("Unsupported Responses message content") }
                     }
                 case "function_call":
+                    guard item["namespace"] == nil || item["namespace"] is NSNull || item["namespace"] as? String == "kiln" else { throw AIError.message("Unsupported Responses tool namespace") }
                     guard let id = item["call_id"] as? String, !id.isEmpty, id.utf8.count <= 256, ids.insert(id).inserted,
                           let name = item["name"] as? String, !name.isEmpty, name.utf8.count <= 128,
                           let arguments = item["arguments"] as? String, arguments.utf8.count <= 4096,
@@ -97,7 +98,7 @@ public struct OpenAIResponsesClient: Sendable {
 
     static func makeRequest(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool]) throws -> URLRequest {
         try configuration.validate()
-        guard configuration.provider == .openai || configuration.provider == .grok else { throw AIError.message("Wrong Responses provider") }
+        guard configuration.provider == .openai || configuration.provider == .grok || configuration.provider == .chatgpt else { throw AIError.message("Wrong Responses provider") }
         var input: [[String: Any]] = []
         for message in messages {
             if message.role == "assistant", let replay = message.providerItems, !replay.isEmpty {
@@ -111,7 +112,7 @@ public struct OpenAIResponsesClient: Sendable {
                 input.append(["type": "function_call_output", "call_id": id, "output": message.content ?? ""])
             } else {
                 guard ["system", "developer", "user", "assistant"].contains(message.role) else { throw AIError.message("Invalid Responses conversation role") }
-                if let content = message.content, !content.isEmpty { input.append(["role": message.role, "content": content]) }
+                if let content = message.content, !content.isEmpty { input.append(["role": configuration.provider == .chatgpt && message.role == "system" ? "developer" : message.role, "content": content]) }
                 for call in message.tool_calls ?? [] {
                     input.append(["type": "function_call", "call_id": call.id, "name": call.function.name, "arguments": call.function.arguments])
                 }
@@ -121,9 +122,13 @@ public struct OpenAIResponsesClient: Sendable {
             let parameters = try JSONSerialization.jsonObject(with: JSONEncoder().encode(tool.function.parameters))
             return ["type": "function", "name": tool.function.name, "description": tool.function.description, "parameters": parameters, "strict": true]
         }
-        let body: [String: Any] = ["model": configuration.model, "input": input, "tools": toolObjects,
+        var body: [String: Any] = ["model": configuration.model, "input": input, "tools": toolObjects,
                                    "stream": true, "store": false, "max_output_tokens": 4096,
                                    "include": ["reasoning.encrypted_content"], "parallel_tool_calls": true]
+        if configuration.provider == .chatgpt {
+            body.removeValue(forKey: "max_output_tokens")
+            body["tools"] = toolObjects.isEmpty ? [] : [["type": "namespace", "name": "kiln", "description": "Authorized Kiln operations", "tools": toolObjects]]
+        }
         var request = URLRequest(url: URL(string: configuration.baseURL)!.appendingPathComponent("responses"))
         request.httpMethod = "POST"; request.timeoutInterval = 90
         request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")

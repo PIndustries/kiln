@@ -90,8 +90,8 @@ private final class GrokCancelProbe: @unchecked Sendable {
 }
 
 @Test func grokSandboxDeniesOutsideReadAndAllowsScratchRead() throws {
-    #if os(macOS)
-    // Explicit opt-in because nested Seatbelt is unavailable in some CI sandboxes.
+    #if os(macOS) || os(Linux)
+    // Explicit opt-in because some hosts prohibit sandbox/user namespace creation.
     guard ProcessInfo.processInfo.environment["KILN_TEST_GROK_SANDBOX"] == "1" else { return }
     let fm = FileManager.default
     let scratch = fm.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(UUID().uuidString)
@@ -102,8 +102,13 @@ private final class GrokCancelProbe: @unchecked Sendable {
     try Data("allowed".utf8).write(to: inside); try Data("outside-marker".utf8).write(to: outside)
     func read(_ path: String) throws -> (Int32, String) {
         let p = Process(), pipe = Pipe()
+        #if os(Linux)
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/bwrap")
+        p.arguments = GrokCLISandbox.linuxArguments(executable: "/bin/cat", scratch: scratch.path) + [path.hasPrefix(scratch.path + "/") ? "/workspace/" + URL(fileURLWithPath: path).lastPathComponent : path]
+        #else
         p.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
         p.arguments = ["-p", GrokCLISandbox.profile(executable: "/bin/cat", scratch: scratch.path), "/bin/cat", path]
+        #endif
         p.environment = ["PATH": "/usr/bin:/bin"]
         p.currentDirectoryURL = scratch
         p.standardOutput = pipe; p.standardError = pipe
@@ -124,5 +129,52 @@ private final class GrokCancelProbe: @unchecked Sendable {
         Issue.record("Expected provider failure")
     } catch {
         #expect(!String(describing: error).contains("secret-fixture-value"))
+    }
+}
+
+@Test func grokLinuxNamespaceCancellationClosesDescendantPipes() async throws {
+    #if os(Linux)
+    guard ProcessInfo.processInfo.environment["KILN_TEST_GROK_SANDBOX"] == "1" else { return }
+    let fm = FileManager.default
+    let directory = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: directory) }
+    let source = directory.appendingPathComponent("fixture.c"), executable = directory.appendingPathComponent("fixture")
+    // Both parent and child retain stdout. Receiving an exit receipt requires
+    // both pipes to close after cancellation, not merely the outer bwrap PID.
+    try Data("#include <unistd.h>\n#include <stdio.h>\nint main(){if(fork()==0){while(1)sleep(1);}puts(\"ready\");fflush(stdout);while(1)sleep(1);}".utf8).write(to: source)
+    let compiler = Process()
+    compiler.executableURL = URL(fileURLWithPath: "/usr/bin/cc")
+    compiler.arguments = [source.path, "-o", executable.path]
+    try compiler.run(); compiler.waitUntilExit()
+    #expect(compiler.terminationStatus == 0)
+    let execution = try GrokCLISandbox(executable: executable).start(GrokCLIRequest(prompt: "fixture", model: "fixture", timeoutSeconds: 3), apiKey: "fixture")
+    defer { execution.cancel() }
+    let receipt = try await withThrowingTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            var started = false
+            for try await event in execution.output {
+                switch event {
+                case .stdout: started = true; execution.cancel()
+                case .exited(let status): return started && status != 0
+                case .stderrBytes: break
+                }
+            }
+            return false
+        }
+        group.addTask { try await Task.sleep(for: .seconds(5)); return false }
+        defer { group.cancelAll() }
+        return try await group.next() ?? false
+    }
+    #expect(receipt)
+    #endif
+}
+
+@Test func grokLinuxMountsExcludeHostRootAndPrivateCertificateDirectories() {
+    let args = GrokCLISandbox.linuxArguments(executable: "/example/grok", scratch: "/example/scratch")
+    #expect(args.contains("--unshare-all") && args.contains("--die-with-parent"))
+    #expect(!args.contains("/etc/ssl") && !args.contains("/etc/ssl/private") && !args.contains("/etc/pki"))
+    for index in args.indices where args[index] == "--ro-bind" || args[index] == "--bind" {
+        #expect(args[index + 1] != "/")
     }
 }

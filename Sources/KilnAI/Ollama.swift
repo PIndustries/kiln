@@ -13,7 +13,7 @@ struct AIProviderClient {
         switch configuration.provider {
         case .erebine:
             return try await ErebineClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
-        case .openai, .grok:
+        case .openai, .grok, .chatgpt:
             return try await OpenAIResponsesClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .anthropic:
             return try await AnthropicClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
