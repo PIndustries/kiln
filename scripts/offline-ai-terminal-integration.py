@@ -132,8 +132,11 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             stream = pyte.ByteStream(screen)
             raw = bytearray()
             expect("7 AI Chat")
+            expect("Selected AI: Ollama | Ollama daemon")
             send(b"7")
             expect("KILN AI CHAT")
+            expect("selected: Ollama")
+            expect("Ollama daemon / ollama / offline")
 
         def frame():
             return "\n".join(screen.display)

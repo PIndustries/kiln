@@ -21,6 +21,26 @@ public struct AIProviderSnapshot: Sendable, Equatable {
     public let provider: String
     public let profile: String
     public let model: String
+    public var displayName: String {
+        switch provider {
+        case "erebine": "Erebine"
+        case "ollama": "Ollama"
+        case "openai": "OpenAI"
+        case "anthropic": "Anthropic"
+        case "grok": "Grok"
+        case "deepseek": "DeepSeek"
+        case "chatgpt": "ChatGPT"
+        default: "Unknown"
+        }
+    }
+    public var billingLabel: String {
+        switch provider {
+        case "chatgpt": "ChatGPT plan"
+        case "ollama": "Ollama daemon"
+        case "unknown": "Unknown access"
+        default: "API credential"
+        }
+    }
     public var accessLabel: String {
         switch provider {
         case "ollama": "loopback / daemon billing"
