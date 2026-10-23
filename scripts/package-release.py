@@ -60,7 +60,7 @@ def main():
         entries = subprocess.check_output([
             'git', 'ls-tree', '-rz', '--full-tree', revision, '--',
             'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'Package.resolved',
-            'docs', 'scripts/example-manifests.py'], cwd=ROOT).split(b'\0')
+            'docs', 'scripts/example-manifests.py', 'scripts/application-bundle.py'], cwd=ROOT).split(b'\0')
         for entry in filter(None, entries):
             metadata, raw_path = entry.split(b'\t', 1)
             mode, kind, object_id = metadata.split()

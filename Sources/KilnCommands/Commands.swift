@@ -196,8 +196,8 @@ public struct KilnCommands: Sendable {
                 status                  Runtime status
                 metrics                 Host CPU, memory, disk, uptime and load
                 app list                Installed applications and process state
-                app install <manifest>  Install a trusted local executable release
-                app deploy <manifest>   Stage, health-check and switch ingress to a release
+                app install <source>    Install a trusted manifest or application bundle directory
+                app deploy <source>     Stage a manifest/bundle directory and switch healthy ingress
                 app rollback <name>     Health-check and restore the previous release
                 app releases <name>     Active/previous versions and ingress address
                 app start <name>        Start a separate application process

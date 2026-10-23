@@ -48,7 +48,7 @@ jobs:
       - name: Install Linux test clients
         if: runner.os == 'Linux'
         run: |
-          apt-get update && apt-get install -y --no-install-recommends openssh-client python3
+          apt-get update && apt-get install -y --no-install-recommends openssh-client python3 gcc libc6-dev
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Build candidate package
         run: python3 scripts/package-release.py --output "$RUNNER_TEMP/packages"
@@ -62,6 +62,14 @@ jobs:
           export KILN_BIN_DIR
           "$KILN_BIN_DIR/kiln" --version
           python3 scripts/integration.py
+      - name: Verify bundled assets and libraries with the packaged runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          KILN_BIN_DIR="$(find "$RUNNER_TEMP/installed" -type d -name bin)"
+          export KILN_BIN_DIR
+          python3 scripts/bundle-integration.py </dev/null | tee "$RUNNER_TEMP/bundle-integration.log"
+          grep -Fx KILN_BUNDLE_INTEGRATION_COMPLETE "$RUNNER_TEMP/bundle-integration.log"
       - name: Rehearse packaged runtime upgrade and compatible rollback
         shell: bash
         run: |

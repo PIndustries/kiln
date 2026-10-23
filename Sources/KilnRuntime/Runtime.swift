@@ -27,6 +27,8 @@ public actor KilnRuntime {
         var manifest: ApplicationManifest
         var desiredRunning: Bool
         var previous: ApplicationManifest? = nil
+        var bundle: ApplicationBundleManifest? = nil
+        var previousBundle: ApplicationBundleManifest? = nil
     }
     private struct IndexEnvelope: Codable {
         let formatVersion: Int
@@ -34,6 +36,7 @@ public actor KilnRuntime {
     }
     private struct IndexHeader: Decodable { let formatVersion: Int? }
     private var versionedIndex = false
+    private var bundleIndex = false
     private let bootGeneration = UUID().uuidString.lowercased()
     private var installationGenerations: [String: String] = [:]
     private struct Running {
@@ -109,38 +112,45 @@ public actor KilnRuntime {
             let data = try Data(contentsOf: index)
             let decoder = JSONDecoder()
             if let version = try decoder.decode(IndexHeader.self, from: data).formatVersion {
-                guard version == 2 else { throw KilnError.message("Unsupported application state format; use a compatible Kiln version") }
+                guard version == 2 || version == 3 else { throw KilnError.message("Unsupported application state format; use a compatible Kiln version") }
                 installed = try decoder.decode(IndexEnvelope.self, from: data).applications
                 versionedIndex = true
+                bundleIndex = version == 3
             } else {
                 installed = try decoder.decode([String: Installation].self, from: data)
             }
             for installation in installed.values {
                 try installation.manifest.validate()
                 try installation.previous?.validate()
+                try installation.bundle?.validate(forPlatform: ApplicationBundleManifest.hostPlatform)
+                try installation.previousBundle?.validate(forPlatform: ApplicationBundleManifest.hostPlatform)
+                guard installation.previousBundle == nil || installation.previous != nil else { throw KilnError.message("Bundle rollback metadata has no previous release") }
             }
         }
     }
 
     private func save() throws {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let needsEnvelope = versionedIndex || installed.values.contains {
+        let usesBundles = bundleIndex || installed.values.contains { $0.bundle != nil || $0.previousBundle != nil }
+        let needsEnvelope = versionedIndex || usesBundles || installed.values.contains {
             $0.manifest.resources != nil || $0.previous?.resources != nil
         }
         let data: Data
-        if needsEnvelope { data = try encoder.encode(IndexEnvelope(formatVersion: 2, applications: installed)) }
+        if needsEnvelope { data = try encoder.encode(IndexEnvelope(formatVersion: usesBundles ? 3 : 2, applications: installed)) }
         else { data = try encoder.encode(installed) }
         do {
             try KilnStateFile.write(data, to: stateDirectory.appendingPathComponent("applications.json"))
             versionedIndex = needsEnvelope
+            bundleIndex = usesBundles
         } catch let error as KilnStateFile.CommitUncertain {
             versionedIndex = needsEnvelope
+            bundleIndex = usesBundles
             persistenceFault = true
             throw error
         }
     }
 
-    private func flushRelease(_ executable: URL) throws {
+    private nonisolated func flushRelease(_ executable: URL) throws {
         // The index must never become durable before the executable it names.
         func normalizedPath(_ url: URL) -> String {
             var path = url.standardizedFileURL.path
@@ -207,26 +217,41 @@ public actor KilnRuntime {
         }
     }
 
-    public func install(path: String) throws -> String {
+    private nonisolated func copyRelease(_ source: ReleaseSource, to directory: URL) throws -> ApplicationManifest {
+        if let bundle = source.bundle {
+            try source.copyBundle(to: directory)
+            try flushRelease(directory)
+            return try bundle.installedManifest(in: directory)
+        }
+        var manifest = source.manifest
+        let destination = directory.appendingPathComponent("app")
+        try FileManager.default.copyItem(atPath: manifest.executable, toPath: destination.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
+        try flushRelease(destination)
+        manifest.executable = destination.path
+        return manifest
+    }
+
+    public func install(path: String) async throws -> String {
         guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
-        var manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let source = try ReleaseSource.load(path)
+        var manifest = source.manifest
         try manifest.validate()
         try ResourceController.ensureSupported(manifest.resources)
         let id = "\(manifest.application)/\(manifest.name)"
         guard !deploying.contains(id) else { throw KilnError.message("Deployment in progress") }
         guard installed[id] == nil else { throw KilnError.message("Application already installed; use app deploy for managed ingress releases") }
-        guard FileManager.default.isExecutableFile(atPath: manifest.executable) else { throw KilnError.message("Executable is missing or not executable") }
+        deploying.insert(id)
+        defer { deploying.remove(id) }
+        guard source.bundle != nil || FileManager.default.isExecutableFile(atPath: manifest.executable) else { throw KilnError.message("Executable is missing or not executable") }
         let directory = stateDirectory.appendingPathComponent("releases/\(id)/\(manifest.version)")
         guard !FileManager.default.fileExists(atPath: directory.path) else { throw KilnError.message("Release directory already exists") }
         let staging = try stageRelease(manifest)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
-            let destination = directory.appendingPathComponent("app")
-            try FileManager.default.copyItem(atPath: manifest.executable, toPath: destination.path)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
-            try flushRelease(destination)
-            manifest.executable = destination.path
-            installed[id] = Installation(manifest: manifest, desiredRunning: false)
+            manifest = try await Task.detached { try self.copyRelease(source, to: directory) }.value
+            guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires state recovery") }
+            installed[id] = Installation(manifest: manifest, desiredRunning: false, bundle: source.bundle)
             installationGenerations[id] = UUID().uuidString.lowercased()
             try save()
         } catch {
@@ -241,7 +266,7 @@ public actor KilnRuntime {
         return "Installed \(id)@\(manifest.version). Run: app start \(id)"
     }
 
-    private func launch(_ name: String) throws {
+    private func launch(_ name: String) async throws {
         guard !shuttingDown, !persistenceFault, let installation = installed[name] else { throw KilnError.message("Unknown application: \(name)") }
         guard !stopping.contains(name) else { throw KilnError.message("Application is stopping") }
         if running[name]?.process.isRunning == true { throw KilnError.message("Application is already running") }
@@ -250,10 +275,15 @@ public actor KilnRuntime {
             running.removeValue(forKey: name)
             try? old.lifetime.close(); try? old.log.close()
         }
-        running[name] = try spawn(installation.manifest)
+        running[name] = try await spawn(installation.manifest, bundle: installation.bundle)
     }
 
-    private func spawn(_ manifest: ApplicationManifest) throws -> Running {
+    private func spawn(_ manifest: ApplicationManifest, bundle: ApplicationBundleManifest? = nil) async throws -> Running {
+        if let bundle {
+            let root = stateDirectory.appendingPathComponent("releases/\(manifest.application)/\(manifest.name)/\(manifest.version)")
+            try await Task.detached(priority: .utility) { try ReleaseSource.verify(bundle, manifest: manifest, root: root) }.value
+            guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires state recovery") }
+        }
         let name = "\(manifest.application)/\(manifest.name)"
         guard FileManager.default.isExecutableFile(atPath: manifest.executable) else {
             throw KilnError.message("Worker executable is missing or not executable")
@@ -294,6 +324,7 @@ public actor KilnRuntime {
         try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         process.currentDirectoryURL = dataDirectory
         process.environment = ["PATH": "/usr/bin:/bin", "KILN_APP_NAME": name, "KILN_DATA_DIR": dataDirectory.path, "KILN_RELEASE_VERSION": manifest.version]
+        process.environment?["KILN_RELEASE_DIR"] = stateDirectory.appendingPathComponent("releases/\(name)/\(manifest.version)").standardizedFileURL.resolvingSymlinksInPath().path
         if manifest.ingressPort != nil { process.environment?["KILN_PORT"] = String(workerPort(manifest)) }
         process.environment?.merge(secrets) { _, secret in secret }
         if let resourceID, let resourceRoot {
@@ -357,7 +388,7 @@ public actor KilnRuntime {
         beginSupervision()
         deploying.insert(name)
         defer { deploying.remove(name) }
-        try launch(name)
+        try await launch(name)
         do {
             if let manifest = installed[name]?.manifest, let port = manifest.ingressPort {
                 try await ready(manifest, process: running[name]!.process)
@@ -572,11 +603,13 @@ extension KilnRuntime {
 
     public func releases(_ name: String) throws -> String {
         guard let item = installed[name] else { throw KilnError.message("Unknown application") }
-        return "Active: \(item.manifest.version)\nPrevious: \(item.previous?.version ?? "none")\nIngress: \(item.manifest.ingressPort.map { "127.0.0.1:\($0)" } ?? "none")"
+        let artifact = try item.bundle.map { "\nBundle: \($0.platform) / \($0.files.count) files\nBundle digest: \(try ReleaseSource.identity($0))" } ?? ""
+        return "Active: \(item.manifest.version)\nPrevious: \(item.previous?.version ?? "none")\nIngress: \(item.manifest.ingressPort.map { "127.0.0.1:\($0)" } ?? "none")" + artifact
     }
 
     public func deploy(path: String) async throws -> String {
-        var manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        let source = try ReleaseSource.load(path)
+        var manifest = source.manifest
         try manifest.validate()
         try ResourceController.ensureSupported(manifest.resources)
         guard manifest.ingressPort != nil else { throw KilnError.message("app deploy requires ingressPort") }
@@ -585,18 +618,15 @@ extension KilnRuntime {
         deploying.insert(name)
         defer { deploying.remove(name) }
         let directory = stateDirectory.appendingPathComponent("releases/\(name)/\(manifest.version)")
-        guard !FileManager.default.fileExists(atPath: directory.path), FileManager.default.isExecutableFile(atPath: manifest.executable) else {
+        guard !FileManager.default.fileExists(atPath: directory.path), source.bundle != nil || FileManager.default.isExecutableFile(atPath: manifest.executable) else {
             throw KilnError.message("Release version already exists or executable is unavailable")
         }
         let staging = try stageRelease(manifest)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
-            let destination = directory.appendingPathComponent("app")
-            try FileManager.default.copyItem(atPath: manifest.executable, toPath: destination.path)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
-            try flushRelease(destination)
-            manifest.executable = destination.path
-            let result = try await activate(manifest)
+            manifest = try await Task.detached { try self.copyRelease(source, to: directory) }.value
+            guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires state recovery") }
+            let result = try await activate(manifest, bundle: source.bundle)
             try? FileManager.default.removeItem(at: staging)
             return result
         } catch {
@@ -613,10 +643,10 @@ extension KilnRuntime {
         guard let previous = installed[name]?.previous else { throw KilnError.message("No previous release") }
         deploying.insert(name)
         defer { deploying.remove(name) }
-        return try await activate(previous)
+        return try await activate(previous, bundle: installed[name]?.previousBundle)
     }
 
-    private func activate(_ manifest: ApplicationManifest) async throws -> String {
+    private func activate(_ manifest: ApplicationManifest, bundle: ApplicationBundleManifest? = nil) async throws -> String {
         let name = "\(manifest.application)/\(manifest.name)"
         let old = installed[name]
         if let old, old.manifest.ingressPort != manifest.ingressPort {
@@ -637,7 +667,7 @@ extension KilnRuntime {
         }) else { throw KilnError.message("Worker or ingress port is already reserved") }
         candidates[name] = manifest
         defer { candidates.removeValue(forKey: name) }
-        let candidate = try spawn(manifest)
+        let candidate = try await spawn(manifest, bundle: bundle)
         var newListener: KilnIngress?
         do {
             try await ready(manifest, process: candidate.process)
@@ -646,7 +676,7 @@ extension KilnRuntime {
                 try await listener.start(port: manifest.ingressPort!)
             }
             guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
-            installed[name] = Installation(manifest: manifest, desiredRunning: true, previous: old?.manifest)
+            installed[name] = Installation(manifest: manifest, desiredRunning: true, previous: old?.manifest, bundle: bundle, previousBundle: old?.bundle)
             do { try save() } catch { if !persistenceFault { installed[name] = old }; throw error }
         } catch {
             await newListener?.stop()

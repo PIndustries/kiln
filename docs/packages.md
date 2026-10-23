@@ -47,6 +47,11 @@ compatibility with every Linux distribution. Bundled runtime notices are under
 
 ## Upgrade and rollback
 
+Application directory bundles are described in [application bundles](application-bundles.md).
+Installing a bundle requires application state format 3, which older runtimes
+reject. The compatible rollback rehearsal below uses legacy application state;
+it does not authorize downgrading bundle state to an older runtime.
+
 Keep the current package intact. Extract and verify a new package in a separate
 directory; never overwrite a running executable. Back up runtime state and its
 separately stored Vault key using the documented operational procedure. Validate

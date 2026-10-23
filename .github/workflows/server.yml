@@ -78,6 +78,8 @@ jobs:
         run: python3 scripts/cluster-integration.py
       - name: Managed deployment and rollback
         run: python3 scripts/deployment-integration.py
+      - name: Portable application assets, libraries, restore and rollback
+        run: python3 scripts/bundle-integration.py
   linux:
     runs-on: ubuntu-latest
     container: swift:6.2.3
@@ -85,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install test clients
-        run: apt-get update && apt-get install -y --no-install-recommends openssh-client python3 python3-venv
+        run: apt-get update && apt-get install -y --no-install-recommends openssh-client python3 python3-venv gcc libc6-dev
       - name: Record Linux validation revision and toolchain
         shell: bash
         run: |
@@ -127,6 +129,8 @@ jobs:
         run: KILN_TEST_MULTICAST=1 python3 scripts/cluster-integration.py
       - name: Managed deployment and rollback
         run: python3 scripts/deployment-integration.py
+      - name: Portable application assets, libraries, restore and rollback
+        run: python3 scripts/bundle-integration.py
   linux-resources:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
