@@ -84,10 +84,38 @@ private func click(_ column: Int, _ row: Int) -> TerminalKey { .mouse(button: 0,
 
 @Test func providerHeaderShowsSelectedProfileAndRejectsControlCharacters() {
     var ui = sidebarUI(snapshot: AIWorkspaceSnapshot(provider: AIProviderSnapshot(provider: "ollama", profile: "local")))
-    #expect(ui.render().contains("selected: ollama / local"))
+    #expect(ui.render().contains("selected: Ollama"))
+    #expect(ui.render().contains("Ollama daemon / ollama / local"))
     ui.updateAIWorkspace(AIWorkspaceSnapshot(provider: AIProviderSnapshot(provider: "erebine", profile: "work")))
-    #expect(ui.render().contains("selected: erebine / work"))
-    #expect(!ui.render().contains("selected: ollama / local"))
+    #expect(ui.render().contains("selected: Erebine"))
+    #expect(ui.render().contains("API credential / erebine / work"))
+    #expect(!ui.render().contains("selected: Ollama"))
     let hostile = AIProviderSnapshot(provider: "\u{1b}[2J", profile: "\u{1b}[2J")
     #expect(hostile.label == "unknown / invalid")
+}
+
+@Test func providerStaysVisibleAcrossDashboardCommandsChatAndNarrowTasks() {
+    var ui = KilnTerminal()
+    for width in [50, 80, 120] {
+        ui.resize(width: width, height: 24)
+        ui.updateAIWorkspace(AIWorkspaceSnapshot(provider: AIProviderSnapshot(provider: "chatgpt", profile: "chatgpt", model: "gpt-6.1-sol")))
+        #expect(ui.render().contains("Selected AI: ChatGPT | ChatGPT plan"))
+        _ = ui.handle(.text("`"))
+        #expect(ui.render().contains("COMMAND DRAWER"))
+        #expect(ui.render().contains("Selected AI: ChatGPT | ChatGPT plan"))
+        _ = ui.handle(.text("`"))
+        _ = ui.handle(.text("7"))
+        #expect(ui.render().contains("selected: ChatGPT [ready]"))
+        #expect(ui.render().contains("Model: gpt-6.1-sol"))
+        _ = ui.handle(.tab)
+        #expect(ui.render().contains("AI: ChatGPT | ChatGPT plan"))
+        _ = ui.handle(.escape)
+        _ = ui.handle(.escape)
+    }
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(provider: AIProviderSnapshot(provider: "erebine", profile: "work", model: "erebine/co-engineer")))
+    #expect(ui.render().contains("Selected AI: Erebine | API credential"))
+    #expect(!ui.render().contains("ChatGPT plan"))
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(error: "Access revoked"))
+    #expect(ui.render().contains("Selected AI: not configured"))
+    #expect(!ui.render().contains("Erebine"))
 }

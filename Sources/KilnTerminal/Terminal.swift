@@ -448,6 +448,7 @@ public struct KilnTerminal {
         }
         if items.isEmpty { panel[7] = aiWorkspace.error ?? "No pending work" }
         panel[height - 2] = "\(items.isEmpty ? 0 : sidebarSelected + 1)/\(items.count)  n: new task"
+        panel[height - 1] = aiWorkspace.provider.map { "AI: " + $0.displayName + " | " + $0.billingLabel } ?? "AI: not configured"
         if panelWidth > 0 || panelOnly { hits.append(Hit(row: 4, column: 2, width: panelOnly ? width - 4 : panelWidth - 1, click: .newTask)) }
         if panelOnly {
             let rows = panel.map { "  " + String(Self.safe($0).prefix(width - 5)).padding(toLength: width - 3, withPad: " ", startingAt: 0) }
@@ -462,7 +463,7 @@ public struct KilnTerminal {
             return "\u{1b}[0m\u{1b}[48;5;234m" + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT   /   selected: " + (aiWorkspace.provider?.label ?? "not configured") + "   " + state, accent), row("Esc dashboard  Tab tasks  /reset  " + (aiWorkspace.provider?.accessLabel ?? "not configured"), muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
+        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row(aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured", muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
         if let id = reviewID {
             let proposal = aiWorkspace.proposals.first { $0.id == id }
             let valid = proposal.map { $0.expires > Date() } ?? false
@@ -496,7 +497,7 @@ public struct KilnTerminal {
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
         lines.append(row("Enter send   Ctrl-C stop   Ctrl-S select/copy   PgUp/PgDn", muted))
-        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Tab tasks & approvals   /task <request>", muted))
+        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /reset | /task", muted))
         return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", hits + [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
     }
 
@@ -523,7 +524,8 @@ public struct KilnTerminal {
         }
         let brand = "P.INDUSTRIES"
         var lines = [row("  " + fit("K I L N", max(0, w - brand.count - 4)) + brand, accent),
-                     row("  LOCAL NODE  /  ONLINE  /  " + (accessLabel ?? "SSH SESSION"), green), row()]
+                     row("  LOCAL NODE  /  ONLINE  /  " + (accessLabel ?? "SSH SESSION"), green),
+                     row(aiWorkspace.provider.map { "  Selected AI: " + $0.displayName + " | " + $0.billingLabel + " | " + $0.model } ?? "  Selected AI: not configured", accent)]
         let labels = width < 65 ? ["1", "2", "3", "4", "5", "6", "7 AI"] : width < 100 ? ["1 Home", "2 Apps", "3 CPU", "4 ?", "5 TTY", "6 SSH", "7 AI"] : ["1 Overview", "2 Services", "3 Metrics", "4 Help", "5 Sessions", "6 Servers", "7 AI Chat"]
         var tabs = "  "
         for (index,label) in labels.enumerated() {
