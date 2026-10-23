@@ -81,6 +81,10 @@ struct OpenAIResponsesDecoder {
             }
             var message = AIMessage(role: "assistant", content: answer, tool_calls: calls.isEmpty ? nil : calls)
             message.providerItems = replay
+            if let usage = response["usage"] as? [String: Any] {
+                let normalized = AIProviderUsage.responses(usage)
+                message.usage = normalized.isEmpty ? nil : normalized
+            }
             guard try JSONEncoder().encode(message).count <= 65536 else { throw AIError.message("Responses message exceeded the conversation limit") }
             result = message; done = true
         default: break // Lifecycle and argument fragments are not executable calls.

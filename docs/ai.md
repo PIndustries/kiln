@@ -32,6 +32,7 @@ Other command interfaces support:
 ```text
 ai ask "Report the current system state"
 ai status
+ai usage
 ai reset
 ai approve <id>
 ai deny <id>
@@ -224,6 +225,21 @@ failure and invalid response. Retried attempts count separately. Cancellation wh
 waiting to retry has its own counter and does not invent another HTTP attempt.
 Elapsed totals and maxima measure attempts, excluding retry waits; no percentile or
 billing estimate is inferred. Counters saturate rather than wrap.
+
+Token usage adds a separate fixed provider-name dimension. Completed native-router
+responses retain only provider-reported input/output/total, cached-input,
+cache-write-input and reasoning counts when supplied. Missing values remain
+unavailable; zero is a reported zero. Anthropic streaming counts are cumulative,
+so later events replace earlier counts. Ollama supplies input/output counts;
+Kiln does not invent a total. Cache and reasoning counts can overlap other counts
+and are not added to a total. Invalid numeric values are ignored.
+
+Each provider summary reports how many completed responses supplied usage. Sums
+include only reported fields and can cover part of the traffic; interrupted
+responses and CLI workers are excluded. They are not a bill or a durable usage
+ledger. Costs, remaining allowance and reset times remain unavailable. `ai usage`
+links to ChatGPT Settings → Usage for account/app limits and explains the separate
+API-provider billing path. Limit failures never trigger an automatic paid fallback.
 
 There are no prompt, credential, model, account, endpoint or provider-error labels.
 Injected test completions and standalone nonstreaming clients are outside these

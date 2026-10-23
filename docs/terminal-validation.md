@@ -9,6 +9,7 @@ swift test
 python3 -m venv /tmp/kiln-terminal-tests
 /tmp/kiln-terminal-tests/bin/pip install -r scripts/terminal-test-requirements.txt
 /tmp/kiln-terminal-tests/bin/python scripts/terminal-integration.py
+/tmp/kiln-terminal-tests/bin/python scripts/offline-ai-terminal-integration.py
 ```
 
 `KILN_BIN_DIR` selects an already-built binary directory for Python scripts; the
@@ -21,6 +22,7 @@ identities. Do not point them at a running node's state directory.
 | Terminal interaction model | Offline tests plus `TerminalAIWorkspaceTests`: refreshed task state, mouse/keyboard exact approval review, approve/deny effects, expired/removed/busy rejection, narrow layout, revoked-role snapshot cleanup, selection controls, scrollback and resize | Backend authorization execution or OS clipboard integration |
 | Bounded retries | `ProviderFailureTests`: typed 429 handling, exhausted/cancelled waits, no retry of quota/unknown errors or partial streams | Live provider capacity or billing availability |
 | Real OpenSSH PTY | `scripts/terminal-integration.py`: mouse input, anchored service menus, confirmation, metrics refresh, drawer, resize and reconnect using OpenSSH + pyte | Native terminal emulator selection/clipboard or additional SSH clients |
+| Offline provider → real OpenSSH PTY | `scripts/offline-ai-terminal-integration.py`: normal local Ollama HTTP route, delayed answer frames, frozen screen during incoming output, cancellation/follow-up, real tool calls, mouse deny/keyboard approve with actual worker PID checks, foreground disconnect/reconnect and cleared session proposals | Erebine retry scheduling, native OS clipboard, remote provider quality or real account acceptance |
 | Live optional AI | `scripts/ai-terminal-integration.py` and `scripts/ai-workspace-integration.py`: configured-provider chat/tasks/approvals through real SSH | Offline deterministic behavior; these require credentials and may consume credits |
 
 ## Recorded local check
@@ -35,11 +37,16 @@ of busy approval clicks, and exact-operation review after completion.
 The fixture uses only a reserved `.invalid` URL intercepted by URLProtocol: no
 production HTTP exception, fake credential, or runtime test-provider switch exists.
 
-Keep issue #9 open until the broader client matrix is recorded. Remaining checks
-include real SSH cancellation/approval interactions against a deterministic provider
-fixture, SSH reconnection during an active stream, native emulator clipboard
-selection, and additional clients beyond OpenSSH/pyte. The pure selection test
-checks input suppression; actual frozen screen painting is a transport concern.
+The offline OpenSSH fixture passed on macOS arm64 on 2026-10-23. It uses a
+temporary loopback HTTP server through the ordinary Ollama transport, without
+production test-provider switches or credentials. A foreground disconnect starts
+a new conversation on reconnect: no old history or session proposal is restored.
+Its successful tool exchange and metrics check run after reconnect.
+
+Keep issue #9 open for native emulator clipboard selection, additional clients
+beyond OpenSSH/pyte, and actual Erebine retry/sidebar behavior through SSH.
+The new fixture proves frozen painting during incoming stream content, while
+clipboard integration remains a separate OS-level check.
 
 ## Live provider check (2026-10-11)
 

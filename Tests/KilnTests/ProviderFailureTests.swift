@@ -126,3 +126,19 @@ private final class PartialStreamProtocol: URLProtocol, @unchecked Sendable {
         }
     }
 }
+
+@Test func chatGPTPlanLimitsHaveUsageRecoveryWithoutRetryOrBillingFallback() async throws {
+    let failure = rejection("subscription_sharing_usage_limit_exceeded")
+    #expect(failure.outcome == .quota)
+    #expect(failure.retrySeconds == nil)
+    #expect(failure.explanation().contains("https://chatgpt.com/settings/usage"))
+    #expect(failure.explanation().contains("No automatic retry or API billing fallback"))
+    #expect(!failure.explanation().contains("SECRET"))
+    let attempts = Attempts()
+    do {
+        let _: String = try await ProviderRetry.run(emit: { _ in }, sleep: {}) {
+            _ = await attempts.next(); throw failure
+        }
+    } catch { #expect(error is ProviderFailure) }
+    #expect(await attempts.value() == 1)
+}

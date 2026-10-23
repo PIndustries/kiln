@@ -2,6 +2,11 @@ import Foundation
 
 /// Fixed-cardinality transport counters. No request, account, endpoint or model labels.
 public actor AIProviderMetrics {
+    public struct UsageSnapshot: Codable, Sendable {
+        public var completedResponses: UInt64 = 0
+        public var responsesWithUsage: UInt64 = 0
+        public var reported = AIProviderUsage()
+    }
     public enum Outcome: String, Codable, CaseIterable, Sendable {
         case completed, capacity, rateLimited, quota, authentication, rejected, timeout, cancelled, transport, invalidResponse
     }
@@ -13,9 +18,14 @@ public actor AIProviderMetrics {
         public let maximumMilliseconds: UInt64
         public let retries: UInt64
         public let cancelledBackoffs: UInt64
+        public let usageByProvider: [String: UsageSnapshot]
         public var summary: String {
             let counts = Outcome.allCases.map { "\($0.rawValue)=\(outcomes[$0.rawValue] ?? 0)" }.joined(separator: " ")
-            return "AI provider transport (since process start)\nAttempts: \(started); active: \(active); retries: \(retries); cancelled waits: \(cancelledBackoffs)\n\(counts)\nElapsed total: \(totalMilliseconds) ms; maximum: \(maximumMilliseconds) ms\nTransport completion is not a tool-operation outcome; use ai operations for approved operations."
+            let usage = AIProvider.allCases.compactMap { provider -> String? in
+                guard let value = usageByProvider[provider.rawValue] else { return nil }
+                return "\(provider.rawValue): usage supplied for \(value.responsesWithUsage)/\(value.completedResponses) completed responses; \(value.reported.summary)"
+            }.joined(separator: "\n")
+            return "AI provider transport (since process start)\nAttempts: \(started); active: \(active); retries: \(retries); cancelled waits: \(cancelledBackoffs)\n\(counts)\nElapsed total: \(totalMilliseconds) ms; maximum: \(maximumMilliseconds) ms\nTransport completion is not a tool-operation outcome; use ai operations for approved operations.\nProvider-reported token sums for completed native-router responses only:\n\(usage.isEmpty ? "No completed responses recorded." : usage)\nMissing fields, interrupted responses and CLI workers are excluded; sums may cover only part of the traffic. Cost and remaining account limits: unavailable. No estimates."
         }
     }
     private var started: UInt64 = 0
@@ -25,6 +35,7 @@ public actor AIProviderMetrics {
     private var maximum: UInt64 = 0
     private var retries: UInt64 = 0
     private var cancelledBackoffs: UInt64 = 0
+    private var usageByProvider: [String: UsageSnapshot] = [:]
     public init() {}
     private func adding(_ a: UInt64, _ b: UInt64 = 1) -> UInt64 {
         let (value, overflow) = a.addingReportingOverflow(b)
@@ -32,7 +43,16 @@ public actor AIProviderMetrics {
     }
     func recordBackoffCancellation() { cancelledBackoffs = adding(cancelledBackoffs) }
     public func snapshot() -> Snapshot {
-        Snapshot(started: started, active: active, outcomes: Dictionary(uniqueKeysWithValues: Outcome.allCases.map { ($0.rawValue, counts[$0] ?? 0) }), totalMilliseconds: total, maximumMilliseconds: maximum, retries: retries, cancelledBackoffs: cancelledBackoffs)
+        Snapshot(started: started, active: active, outcomes: Dictionary(uniqueKeysWithValues: Outcome.allCases.map { ($0.rawValue, counts[$0] ?? 0) }), totalMilliseconds: total, maximumMilliseconds: maximum, retries: retries, cancelledBackoffs: cancelledBackoffs, usageByProvider: usageByProvider)
+    }
+    func recordUsage(provider: AIProvider, usage: AIProviderUsage?) {
+        var value = usageByProvider[provider.rawValue] ?? UsageSnapshot()
+        value.completedResponses = adding(value.completedResponses)
+        if let usage, !usage.isEmpty {
+            value.responsesWithUsage = adding(value.responsesWithUsage)
+            value.reported.accumulate(usage)
+        }
+        usageByProvider[provider.rawValue] = value
     }
     func measure<T: Sendable>(isRetry: Bool = false, _ operation: @Sendable () async throws -> T) async throws -> T {
         if isRetry { retries = adding(retries) }

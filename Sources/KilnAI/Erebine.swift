@@ -10,6 +10,13 @@ public enum AIError: Error, CustomStringConvertible, Sendable {
 public enum AIProvider: String, Codable, Sendable, CaseIterable {
     case erebine, ollama, openai, anthropic, grok, deepseek, chatgpt
     public var requiresCredential: Bool { self != .ollama && self != .chatgpt }
+    public var accessDescription: String {
+        switch self {
+        case .ollama: "Loopback Ollama daemon; no Kiln API credential. The daemon determines local/cloud inference and billing."
+        case .chatgpt: "Owner-bound ChatGPT account; granted models and account limits apply. No API-key fallback."
+        default: "Remote API credential; usage is billed by the configured provider separately from consumer subscriptions."
+        }
+    }
     public var defaultBaseURL: String? {
         switch self {
         case .erebine: return nil
@@ -86,6 +93,8 @@ public struct AIMessage: Codable, Sendable {
     public var reasoning_content: String?
     /// Opaque provider-native history, consumed only by its matching adapter.
     public var providerItems: [String]?
+    /// Local telemetry only; wire adapters exclude this field from conversation history.
+    public var usage: AIProviderUsage?
     public init(role: String, content: String?, tool_calls: [AIToolCall]? = nil, tool_call_id: String? = nil) {
         self.role = role; self.content = content; self.tool_calls = tool_calls; self.tool_call_id = tool_call_id
     }

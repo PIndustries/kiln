@@ -114,6 +114,7 @@ struct AnthropicStreamDecoder {
     private var total = 0
     private var started = false
     private var stopReason: String?
+    private var usage = AIProviderUsage()
     private var answer = ""
     private struct Block { let type: String; var id = ""; var name = ""; var arguments = ""; var closed = false }
     private var blocks: [Int: Block] = [:]
@@ -144,6 +145,7 @@ struct AnthropicStreamDecoder {
         if type == "message_start" {
             guard !started, let message = object["message"] as? [String: Any], message["role"] as? String == "assistant",
                   let content = message["content"] as? [Any], content.isEmpty else { throw invalid() }
+            if let reported = message["usage"] as? [String: Any] { usage.update(.anthropic(reported)) }
             started = true; return
         }
         guard started else { throw invalid() }
@@ -182,6 +184,7 @@ struct AnthropicStreamDecoder {
             }
             block.closed = true; blocks[index] = block
         case "message_delta":
+            if let reported = object["usage"] as? [String: Any] { usage.update(.anthropic(reported)) }
             guard blocks.values.allSatisfy({ $0.closed }), let delta = object["delta"] as? [String: Any] else { throw invalid() }
             if let reason = delta["stop_reason"] as? String {
                 guard stopReason == nil, ["end_turn", "stop_sequence", "tool_use"].contains(reason) else { throw invalid() }
@@ -203,6 +206,8 @@ struct AnthropicStreamDecoder {
             guard block.type == "tool_use" else { return nil }
             return AIToolCall(id: block.id, type: "function", function: .init(name: block.name, arguments: block.arguments))
         }
-        return AIMessage(role: "assistant", content: answer, tool_calls: calls.isEmpty ? nil : calls)
+        var message = AIMessage(role: "assistant", content: answer, tool_calls: calls.isEmpty ? nil : calls)
+        message.usage = usage.isEmpty ? nil : usage
+        return message
     }
 }

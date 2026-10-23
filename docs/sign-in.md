@@ -13,6 +13,7 @@ ai accounts
 ai models ACCOUNT_ID
 ai use chatgpt ACCOUNT_ID MODEL_SLUG --new-context
 ai ask "Report the current system state"
+ai usage
 ```
 
 Use the attempt and account IDs returned by Kiln, and a model slug from `ai models`. To choose a callback port, use `ai login chatgpt 14555`. For an existing registration, use `ai login chatgpt-account ACCOUNT_ID` or `ai login chatgpt-account ACCOUNT_ID 14555`. Cancel with `ai login cancel ATTEMPT_ID`; sign out with `ai logout ACCOUNT_ID`.
@@ -22,6 +23,18 @@ The command displays **Continue with ChatGPT** and an authorization URL. Kiln st
 The browser returns to `/auth/callback`. Check the sign-in attempt status in Kiln. A received callback is not proof of successful sign-in: Kiln must exchange the code, verify the signed ID token and save the credentials. Choose a model from the account's live model catalog before selecting its profile.
 
 Kiln requests a dynamically registered public client. No client secret, partner API key or imported credential from another application is used. The host ID stays stable across restarts. Each account retains its issued client ID, so subsequent authorization reuses its registration. The browser account selector is used on reauthorization; tokens are never embedded in a URL printed to the terminal.
+
+Erebine remains the normal API-backed interface. Connecting a ChatGPT account does
+not select it or forward an existing Erebine conversation. Select it explicitly
+with `ai use chatgpt ACCOUNT_ID MODEL_SLUG --new-context`. Return to a saved
+Erebine profile with `ai profile use NAME --new-context`. Both routes use the same
+Kiln tools and approval rules, without automatic billing or provider fallback.
+
+`ai status` shows the active authentication/billing mode and destination. The chat
+header identifies the provider/profile and model. `ai usage` returns
+https://chatgpt.com/settings/usage for managing ChatGPT's app/account allowance.
+A plan-limit error links there without inventing a reset time or retrying the
+same limit failure automatically.
 
 ## Identity and credential boundaries
 

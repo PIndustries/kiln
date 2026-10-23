@@ -18,6 +18,11 @@ python3 scripts/cluster-integration.py
 python3 scripts/deployment-integration.py
 ```
 
+For deterministic AI streaming and approvals through real SSH, install the pinned
+terminal requirements in a disposable virtual environment and run
+`python scripts/offline-ai-terminal-integration.py` from that environment. It
+starts a loopback Ollama-protocol fixture; no model or provider account is used.
+
 These scripts use isolated state, disposable workers and local SSH clients. The transport test raises its own soft descriptor limit to 4,096 to exercise 1,024 real WebSockets. The multicast variant (`KILN_TEST_MULTICAST=1`) advertises on the LAN and must run only in an isolated test network. `scripts/resource-integration.py` requires a disposable Linux systemd/cgroup v2 host with privileged test setup; do not run it casually on a production node.
 
 For an optimized build, run `swift test -c release --jobs 2` and set `KILN_BIN_DIR="$PWD/.build/release"` when invoking integration scripts. Never overwrite the executable of a running node. Package a new version separately, verify it, then perform an intentional upgrade.
