@@ -52,3 +52,29 @@ Observed on 2026-10-13:
 Erebine evidence: `KILN_PROVIDER_ACCEPTANCE provider=erebine tool_round=pass answer_frames=4 cancellation=pass`. Local Ollama evidence: `KILN_PROVIDER_ACCEPTANCE provider=ollama tool_round=pass answer_frames=8 cancellation=pass`; no model download or daemon change was needed. The disposable state and master key were removed afterward. Subscription sign-in requires its own account flow and is deliberately excluded from this API-key acceptance runner.
 
 Do not mark an unrun provider check as passed. Record a redacted acceptance line for each configured account/model tested; keep fixture-only and live-verified status distinct in release notes.
+
+## Fresh acceptance on 2026-10-23
+
+The preview-acceptance branch passed the native read-only tool/result round,
+streamed answer and cancellation checks against both Erebine and ChatGPT:
+
+```text
+KILN_PROVIDER_ACCEPTANCE provider=erebine tool_round=pass answer_frames=2 cancellation=pass
+KILN_PROVIDER_ACCEPTANCE provider=chatgpt tool_round=pass answer_frames=6 cancellation=pass
+```
+
+Erebine configuration came from the operator-designated Fleet OpenCode sandbox
+account. Its credential was piped directly into a disposable encrypted Kiln Vault,
+without printing the value or placing it on argv. This run's two reported answer
+frames do not imply token-by-token output for tool-enabled Erebine planning.
+
+ChatGPT used user-completed official consent and its live model catalog. Account
+restore after a runtime restart and explicit grant renewal succeeded; the complete
+native acceptance check passed again after renewal. Required synthetic tool
+selection makes the transport assertion deterministic. No API-key fallback was
+used. Live sign-out/revocation remains untested so the requested connection can
+remain available. Grok accounts and the other API-key routes retain their previous
+unverified live-acceptance boundaries.
+
+See [current preview acceptance](preview-acceptance.md) for local core suites,
+compiler differences and outstanding platform/client release gates.

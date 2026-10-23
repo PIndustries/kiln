@@ -86,3 +86,48 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1000l"))
     #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1006l"))
 }
+
+@Test func commandShortcutLeavesChatAndKeepsCommandHistorySeparate() {
+    for shortcut in ["`", "~"] {
+        var ui = KilnTerminal()
+        _ = ui.handle(.text(shortcut))
+        _ = ui.handle(.text("status"))
+        #expect(ui.handle(.enter) == [.command("status")])
+        ui.finish(text: "runtime running", status: 0)
+        _ = ui.handle(.escape)
+        _ = ui.handle(.text("7"))
+        #expect(ui.chatVisible)
+        _ = ui.handle(.text("Inspect my services"))
+        #expect(ui.handle(.enter) == [.command("ai ask \"Inspect my services\"")])
+        ui.finish(text: "Chat result", status: 0)
+        _ = ui.handle(.text("unsent chat draft"))
+        _ = ui.handle(.text(shortcut))
+        #expect(ui.drawer && !ui.chatVisible && ui.input.isEmpty)
+        #expect(ui.render().contains("COMMAND DRAWER"))
+        _ = ui.handle(.up)
+        #expect(ui.input == "status")
+        #expect(ui.handle(.enter) == [.command("status")])
+        ui.finish(text: "runtime running", status: 0)
+        _ = ui.handle(.text(shortcut))
+        #expect(!ui.drawer)
+        _ = ui.handle(.text("7"))
+        _ = ui.handle(.up)
+        #expect(ui.input == "Inspect my services")
+        #expect(ui.render().contains("Chat result"))
+        _ = ui.handle(.interrupt)
+        _ = ui.handle(.escape)
+        _ = ui.handle(.text(shortcut))
+        #expect(ui.drawer && !ui.chatVisible)
+    }
+}
+
+@Test func commandShortcutDuringChatPreservesTheInFlightAnswer() {
+    var ui = KilnTerminal()
+    _ = ui.handle(.text("7")); _ = ui.handle(.text("Inspect"))
+    _ = ui.handle(.enter)
+    _ = ui.handle(.text("`"))
+    #expect(ui.drawer && !ui.chatVisible && ui.busy)
+    ui.finish(text: "Completed chat answer", status: 0)
+    _ = ui.handle(.text("`")); _ = ui.handle(.text("7"))
+    #expect(ui.render().contains("Completed chat answer"))
+}

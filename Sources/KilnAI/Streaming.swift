@@ -11,6 +11,7 @@ struct ErebineStreamDecoder {
     private var total = 0
     private var answer = ""
     private var reasoning = ""
+    private var usage: AIProviderUsage?
     private struct Call { var id = ""; var name = ""; var arguments = "" }
     private var calls: [Int: Call] = [:]
     private(set) var done = false
@@ -37,6 +38,7 @@ struct ErebineStreamDecoder {
               let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] == nil else {
             throw AIError.message("Provider reported an invalid or failed stream")
         }
+        if let reported = object["usage"] as? [String: Any] { usage = .chatCompletions(reported) }
         guard let choices = object["choices"] as? [[String: Any]], let first = choices.first else { return }
         if let finish = first["finish_reason"] as? String {
             guard ["stop", "tool_calls"].contains(finish) else { throw AIError.message("Provider response was cut short; no partial tool call executed") }
@@ -72,6 +74,7 @@ struct ErebineStreamDecoder {
         }
         var result = AIMessage(role: "assistant", content: answer, tool_calls: tools.isEmpty ? nil : tools)
         result.reasoning_content = reasoning.isEmpty ? nil : reasoning
+        result.usage = usage.flatMap { $0.isEmpty ? nil : $0 }
         return result
     }
 }
@@ -82,7 +85,10 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
     private var rejected = false
     let continuation: AsyncThrowingStream<Data, Error>.Continuation
     let mimeType: String
-    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation, mimeType: String = "text/event-stream") { self.continuation = continuation; self.mimeType = mimeType }
+    let allowMissingContentType: Bool
+    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation, mimeType: String = "text/event-stream", allowMissingContentType: Bool = false) {
+        self.continuation = continuation; self.mimeType = mimeType; self.allowMissingContentType = allowMissingContentType
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
@@ -97,7 +103,7 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
             } else { completionHandler(.allow) }
             return
         }
-        guard http.mimeType == mimeType else {
+        guard http.mimeType == mimeType || (allowMissingContentType && http.value(forHTTPHeaderField: "Content-Type") == nil) else {
             continuation.finish(throwing: AIError.message("Provider returned an invalid stream content type")); completionHandler(.cancel); return
         }
         completionHandler(.allow)

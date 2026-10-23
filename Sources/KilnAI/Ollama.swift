@@ -10,22 +10,25 @@ struct AIProviderClient {
     let metrics: AIProviderMetrics
     func stream(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool],
                 emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
+        let result: AIMessage
         switch configuration.provider {
         case .erebine:
-            return try await ErebineClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+            result = try await ErebineClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .openai, .grok, .chatgpt:
-            return try await OpenAIResponsesClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+            result = try await OpenAIResponsesClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .anthropic:
-            return try await AnthropicClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+            result = try await AnthropicClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .deepseek:
-            return try await ChatCompletionsClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
+            result = try await ChatCompletionsClient(metrics: metrics).stream(configuration: configuration, key: key, messages: messages, tools: tools, emit: emit)
         case .ollama:
             try configuration.validate()
             try OllamaClient.validateProxyEnvironment(ProcessInfo.processInfo.environment)
-            return try await metrics.measure {
+            result = try await metrics.measure {
                 try await OllamaClient().stream(configuration: configuration, messages: messages, tools: tools, emit: emit)
             }
         }
+        await metrics.recordUsage(provider: configuration.provider, usage: result.usage)
+        return result
     }
 }
 
@@ -34,6 +37,7 @@ struct OllamaStreamDecoder {
     private var total = 0
     private var answer = "", thinking = ""
     private var calls: [AIToolCall] = []
+    private var usage: AIProviderUsage?
     private(set) var done = false
     mutating func feed(_ bytes: Data, emit: @Sendable (AIProgress) -> Void) throws {
         total += bytes.count
@@ -66,6 +70,8 @@ struct OllamaStreamDecoder {
         guard answer.utf8.count + thinking.utf8.count <= 65536 else { throw AIError.message("Ollama message exceeded its limit") }
         if finished {
             guard object["done_reason"] as? String == "stop" else { throw AIError.message("Ollama response incomplete; no partial tool executed") }
+            let reported = AIProviderUsage(inputTokens: AIProviderUsage.count(object["prompt_eval_count"]), outputTokens: AIProviderUsage.count(object["eval_count"]))
+            usage = reported.isEmpty ? nil : reported
             done = true
         }
     }
@@ -74,6 +80,7 @@ struct OllamaStreamDecoder {
         guard done else { throw AIError.message("Ollama stream interrupted; no partial tool executed") }
         var message = AIMessage(role: "assistant", content: answer, tool_calls: calls.isEmpty ? nil : calls)
         message.reasoning_content = thinking.isEmpty ? nil : thinking
+        message.usage = usage
         return message
     }
 }

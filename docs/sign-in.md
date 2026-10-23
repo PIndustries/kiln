@@ -13,6 +13,7 @@ ai accounts
 ai models ACCOUNT_ID
 ai use chatgpt ACCOUNT_ID MODEL_SLUG --new-context
 ai ask "Report the current system state"
+ai usage
 ```
 
 Use the attempt and account IDs returned by Kiln, and a model slug from `ai models`. To choose a callback port, use `ai login chatgpt 14555`. For an existing registration, use `ai login chatgpt-account ACCOUNT_ID` or `ai login chatgpt-account ACCOUNT_ID 14555`. Cancel with `ai login cancel ATTEMPT_ID`; sign out with `ai logout ACCOUNT_ID`.
@@ -22,6 +23,18 @@ The command displays **Continue with ChatGPT** and an authorization URL. Kiln st
 The browser returns to `/auth/callback`. Check the sign-in attempt status in Kiln. A received callback is not proof of successful sign-in: Kiln must exchange the code, verify the signed ID token and save the credentials. Choose a model from the account's live model catalog before selecting its profile.
 
 Kiln requests a dynamically registered public client. No client secret, partner API key or imported credential from another application is used. The host ID stays stable across restarts. Each account retains its issued client ID, so subsequent authorization reuses its registration. The browser account selector is used on reauthorization; tokens are never embedded in a URL printed to the terminal.
+
+Erebine remains the normal API-backed interface. Connecting a ChatGPT account does
+not select it or forward an existing Erebine conversation. Select it explicitly
+with `ai use chatgpt ACCOUNT_ID MODEL_SLUG --new-context`. Return to a saved
+Erebine profile with `ai profile use NAME --new-context`. Both routes use the same
+Kiln tools and approval rules, without automatic billing or provider fallback.
+
+`ai status` shows the active authentication/billing mode and destination. The chat
+header identifies the provider/profile and model. `ai usage` returns
+https://chatgpt.com/settings/usage for managing ChatGPT's app/account allowance.
+A plan-limit error links there without inventing a reset time or retrying the
+same limit failure automatically.
 
 ## Identity and credential boundaries
 
@@ -35,7 +48,17 @@ Subscription profiles use `https://api.openai.com/v1/responses`, `store: false`,
 
 ## Validation boundary
 
-Offline protocol tests can verify callback binding, PKCE, token signatures, replay rejection and request formatting. Authenticated ChatGPT sign-in and inference remain pending user consent in this release validation. Actual eligibility, consent, model availability and inference require the user's browser authorization and a completed live response. Kiln does not infer subscription access from a successful identity token alone.
+Offline protocol tests verify callback binding, PKCE, token signatures, replay rejection, rotation and request formatting. On 2026-10-23, user-completed consent, live model discovery, encrypted account restore after runtime restart, token renewal, a synthetic tool/result round, streamed answer and cancellation passed with an eligible ChatGPT account. The native acceptance harness recorded six answer frames, including a repeated successful run after explicit token renewal. This verifies the tested account/model, not universal plan eligibility. Live sign-out/revocation was not exercised; the requested connection was retained.
+
+The tested direct route omitted Content-Type and delivered complete output items in `response.output_item.done` events followed by an empty terminal `output` array. Kiln accepts the missing header only on this route, retains complete indexed items, and validates them only after successful `response.completed`. Explicit wrong MIME types, partial calls, duplicate/gapped items, failed/incomplete streams and interrupted responses are rejected. Other API routes retain strict header and terminal-snapshot behavior.
+
+For an already-authorized local-console account, repeat the bounded transport check with:
+
+```sh
+python3 scripts/provider-live-acceptance.py --state /absolute/path/to/state --chatgpt-local-console
+```
+
+Add `--refresh-chatgpt` to renew and persist the grant before testing, or `--build-system native` when the installed SwiftPM requires that build path. SSH-owned accounts retain their original identity/key binding and cannot be borrowed by this local-console harness. The check requests a synthetic read-only function using required tool selection; it is protocol acceptance, not an agent-quality benchmark.
 
 Official references:
 

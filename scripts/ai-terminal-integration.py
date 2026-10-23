@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
    pump(.05); frame='\n'.join(screen.display)
    activity_frames.add(screen.display[-5].strip())
    if 'Receiving response' in frame:live_frames.add('\n'.join(screen.display[4:-5]))
-   elif 'Waiting for Erebine' in frame:waiting_frames.add(screen.display[-5])
+   elif any(phase in screen.display[-5] for phase in ['Waiting for provider','erebine /','Preparing response']):waiting_frames.add(screen.display[-5])
    assert time.monotonic()<deadline,frame
   print(f'PASS: {len(activity_frames)} distinct activity frames', flush=True)
   assert len(live_frames)>=3, f'Only {len(live_frames)} distinct partial answer frames\n'+frame

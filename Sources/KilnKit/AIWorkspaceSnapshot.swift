@@ -20,10 +20,20 @@ public struct AITaskSnapshot: Sendable, Equatable {
 public struct AIProviderSnapshot: Sendable, Equatable {
     public let provider: String
     public let profile: String
+    public let model: String
+    public var accessLabel: String {
+        switch provider {
+        case "ollama": "loopback / daemon billing"
+        case "chatgpt": "remote / ChatGPT account limits"
+        case "unknown": "destination and billing unknown"
+        default: "remote / API billing"
+        }
+    }
     public var label: String { provider + " / " + profile }
-    public init(provider: String, profile: String) {
-        self.provider = ["erebine", "ollama"].contains(provider) ? provider : "unknown"
+    public init(provider: String, profile: String, model: String = "") {
+        self.provider = ["erebine", "ollama", "openai", "anthropic", "grok", "deepseek", "chatgpt"].contains(provider) ? provider : "unknown"
         self.profile = !profile.isEmpty && profile.count <= 32 && profile.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }) ? profile : "invalid"
+        self.model = model.utf8.count < 256 && model.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value <= 126 }) ? model : "invalid"
     }
 }
 public struct AIWorkspaceSnapshot: Sendable, Equatable {

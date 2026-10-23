@@ -22,6 +22,7 @@ struct ProviderFailure: Error, CustomStringConvertible {
         let object = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
         let code = (object?["error"] as? [String: Any])?["code"] as? String
         switch (response.statusCode, code) {
+        case (429, "subscription_sharing_usage_limit_exceeded"): return .quota
         case (429, "capacity_exceeded"): return .capacity
         case (429, "quota_exceeded"), (402, _): return .quota
         case (429, "rate_limit_exceeded"): return .rateLimited
@@ -42,7 +43,8 @@ struct ProviderFailure: Error, CustomStringConvertible {
         let code = envelope?["code"] as? String
         let status = response.statusCode
         let detail: String
-        switch (status, code) {
+        if let failure = ProviderPlanFailure(code: code) { detail = failure.description }
+        else { switch (status, code) {
         case (429, "capacity_exceeded"):
             detail = "Backend capacity is full; wait before trying again."
         case (429, "rate_limit_exceeded"):
@@ -56,6 +58,7 @@ struct ProviderFailure: Error, CustomStringConvertible {
         case (404, _): detail = "Endpoint or model was not found; check the AI configuration."
         case (503, _): detail = "The provider backend is unavailable; check provider status before retrying."
         default: detail = "The provider rejected this request; check endpoint, model and provider status."
+        }
         }
         let header = response.value(forHTTPHeaderField: "Retry-After")
         let delay = Self.retryDelay(header, now: now)

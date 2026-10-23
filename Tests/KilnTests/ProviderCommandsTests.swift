@@ -18,6 +18,8 @@ private let providerCommandKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAA
     let operatorUser = local.forIdentity(name: "operator", publicKey: providerCommandKey)
     let admin = local.forIdentity(name: "admin", publicKey: providerCommandKey)
     for commands in [viewer, operatorUser, admin] {
+        let usage = await commands.execute("ai usage")
+        #expect(usage.status == 0 && usage.text.contains("https://chatgpt.com/settings/usage"))
         let listing = await commands.execute("ai providers")
         #expect(listing.status == 0)
         for provider in ["erebine", "ollama", "openai", "anthropic", "grok", "deepseek"] {
@@ -51,5 +53,25 @@ private let providerCommandKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAA
             #expect(!text.contains("PRIVATE_PROVIDER_PROMPT"))
         }
     }
+    await runtime.shutdown()
+}
+
+@Test func providerStatusAndHeaderDescribeAllNativeAccessModes() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let runtime = try KilnRuntime(stateDirectory: directory)
+    let commands = KilnCommands(runtime: runtime)
+    for provider in ["erebine", "ollama", "openai", "anthropic", "grok", "deepseek", "chatgpt"] {
+        let value = AIProviderSnapshot(provider: provider, profile: "work", model: "fixture-model")
+        #expect(value.provider == provider && value.model == "fixture-model")
+        #expect(!value.accessLabel.contains("unknown"))
+    }
+    let hostile = AIProviderSnapshot(provider: "openai", profile: "work", model: "\u{1b}[2J")
+    #expect(hostile.model == "invalid")
+    #expect(await commands.execute("ai profile add local ollama http://127.0.0.1:11434 fixture").status == 0)
+    #expect(await commands.execute("ai profile use local --new-context").status == 0)
+    let status = await commands.execute("ai status")
+    #expect(status.text.contains("Destination: 127.0.0.1"))
+    #expect(status.text.contains("daemon determines local/cloud inference and billing"))
     await runtime.shutdown()
 }

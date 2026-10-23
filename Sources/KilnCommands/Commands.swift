@@ -76,7 +76,7 @@ public struct KilnCommands: Sendable {
             (!$0.id.hasPrefix("recovery:") || identity.role == "admin") && $0.expires > Date() && identity.role != "viewer" &&
             (identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.module))
         }
-        let provider = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile) }
+        let provider = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile, model: $0.model) }
         return AIWorkspaceSnapshot(proposals: visible, tasks: identity.role == "admin" ? tasks : [],
                                    error: identity.role == "admin" ? taskError : nil, provider: provider)
     }
@@ -457,7 +457,10 @@ private extension KilnCommands {
             throw AIError.message("Use ai login chatgpt [callback-port] | ai login status/cancel ID | ai accounts | ai models ACCOUNT | ai use chatgpt ACCOUNT MODEL --new-context | ai logout ACCOUNT")
         }
         if parts == ["ai", "providers"] {
-            return CommandResult(AIProvider.allCases.map { "\($0.rawValue)  \($0.defaultBaseURL ?? "operator-supplied HTTPS endpoint")" }.joined(separator: "\n") + "\nGrok CLI: ai headless ask <executable> <model> <vault-secret> <prompt> (isolated macOS/Linux worker; Linux requires bubblewrap)")
+            return CommandResult(AIProvider.allCases.map { "\($0.rawValue)  \($0.defaultBaseURL ?? "operator-supplied HTTPS endpoint")\n  \($0.accessDescription)" }.joined(separator: "\n") + "\nAll native routes: streaming, fixed Kiln tools, explicit mutation approvals, cancellation; no automatic provider fallback. Live account acceptance varies; see docs/provider-validation.md.\nGrok CLI: ai headless ask <executable> <model> <vault-secret> <prompt> (isolated macOS/Linux worker; Linux requires bubblewrap)")
+        }
+        if parts == ["ai", "usage"] {
+            return CommandResult("Manage ChatGPT plan usage: https://chatgpt.com/settings/usage\nAccount and app limits are controlled by ChatGPT. Kiln does not infer remaining allowance or reset times.\nUse ai metrics for provider-reported token counts. Erebine and other API profiles use their provider's billing dashboard. No automatic billing fallback.")
         }
         if parts.count >= 2, parts[1] == "headless" {
             try authorizeAdmin()
@@ -550,7 +553,7 @@ private extension KilnCommands {
         }
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai metrics                    Redacted provider transport counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
         case ["ai", "metrics"]:
             try authorizeAdmin()
             let metrics = await assistant.providerMetrics.snapshot()
@@ -595,7 +598,7 @@ private extension KilnCommands {
             knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
         } else { knowledge = nil }
         if parts == ["ai", "status"] {
-            return CommandResult("Provider: \(configuration.provider.rawValue) / profile \(configuration.profile) (native Swift HTTP)\nModel: \(configuration.model)\nCredential: \(configuration.provider == .ollama ? "none (local loopback)" : configuration.provider == .chatgpt ? "owner-bound ChatGPT account" : "Vault grant to " + configuration.credentialScope)\nBuilt-in knowledge: 6\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+            return CommandResult("Provider: \(configuration.provider.rawValue) / profile \(configuration.profile) (native Swift HTTP)\nModel: \(configuration.model)\nAccess: \(configuration.provider.accessDescription)\nDestination: \(URL(string: configuration.baseURL)?.host ?? "unavailable")\nCredential: \(configuration.provider == .ollama ? "none (local loopback)" : configuration.provider == .chatgpt ? "owner-bound ChatGPT account" : "Vault grant to " + configuration.credentialScope)\nBuilt-in knowledge: 6\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
         }
         guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
         let key: String
@@ -651,7 +654,7 @@ private extension KilnCommands {
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)
@@ -670,7 +673,7 @@ private extension KilnCommands {
             if ["install", "deploy"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if p.first == "ai" {
-            if p.count == 1 || ["help", "status", "ask", "reset", "deny", "providers"].contains(p[1]) { return }
+            if p.count == 1 || ["help", "status", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
             if ["task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
         }
