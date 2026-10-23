@@ -72,6 +72,11 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
                 if x>=0:
                     send(f'\x1b[<0;{x+2};{y+1}M\x1b[<0;{x+2};{y+1}m'.encode()); return
             raise AssertionError(('Missing click target',text))
+        assert b'\x1b[48;5;0m' in raw and b'\x1b[38;5;46m' in raw
+        send(b'`theme cyan\r'); expect('Session theme updated')
+        assert b'\x1b[38;5;51m' in raw
+        send(b'theme default\r'); expect('Session theme updated')
+        send(b'`')
         assert b'\x1b[?1000h' in raw and b'\x1b[?1006h' in raw
         click_text('3 Metrics'); expect('CPU:')
         before=next(line for line in screen.display if 'Sample:' in line)
@@ -80,7 +85,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         assert before != after, 'Metrics sample did not stream'
         expect('RSS MiB')
         if a.preview: preview(screen,a.preview/'kiln-metrics.png')
-        click_text('1 Overview'); expect('storefront/rest')
+        click_text('1 Overview'); expect('SELECTED SERVICE')
         service_row=next(y for y,line in enumerate(screen.display) if 'storefront/rest' in line)
         click_text('storefront/rest'); expect('Manage storefront/rest')
         menu_row=next(y for y,line in enumerate(screen.display) if 'Manage storefront/rest' in line)

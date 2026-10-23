@@ -13,6 +13,7 @@ public struct KilnTerminal {
     public private(set) var selected = 0
     public private(set) var busy = false
     private var management = ManagementUI()
+    private var theme = TerminalTheme()
     private var accessLabel: String?
     private var aiWorkspace = AIWorkspaceSnapshot()
     private var sidebarFocus = false
@@ -358,6 +359,23 @@ public struct KilnTerminal {
             guard !command.isEmpty else { return [] }
             if history.last != command { history.append(command); history = Array(history.suffix(100)) }
             input = ""; cursor = 0; historyPosition = nil
+            if (!aiMode && (command == "theme" || command.hasPrefix("theme "))) ||
+                (aiMode && (command == "/theme" || command.hasPrefix("/theme "))) {
+                let arguments = Array(command.split(whereSeparator: { $0.isWhitespace }).dropFirst())
+                let message: String
+                if arguments.isEmpty {
+                    message = "Session theme: accent \(theme.accent), background \(theme.background), text \(theme.foreground), muted \(theme.muted). theme green|cyan|amber|mono|default or theme custom <accent> <background> <text> <muted> (distinct ANSI 0...255)."
+                } else if let chosen = TerminalTheme.parse(arguments) {
+                    theme = chosen
+                    message = "Session theme updated. Reconnect restores black and green."
+                } else {
+                    message = "Invalid theme. Use green, cyan, amber, mono, default, or custom with four distinct ANSI colors (0...255)."
+                }
+                transcript.append(message); transcript = Array(transcript.suffix(300)); scroll = 0
+                if aiMode { messages.append(("Kiln", message)); messages = Array(messages.suffix(40)) }
+                notice = message
+                return []
+            }
             if !aiMode && command == "ai" {
                 openAIChat(); return []
             }
@@ -452,15 +470,15 @@ public struct KilnTerminal {
         if panelWidth > 0 || panelOnly { hits.append(Hit(row: 4, column: 2, width: panelOnly ? width - 4 : panelWidth - 1, click: .newTask)) }
         if panelOnly {
             let rows = panel.map { "  " + String(Self.safe($0).prefix(width - 5)).padding(toLength: width - 3, withPad: " ", startingAt: 0) }
-            return ("\u{1b}[?25l\u{1b}[H\u{1b}[0m" + rows.joined(separator: "\r\n"), hits)
+            return ("\u{1b}[?25l\u{1b}[H\u{1b}[0m" + theme.backgroundCode + theme.accentCode + rows.joined(separator: "\r\n"), hits)
         }
         var rowIndex = 0
-        let accent = "\u{1b}[38;5;215m", muted = "\u{1b}[38;5;245m", normal = "\u{1b}[38;5;252m"
+        let accent = theme.accentCode, muted = theme.mutedCode, normal = theme.foregroundCode
         func row(_ value: String = "", _ color: String = "") -> String {
             let sidebar = panelWidth > 0 ? " " + String(Self.safe(panel[min(rowIndex, height - 1)]).prefix(panelWidth - 2)).padding(toLength: panelWidth - 1, withPad: " ", startingAt: 0) + " | " : "  "
             rowIndex += 1
             let text = String((sidebar + Self.safe(value)).prefix(width - 1))
-            return "\u{1b}[0m\u{1b}[48;5;234m" + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
+            return "\u{1b}[0m" + theme.backgroundCode + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
         var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row(aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured", muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
@@ -506,8 +524,8 @@ public struct KilnTerminal {
         if chatVisible && width >= 50 && height >= 16 { return chatLayout() }
         var hits: [Hit] = []
         let w = width - 1
-        let bg = "\u{1b}[48;5;234m", fg = "\u{1b}[38;5;252m"
-        let muted = "\u{1b}[38;5;245m", accent = "\u{1b}[38;5;215m"
+        let bg = theme.backgroundCode, fg = theme.foregroundCode
+        let muted = theme.mutedCode, accent = theme.accentCode
         let green = "\u{1b}[38;5;114m", red = "\u{1b}[38;5;203m"
         func fit(_ text: String, _ n: Int) -> String {
             let clean = Self.safe(text)
@@ -565,7 +583,7 @@ public struct KilnTerminal {
             }
             if sessions.isEmpty { lines.append(row("  No sessions yet. Press n or click New terminal.", muted)) }
         } else if page == 3 {
-            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5 / 6  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
+            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5 / 6  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  theme                 Session colors (default black/green)", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
                 if lines.count < bodyEnd { lines.append(row(text, muted)) }
             }
         } else if page == 2 {
@@ -696,6 +714,6 @@ public struct KilnTerminal {
                 }
             }
         }
-        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + overlay + management.render(width:width,height:height), hits)
+        return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + overlay + management.render(width:width,height:height,theme:theme), hits)
     }
 }

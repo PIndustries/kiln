@@ -165,7 +165,7 @@ struct ManagementUI {
         let left = ["server","session"].contains(kind) ? min(title.count+4,width-w-1) : (width-w)/2
         return (max(1,left), max(1,min(anchor,height-h)),w,h)
     }
-    func render(width:Int,height:Int) -> String {
+    func render(width:Int,height:Int,theme:TerminalTheme = TerminalTheme()) -> String {
         guard active, width >= 50, height >= 16 else { return "" }
         let g = geometry(width:width,height:height), room = g.width-4
         func fit(_ text:String) -> String { String(KilnTerminal.safe(text).prefix(room)).padding(toLength:room,withPad:" ",startingAt:0) }
@@ -206,7 +206,7 @@ struct ManagementUI {
             else if index == g.height-2 { text = "| " + fit(waiting ? "Working..." : error.isEmpty ? (kind == "confirm" ? "Enter choose | Esc cancel" : help) : error) + " |"; highlighted = false }
             else if index-1 < rows.count { text = "| " + fit(rows[index-1].0) + " |"; highlighted = rows[index-1].1 }
             else { text = "| " + fit("") + " |"; highlighted = false }
-            output += "\u{1b}[\(g.top+index);\(g.left)H\u{1b}[0;48;5;\(highlighted ? 240 : 236);38;5;\(highlighted ? 215 : 252)m" + text + "\u{1b}[0m"
+            output += "\u{1b}[\(g.top+index);\(g.left)H\u{1b}[0;48;5;\(highlighted ? 238 : theme.background);38;5;\(highlighted ? theme.accent : theme.foreground)m" + text + "\u{1b}[0m"
         }
         if kind == "form", fields.indices.contains(selected), !waiting {
             let offset = max(0,cursor-max(1,room-labels[selected].count-2)+1)
