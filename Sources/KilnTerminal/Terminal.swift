@@ -76,6 +76,8 @@ public struct KilnTerminal {
     private var page = 0
     private var cursor = 0
     private var history: [String] = []
+    private var commandHistory: [String] = []
+    private var chatHistory: [String] = []
     private var historyPosition: Int?
     private var draft = ""
     public private(set) var selectingText = false
@@ -99,6 +101,7 @@ public struct KilnTerminal {
     private var toolCount = 0
     public mutating func tick() { if busy { animation = (animation + 1) % 4 } }
     private var aiMode = false
+    private var commandInChat = false
     private var transcript: [String] = ["Command drawer ready. Type help, or use Tab to complete."]
     private var scroll = 0
     private var menu: Int? = nil
@@ -130,7 +133,8 @@ public struct KilnTerminal {
     private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int), workspace(Int), review(Int), newTask }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
-        if aiMode { messages.append((status == 0 ? "Kiln" : "Error", text)); messages = Array(messages.suffix(40)) }
+        if commandInChat { messages.append((status == 0 ? "Kiln" : "Error", text)); messages = Array(messages.suffix(40)) }
+        commandInChat = false
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""
         busy = false; management.finish(text:text,status:status)
         let lines = text.components(separatedBy: "\n")
@@ -140,10 +144,11 @@ public struct KilnTerminal {
     }
     private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
         guard !busy else { return [] }
+        commandInChat = chatVisible
         busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
         started = Date(); animation = 0; toolCount = 0
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""
-        if aiMode { messages.append(("You", display.map { String($0.dropFirst(5)) } ?? command)) }
+        if commandInChat { messages.append(("You", display.map { String($0.dropFirst(5)) } ?? command)) }
         notice = "Working: " + command
         return [.command(command)]
     }
@@ -182,7 +187,9 @@ public struct KilnTerminal {
             }
         }
         if key == .text("`") || key == .text("~") {
-            drawer.toggle(); menu = nil; confirmation = nil; return []
+            let wasCommandDrawer = drawer && !aiMode
+            setAIChatMode(false)
+            drawer = !wasCommandDrawer; menu = nil; confirmation = nil; return []
         }
         if chatVisible {
             if reviewID != nil {
@@ -283,11 +290,17 @@ public struct KilnTerminal {
     }
     private mutating func openAIChat() {
         guard !busy else { return }
-        if !aiMode {
-            transcript = ["KILN AI / selected provider", "Ask about Kiln or request an operation.", "Prompts and read-tool results go to the selected provider. Do not paste credentials.", "/exit returns to commands; /reset clears context; /approve ID or /deny ID handles proposals."]
-        }
-        aiMode = true; drawer = true; menu = nil; confirmation = nil
+        setAIChatMode(true)
+        drawer = true; menu = nil; confirmation = nil
         input = ""; cursor = 0; historyPosition = nil; scroll = 0
+    }
+    private mutating func setAIChatMode(_ enabled: Bool) {
+        guard aiMode != enabled else { return }
+        if aiMode { chatHistory = history; history = commandHistory }
+        else { commandHistory = history; history = chatHistory }
+        aiMode = enabled
+        input = ""; cursor = 0; historyPosition = nil; draft = ""
+        sidebarFocus = false; reviewID = nil; scroll = 0
     }
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
@@ -349,7 +362,7 @@ public struct KilnTerminal {
                 openAIChat(); return []
             }
             if aiMode {
-                if command == "/exit" { aiMode = false; transcript.append("Left AI chat."); return [] }
+                if command == "/exit" { setAIChatMode(false); transcript.append("Left AI chat."); return [] }
                 if command.hasPrefix("/recover ") { return execute("ai recovery new " + Self.quote(String(command.dropFirst(9)))) }
                 if command == "/tasks" { return execute("ai task list") }
                 if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
