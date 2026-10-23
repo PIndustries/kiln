@@ -17,7 +17,8 @@ changes:
 KILN_TEST_GROK_SANDBOX=1 swift test --build-system native --force-resolved-versions --jobs 4
 ```
 
-The baseline passed 152 tests; the final preview-acceptance changes passed 166. This is additional
+The baseline passed 152 tests; PR #49 passed 166 and PR #50 adds a provider-visibility
+regression covering dashboard, command drawer, chat and narrow task layouts. This is additional
 compiler coverage, not a replacement for Swift 6.2.3/macOS/Linux release gates.
 
 The following real local suites passed, using disposable runtime state:
@@ -61,8 +62,23 @@ The following real local suites passed, using disposable runtime state:
   rejected pending renewed consent. The account is intentionally signed out after
   this acceptance check.
 
-The offline fixture is included in both macOS and Linux server workflows. A
-workflow change is not evidence that those hosted jobs have passed.
+The offline fixtures passed in both macOS and Linux server workflows. Exact
+candidate evidence:
+
+- PR #49: [server validation](https://github.com/PIndustries/kiln/actions/runs/40010621164),
+  [package, clean install and compatible rollback](https://github.com/PIndustries/kiln/actions/runs/40010621484),
+  and [secret scan](https://github.com/PIndustries/kiln/actions/runs/40010621304).
+  The downloaded macOS archive passed its SHA-256, source-tree and 62 file-digest
+  checks, then real local SSH/REST/WebSocket installation tests.
+- PR #50: [server validation](https://github.com/PIndustries/kiln/actions/runs/40017763471)
+  passed all four jobs, and the secret scan passed. Provider/model/access labels
+  were verified through real SSH on the running local development preview.
+
+Both PRs are merged. The local runtime state is stored outside the checkout;
+ChatGPT was reconnected for the SSH admin identity after the revocation check,
+with live model discovery, inference and account restore after restart verified.
+Erebine remains the selected named profile. Credentials stay in the encrypted
+Vault with its master key stored separately. The prior verified package is retained.
 
 ChatGPT consent, model discovery, account restore, native tool/stream/cancellation,
 renewal and sign-out passed. Fresh Erebine native acceptance also passed with an
@@ -78,6 +94,8 @@ operator-supplied scoped Vault credential.
 - Live Grok account and other API providers remain separately unverified where
   account credentials/consent are unavailable.
 
-No existing user node was upgraded and no replacement release was published by
-these local checks. The next preview candidate is `26.10.23.1`. Portable application bundles remain the next platform
-milestone after the core preview acceptance work.
+The next packaged preview candidate is `26.10.23.2`; it incorporates the merged
+provider indicator without a development overlay. Its exact packages must pass
+the release gates above before replacing the local preview. No new public binary
+release is claimed by these notes. Portable application bundles remain the next
+platform milestone after the core preview acceptance work.
