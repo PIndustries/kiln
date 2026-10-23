@@ -221,7 +221,7 @@ public actor ChatGPTSignIn {
         guard try JSONEncoder().encode(tokens).count <= 16384 else { throw AIError.message("ChatGPT credentials exceeded Vault record limit") }
         return tokens
     }
-    public func accessToken(account id: String, owner: String) async throws -> String {
+    public func accessToken(account id: String, owner: String, forceRefresh: Bool = false) async throws -> String {
         let account = try account(id, owner: owner)
         guard account.signedIn, account.planEnabled else { throw AIError.message("Continue with ChatGPT and enable ChatGPT plan usage first") }
         guard refreshing.insert(id).inserted else { throw AIError.message("ChatGPT account refresh is already in progress; try again") }
@@ -232,7 +232,7 @@ public actor ChatGPTSignIn {
         guard current.signedIn, current.planEnabled else { throw AIError.message("ChatGPT account was signed out") }
         let old = try tokens(id)
         guard old.scopes.contains("chatgpt.tokens.use.direct") else { throw AIError.message("ChatGPT plan usage is not authorized") }
-        if old.expiresAt.timeIntervalSinceNow > 60 { return old.accessToken }
+        if !forceRefresh, old.expiresAt.timeIntervalSinceNow > 60 { return old.accessToken }
         let request = Self.formRequest(endpoint: "https://auth.openai.com/api/accounts/oauth/token", values: ["grant_type": "refresh_token", "client_id": account.clientID, "refresh_token": old.refreshToken, "resource": "https://api.openai.com/v1"])
         let data = try await http(request)
         let renewed = try Self.decodeTokens(data, previous: old)

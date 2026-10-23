@@ -85,7 +85,10 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
     private var rejected = false
     let continuation: AsyncThrowingStream<Data, Error>.Continuation
     let mimeType: String
-    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation, mimeType: String = "text/event-stream") { self.continuation = continuation; self.mimeType = mimeType }
+    let allowMissingContentType: Bool
+    init(_ continuation: AsyncThrowingStream<Data, Error>.Continuation, mimeType: String = "text/event-stream", allowMissingContentType: Bool = false) {
+        self.continuation = continuation; self.mimeType = mimeType; self.allowMissingContentType = allowMissingContentType
+    }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
@@ -100,7 +103,7 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
             } else { completionHandler(.allow) }
             return
         }
-        guard http.mimeType == mimeType else {
+        guard http.mimeType == mimeType || (allowMissingContentType && http.value(forHTTPHeaderField: "Content-Type") == nil) else {
             continuation.finish(throwing: AIError.message("Provider returned an invalid stream content type")); completionHandler(.cancel); return
         }
         completionHandler(.allow)

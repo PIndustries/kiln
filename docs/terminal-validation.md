@@ -62,3 +62,17 @@ claim native OS clipboard behavior or that an in-progress foreground answer resu
 after reconnect. These scripts use a temporary node copied from explicitly supplied
 provider configuration; do not run them implicitly in CI or without authorization to
 consume inference credits.
+
+## Fresh live Erebine check (2026-10-23)
+
+The native OpenSSH/pyte chat suite passed with 118 activity frames, 24 distinct
+partial-answer frames and 11 waiting frames. Selection stayed frozen and a
+background task survived disconnect. The workspace suite passed mouse denial
+without a worker change, keyboard approval with a changed worker PID and consumed
+proposal, live background task completion, and narrow-terminal Tab navigation.
+The delayed offline SSH fixture separately verifies that backtick opens the
+command drawer from chat and after Escape, and `status` executes as a CLI command.
+
+Native clipboard copying was not verified: the available native automation lacked
+Accessibility permission or blocked Terminal. These results do not close the
+broader native-client matrix or actual Erebine retry/sidebar acceptance gate.

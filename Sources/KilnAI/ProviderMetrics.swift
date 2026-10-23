@@ -66,6 +66,7 @@ public actor AIProviderMetrics {
             let outcome: Outcome
             if error is CancellationError || Task.isCancelled { outcome = .cancelled }
             else if let failure = error as? ProviderFailure { outcome = failure.outcome }
+            else if let failure = error as? ProviderPlanFailure { outcome = failure.outcome }
             else if let failure = error as? ProviderTransportFailure { outcome = failure.outcome }
             else { outcome = .invalidResponse }
             finish(outcome, elapsed: start.duration(to: clock.now))

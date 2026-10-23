@@ -12,7 +12,10 @@ struct OpenAIResponsesDecoder {
     private var total = 0
     private var displayedBytes = 0
     private var result: AIMessage?
+    private let reconstructCompletedOutput: Bool
+    private var completedItems: [Int: Data] = [:]
     private(set) var done = false
+    init(reconstructCompletedOutput: Bool = false) { self.reconstructCompletedOutput = reconstructCompletedOutput }
 
     mutating func feed(_ bytes: Data, emit: @Sendable (AIProgress) -> Void) throws {
         total += bytes.count
@@ -36,6 +39,9 @@ struct OpenAIResponsesDecoder {
               let type = event["type"] as? String else { throw AIError.message("Invalid Responses stream event") }
         switch type {
         case "error", "response.failed", "response.incomplete":
+            let response = event["response"] as? [String: Any]
+            let error = response?["error"] as? [String: Any] ?? event["error"] as? [String: Any]
+            if let failure = ProviderPlanFailure(code: error?["code"] as? String ?? event["code"] as? String) { throw failure }
             throw AIError.message("Responses response failed or was incomplete; no partial tool call executed")
         case "response.output_text.delta", "response.refusal.delta", "response.reasoning_summary_text.delta":
             guard let delta = event["delta"] as? String else { throw AIError.message("Invalid Responses text delta") }
@@ -43,14 +49,38 @@ struct OpenAIResponsesDecoder {
             guard displayedBytes <= 65536 else { throw AIError.message("Responses message exceeded its limit") }
             if type == "response.reasoning_summary_text.delta" { emit(.reasoning(delta)) }
             else { emit(.answer(delta)) }
+        case "response.output_item.done" where reconstructCompletedOutput:
+            guard let index = AIProviderUsage.count(event["output_index"]), index < 64,
+                  completedItems[Int(index)] == nil, let item = event["item"] as? [String: Any] else {
+                throw AIError.message("Invalid completed Responses output item")
+            }
+            let encoded = try JSONSerialization.data(withJSONObject: item, options: [.sortedKeys])
+            guard encoded.count <= 65536 else { throw AIError.message("Responses output item exceeded its limit") }
+            completedItems[Int(index)] = encoded
         case "response.completed":
             guard let response = event["response"] as? [String: Any], response["status"] as? String == "completed",
                   response["error"] == nil || response["error"] is NSNull,
                   let output = response["output"] as? [[String: Any]], output.count <= 64 else {
                 throw AIError.message("Responses response did not complete successfully")
             }
+            var completedOutput = output
+            if reconstructCompletedOutput, output.isEmpty {
+                // ChatGPT direct streams can emit full output_item.done records
+                // and an empty terminal output array. Stage complete items only;
+                // fragments never become calls, and nothing is returned until
+                // the response.completed event confirms successful completion.
+                guard !completedItems.isEmpty, completedItems.keys.sorted() == Array(0..<completedItems.count) else {
+                    throw AIError.message("Responses completed without a complete output sequence")
+                }
+                completedOutput = try completedItems.keys.sorted().map { index in
+                    guard let item = try JSONSerialization.jsonObject(with: completedItems[index]!) as? [String: Any] else {
+                        throw AIError.message("Invalid completed Responses output item")
+                    }
+                    return item
+                }
+            }
             var answer = ""; var calls: [AIToolCall] = []; var replay: [String] = []; var ids = Set<String>()
-            for item in output {
+            for item in completedOutput {
                 if let status = item["status"] as? String, status != "completed" {
                     throw AIError.message("Incomplete Responses output item")
                 }
@@ -144,12 +174,21 @@ public struct OpenAIResponsesClient: Sendable {
     public func stream(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool],
                        emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
         let request = try Self.makeRequest(configuration: configuration, key: key, messages: messages, tools: tools)
-        return try await ProviderRetry.run(metrics: metrics, emit: emit) { try await streamAttempt(request: request, emit: emit) }
+        return try await ProviderRetry.run(metrics: metrics, emit: emit) {
+            try await streamAttempt(request: request, allowMissingContentType: configuration.provider == .chatgpt,
+                                    reconstructCompletedOutput: configuration.provider == .chatgpt, emit: emit)
+        }
     }
     func streamAttempt(request: URLRequest, configuration: URLSessionConfiguration? = nil,
+                       allowMissingContentType: Bool = false,
+                       reconstructCompletedOutput: Bool = false,
                        emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
         let pair = AsyncThrowingStream<Data, Error>.makeStream(bufferingPolicy: .bufferingOldest(128))
-        let delegate = StreamingDelegate(pair.continuation)
+        // The ChatGPT direct route can omit Content-Type on a valid SSE response
+        // (observed in live acceptance). Only that route permits absence. Explicit
+        // wrong types still fail, and bounded SSE parsing plus response.completed
+        // remain mandatory before returning text or executable tools.
+        let delegate = StreamingDelegate(pair.continuation, allowMissingContentType: allowMissingContentType)
         let options = configuration ?? URLSessionConfiguration.ephemeral
         options.httpCookieStorage = nil; options.urlCache = nil; options.timeoutIntervalForResource = 120
         let session = URLSession(configuration: options, delegate: delegate, delegateQueue: nil)
@@ -158,7 +197,7 @@ public struct OpenAIResponsesClient: Sendable {
         return try await withTaskCancellationHandler {
             try Task.checkCancellation(); task.resume()
             do {
-                var decoder = OpenAIResponsesDecoder()
+                var decoder = OpenAIResponsesDecoder(reconstructCompletedOutput: reconstructCompletedOutput)
                 for try await bytes in pair.stream {
                     try Task.checkCancellation(); try decoder.feed(bytes, emit: emit)
                     if decoder.done { break }

@@ -48,7 +48,17 @@ Subscription profiles use `https://api.openai.com/v1/responses`, `store: false`,
 
 ## Validation boundary
 
-Offline protocol tests can verify callback binding, PKCE, token signatures, replay rejection and request formatting. Authenticated ChatGPT sign-in and inference remain pending user consent in this release validation. Actual eligibility, consent, model availability and inference require the user's browser authorization and a completed live response. Kiln does not infer subscription access from a successful identity token alone.
+Offline protocol tests verify callback binding, PKCE, token signatures, replay rejection, rotation and request formatting. On 2026-10-23, user-completed consent, live model discovery, encrypted account restore after runtime restart, token renewal, a synthetic tool/result round, streamed answer and cancellation passed with an eligible ChatGPT account. The native acceptance harness recorded six answer frames, including a repeated successful run after explicit token renewal. This verifies the tested account/model, not universal plan eligibility. Live sign-out/revocation was not exercised; the requested connection was retained.
+
+The tested direct route omitted Content-Type and delivered complete output items in `response.output_item.done` events followed by an empty terminal `output` array. Kiln accepts the missing header only on this route, retains complete indexed items, and validates them only after successful `response.completed`. Explicit wrong MIME types, partial calls, duplicate/gapped items, failed/incomplete streams and interrupted responses are rejected. Other API routes retain strict header and terminal-snapshot behavior.
+
+For an already-authorized local-console account, repeat the bounded transport check with:
+
+```sh
+python3 scripts/provider-live-acceptance.py --state /absolute/path/to/state --chatgpt-local-console
+```
+
+Add `--refresh-chatgpt` to renew and persist the grant before testing, or `--build-system native` when the installed SwiftPM requires that build path. SSH-owned accounts retain their original identity/key binding and cannot be borrowed by this local-console harness. The check requests a synthetic read-only function using required tool selection; it is protocol acceptance, not an agent-quality benchmark.
 
 Official references:
 

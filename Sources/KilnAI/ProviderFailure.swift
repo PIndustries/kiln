@@ -43,19 +43,8 @@ struct ProviderFailure: Error, CustomStringConvertible {
         let code = envelope?["code"] as? String
         let status = response.statusCode
         let detail: String
-        switch (status, code) {
-        case (429, "subscription_sharing_usage_limit_exceeded"):
-            detail = "ChatGPT plan usage limit reached for this app or account. Manage usage: https://chatgpt.com/settings/usage . No automatic retry or API billing fallback."
-        case (403, "subscription_sharing_user_not_eligible"):
-            detail = "ChatGPT plan usage is unavailable for the selected account, workspace or policy. Repeating sign-in does not establish eligibility."
-        case (400, "subscription_sharing_unsupported_capability"):
-            detail = "This request uses a capability unavailable through ChatGPT plan usage. Change the request before retrying."
-        case (503, "subscription_sharing_usage_unavailable"), (503, "subscription_sharing_user_unavailable"):
-            detail = "ChatGPT plan usage is temporarily unavailable. Credentials are retained; retry later."
-        case (403, "subscription_sharing_route_not_supported"):
-            detail = "This route is unavailable through ChatGPT plan usage. Check the configured Responses integration."
-        case (401, "subscription_sharing_invalid_user"), (403, "chatpass_v2_scope_not_authorized"), (403, "chatpass_v2_invalid_authorization_context"):
-            detail = "ChatGPT account or plan permission was not accepted. Check the selected account and granted scopes."
+        if let failure = ProviderPlanFailure(code: code) { detail = failure.description }
+        else { switch (status, code) {
         case (429, "capacity_exceeded"):
             detail = "Backend capacity is full; wait before trying again."
         case (429, "rate_limit_exceeded"):
@@ -69,6 +58,7 @@ struct ProviderFailure: Error, CustomStringConvertible {
         case (404, _): detail = "Endpoint or model was not found; check the AI configuration."
         case (503, _): detail = "The provider backend is unavailable; check provider status before retrying."
         default: detail = "The provider rejected this request; check endpoint, model and provider status."
+        }
         }
         let header = response.value(forHTTPHeaderField: "Retry-After")
         let delay = Self.retryDelay(header, now: now)

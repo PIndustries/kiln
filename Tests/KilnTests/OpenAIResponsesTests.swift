@@ -88,3 +88,68 @@ private func responseText(_ text: String) -> [String: Any] {
         try incomplete.feed(responseEvent(["type": "response.completed", "response": ["status": "incomplete", "output": [responseText("partial")]]])) { _ in }
     }
 }
+
+@Test func responsesPlanLimitAfterStreamBeginsHasSafeRecoveryAndNoExecutablePartialTools() async throws {
+    var decoder = OpenAIResponsesDecoder()
+    try decoder.feed(responseEvent(["type": "response.function_call_arguments.delta", "delta": "{}", "item_id": "partial"])) { _ in }
+    let metrics = AIProviderMetrics()
+    let partial = decoder
+    do {
+        let _: AIMessage = try await metrics.measure {
+            var failed = partial
+            try failed.feed(responseEvent(["type": "response.failed", "response": ["error": ["code": "subscription_sharing_usage_limit_exceeded", "message": "fixture-private-detail"]]])) { _ in }
+            return try failed.message()
+        }
+        Issue.record("Failed response accepted")
+    } catch {
+        #expect(error is ProviderPlanFailure)
+        #expect(String(describing: error).contains("https://chatgpt.com/settings/usage"))
+        #expect(!String(describing: error).contains("fixture-private-detail"))
+    }
+    #expect(throws: AIError.self) { try decoder.message() }
+    #expect(await metrics.snapshot().outcomes["quota"] == 1)
+}
+
+@Test func chatGPTReconstructsCompletedItemsOnlyAfterTerminalSuccess() throws {
+    var decoder = OpenAIResponsesDecoder(reconstructCompletedOutput: true)
+    let call: [String: Any] = ["type": "function_call", "id": "fc1", "call_id": "call1", "namespace": "kiln", "name": "system_status", "arguments": "{}", "status": "completed"]
+    let item = try responseEvent(["type": "response.output_item.done", "output_index": 0, "item": call])
+    for byte in item { try decoder.feed(Data([byte])) { _ in } }
+    #expect(throws: AIError.self) { try decoder.message() }
+    try decoder.feed(completedResponse([])) { _ in }
+    let answer = try decoder.message()
+    #expect(answer.tool_calls?.first?.function.name == "system_status")
+    #expect(answer.providerItems?.count == 1)
+    var text = OpenAIResponsesDecoder(reconstructCompletedOutput: true)
+    try text.feed(responseEvent(["type": "response.output_item.done", "output_index": 0, "item": responseText("Ready")])) { _ in }
+    try text.feed(completedResponse([])) { _ in }
+    #expect(try text.message().content == "Ready")
+}
+
+@Test func chatGPTCompletedItemReconstructionRejectsGapsDuplicatesAndFailures() throws {
+    for index in [-1, 1, 64] {
+        var decoder = OpenAIResponsesDecoder(reconstructCompletedOutput: true)
+        #expect(throws: (any Error).self) {
+            try decoder.feed(responseEvent(["type": "response.output_item.done", "output_index": index, "item": responseText("Ready")])) { _ in }
+            try decoder.feed(completedResponse([])) { _ in }
+        }
+    }
+    var duplicate = OpenAIResponsesDecoder(reconstructCompletedOutput: true)
+    let item = try responseEvent(["type": "response.output_item.done", "output_index": 0, "item": responseText("Ready")])
+    try duplicate.feed(item) { _ in }
+    #expect(throws: AIError.self) { try duplicate.feed(item) { _ in } }
+    for ending in [try responseEvent(["type": "response.failed"]), try responseEvent(["type": "response.incomplete"])] {
+        var failed = OpenAIResponsesDecoder(reconstructCompletedOutput: true)
+        try failed.feed(item) { _ in }
+        #expect(throws: AIError.self) { try failed.feed(ending) { _ in } }
+        #expect(throws: AIError.self) { try failed.message() }
+    }
+    var interrupted = OpenAIResponsesDecoder(reconstructCompletedOutput: true)
+    try interrupted.feed(responseEvent(["type": "response.function_call_arguments.delta", "delta": "{}", "item_id": "partial"])) { _ in }
+    #expect(throws: AIError.self) { try interrupted.feed(completedResponse([])) { _ in } }
+    // Ordinary API routes still use the terminal output snapshot.
+    var ordinary = OpenAIResponsesDecoder()
+    try ordinary.feed(item) { _ in }
+    try ordinary.feed(completedResponse([responseText("Authoritative snapshot")])) { _ in }
+    #expect(try ordinary.message().content == "Authoritative snapshot")
+}

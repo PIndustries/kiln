@@ -17,7 +17,7 @@ changes:
 KILN_TEST_GROK_SANDBOX=1 swift test --build-system native --force-resolved-versions --jobs 4
 ```
 
-The baseline passed 152 tests; the final preview-acceptance changes passed 159. This is additional
+The baseline passed 152 tests; the final preview-acceptance changes passed 165. This is additional
 compiler coverage, not a replacement for Swift 6.2.3/macOS/Linux release gates.
 
 The following real local suites passed, using disposable runtime state:
@@ -43,18 +43,27 @@ The following real local suites passed, using disposable runtime state:
   multiple answer frames, frozen selection during content arrival, cancellation,
   successful follow-up, tool results, mouse denial/keyboard approval with actual
   worker PID evidence, and foreground disconnect/reconnect without stale proposals.
+- Backtick/tilde always selects the command drawer from AI chat or the dashboard.
+  Real SSH verifies `status` is executed as a CLI command after leaving chat.
+  Separate composer histories prevent chat prompts from appearing as CLI history.
+- Authenticated Erebine OpenSSH/pyte chat: 118 activity frames, 24 partial-answer
+  frames and 11 waiting frames; frozen selection and a task surviving disconnect.
+  The workspace suite also passed mouse denial without a PID change, keyboard
+  approval with a new worker PID, live task completion and narrow navigation.
 
 The offline fixture is included in both macOS and Linux server workflows. A
 workflow change is not evidence that those hosted jobs have passed.
 
 ## Remaining release gates
 
-- Authenticated Erebine acceptance on this revision, using operator-supplied
-  configuration and a scoped Vault credential.
-- User-completed ChatGPT consent, live model discovery, inference, renewal and
-  sign-out. OAuth fixture success alone does not establish subscription access.
+- Live ChatGPT sign-out/revocation remains untested; the user-requested account
+  connection was retained. Consent, model discovery, account restore, native
+  tool/stream/cancellation and renewal passed. Fresh Erebine native acceptance
+  also passed with an operator-supplied scoped Vault credential.
 - Native terminal clipboard/client-matrix acceptance and real SSH sidebar behavior
-  during an Erebine retry.
+  during an Erebine retry. The attempted native Terminal clipboard check could
+  not run: Orca lacks Accessibility permission and the alternate computer-use
+  provider blocks Terminal. No clipboard pass is claimed.
 - Fresh Swift 6.2.3 Linux/macOS CI, Linux kernel resource enforcement and packaged
   clean-install/upgrade/rollback checks for the final candidate.
 - Live Grok account and other API providers remain separately unverified where

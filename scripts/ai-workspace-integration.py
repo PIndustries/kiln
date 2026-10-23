@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
    while text not in '\n'.join(screen.display):pump(.1);assert time.monotonic()<end,(text,'\n'.join(screen.display))
   def send(data):os.write(master,data);pump()
   expect('7 AI Chat',10);send(b'7');expect('TASKS & APPROVALS')
-  send(b'Use propose_operation to propose restarting ai-ui/worker. Do not execute it.\r')
+  send(b'Use request_operation to propose restarting ai-ui/worker. Do not execute it.\r')
   expect('APPROVAL / restart',180)
   expect('[ready]',180)
   send(b'\x1b[<0;5;8M');expect('REVIEW OPERATION')
@@ -55,7 +55,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-ai-ui-') as td:
   expect('Proposal declined');expect('0 approvals')
   assert command('app list')==before,'Deny changed worker'
   print('PASS actual Erebine proposal -> sidebar -> review -> mouse Deny; worker unchanged',flush=True)
-  send(b'Create another pending restart proposal for ai-ui/worker using propose_operation.\r')
+  send(b'Create another pending restart proposal for ai-ui/worker using request_operation.\r')
   expect('APPROVAL / restart',180);expect('[ready]',180)
   send(b'\t');send(b'\r');expect('REVIEW OPERATION')
   send(b'\r');expect('[ready]',30)

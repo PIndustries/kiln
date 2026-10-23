@@ -95,6 +95,8 @@ private actor AuthFixtureTransport {
     #expect(!String(decoding: metadata + encrypted, as: UTF8.self).contains("fixture-access-token"))
     await manager.callback(id: start.id, target: "/auth/callback?state=" + state + "&code=fixture&client_id=oaiapp_fixture")
     #expect(await transport.calls == 1)
+    // Explicit renewal also rotates a still-valid grant without changing account identity.
+    #expect(try await manager.accessToken(account: account.id, owner: "alice", forceRefresh: true) == "fixture-access-token-2")
     // Force near expiry in the encrypted fixture and prove rotating credentials
     // are saved as a bundle before the refreshed access token is returned.
     let binding = ["TOKEN": "chatgpt-" + account.id]
@@ -103,10 +105,10 @@ private actor AuthFixtureTransport {
     var expired = try JSONDecoder().decode(ChatGPTSignIn.Tokens.self, from: Data(saved.utf8))
     expired.expiresAt = Date(timeIntervalSince1970: 1)
     _ = try vault.put("chatgpt-" + account.id, value: String(decoding: JSONEncoder().encode(expired), as: UTF8.self))
-    #expect(try await manager.accessToken(account: account.id, owner: "alice") == "fixture-access-token-2")
+    #expect(try await manager.accessToken(account: account.id, owner: "alice") == "fixture-access-token-3")
     let rotated = try #require(vault.environment(for: scope, bindings: binding)["TOKEN"])
-    #expect(try JSONDecoder().decode(ChatGPTSignIn.Tokens.self, from: Data(rotated.utf8)).refreshToken == "fixture-refresh-token-2")
-    #expect(await transport.calls == 2)
+    #expect(try JSONDecoder().decode(ChatGPTSignIn.Tokens.self, from: Data(rotated.utf8)).refreshToken == "fixture-refresh-token-3")
+    #expect(await transport.calls == 3)
     let pendingReauth = try await manager.start(owner: "alice", account: account.id)
     let otherInstance = try ChatGPTSignIn(directory: root, vault: vault, http: { try await transport.request($0) })
     let staleReauth = try await otherInstance.start(owner: "alice", account: account.id)
@@ -114,7 +116,7 @@ private actor AuthFixtureTransport {
     await #expect(throws: (any Error).self) { try await manager.result(id: pendingReauth.id, owner: "alice") }
     let reauthState = URLComponents(string: pendingReauth.authorizationURL)?.queryItems?.first(where: { $0.name == "state" })?.value ?? ""
     await manager.callback(id: pendingReauth.id, target: "/auth/callback?state=" + reauthState + "&code=fixture&client_id=oaiapp_fixture")
-    #expect(await transport.calls == 2)
+    #expect(await transport.calls == 3)
     // Another process may have started reauthorization before logout. Its
     // valid token response still cannot restore a superseded authorization.
     let staleQuery = URLComponents(string: staleReauth.authorizationURL)?.queryItems ?? []
@@ -123,7 +125,7 @@ private actor AuthFixtureTransport {
     await transport.setNonce(staleNonce)
     await otherInstance.callback(id: staleReauth.id, target: "/auth/callback?state=" + staleState + "&code=fixture&client_id=oaiapp_fixture")
     await #expect(throws: (any Error).self) { try await otherInstance.result(id: staleReauth.id, owner: "alice") }
-    #expect(await transport.calls == 3)
+    #expect(await transport.calls == 4)
     #expect(await otherInstance.accounts(owner: "alice").first?.signedIn == false)
     await #expect(throws: (any Error).self) { try await manager.accessToken(account: account.id, owner: "alice") }
     let restarted = try ChatGPTSignIn(directory: root, vault: vault, http: { try await transport.request($0) })
