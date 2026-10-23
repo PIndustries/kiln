@@ -17,7 +17,13 @@ public actor KilnAssistant {
     private var activeContextID: String?
     private var configurationUncertain = false
     private let completion: AICompletion?
-    public init(completion: AICompletion? = nil) { self.completion = completion }
+    private let streamingCompletion: (@Sendable (AIConfiguration, String, [AIMessage], [AITool], @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage)?
+    public init(completion: AICompletion? = nil) { self.completion = completion; self.streamingCompletion = nil }
+    // Internal injection lets SSH tests exercise the real retry/stream decoder
+    // without adding a fake-provider switch to runtime configuration.
+    init(streamingCompletion: @escaping @Sendable (AIConfiguration, String, [AIMessage], [AITool], @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage) {
+        self.completion = nil; self.streamingCompletion = streamingCompletion
+    }
     public func activate(_ configuration: AIConfiguration, at url: URL) throws {
         guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
         try configuration.validate()
@@ -121,7 +127,8 @@ public actor KilnAssistant {
                 let tools = round == 8 ? [] : Self.tools.filter { allowProposals || !["request_operation", "create_task", "create_recovery_task"].contains($0.function.name) }
                 let message: AIMessage
                 do {
-                    if let completion { message = try await completion(configuration, key, messages, tools) }
+                    if let streamingCompletion { message = try await streamingCompletion(configuration, key, messages, tools, progress) }
+                    else if let completion { message = try await completion(configuration, key, messages, tools) }
                     else {
                         let isPlanning = configuration.provider == .erebine && !tools.isEmpty
                         message = try await AIProviderClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: messages, tools: tools) { event in
@@ -146,7 +153,8 @@ public actor KilnAssistant {
                         presentation.append(AIMessage(role: "user", content: "Present your final answer to my request using the verified results and draft above. Preserve facts, approval requirements and task IDs. Do not invent additional checks or operations. Use concise terminal-friendly paragraphs or lists, without Markdown tables. No additional tools are available."))
                         do {
                             let final: AIMessage
-                            if let completion { final = try await completion(configuration, key, presentation, []) }
+                            if let streamingCompletion { final = try await streamingCompletion(configuration, key, presentation, [], progress) }
+                            else if let completion { final = try await completion(configuration, key, presentation, []) }
                             else { final = try await AIProviderClient(metrics: providerMetrics).stream(configuration: configuration, key: key, messages: presentation, tools: [], emit: progress) }
                             guard final.tool_calls?.isEmpty != false, let content = final.content, !content.isEmpty else { throw AIError.message("Invalid presentation response") }
                             answer = String(content.prefix(24000))

@@ -10,6 +10,7 @@ python3 -m venv /tmp/kiln-terminal-tests
 /tmp/kiln-terminal-tests/bin/pip install -r scripts/terminal-test-requirements.txt
 /tmp/kiln-terminal-tests/bin/python scripts/terminal-integration.py
 /tmp/kiln-terminal-tests/bin/python scripts/offline-ai-terminal-integration.py
+/tmp/kiln-terminal-tests/bin/python scripts/ssh-retry-acceptance.py
 ```
 
 `KILN_BIN_DIR` selects an already-built binary directory for Python scripts; the
@@ -23,6 +24,7 @@ identities. Do not point them at a running node's state directory.
 | Bounded retries | `ProviderFailureTests`: typed 429 handling, exhausted/cancelled waits, no retry of quota/unknown errors or partial streams | Live provider capacity or billing availability |
 | Real OpenSSH PTY | `scripts/terminal-integration.py`: mouse input, anchored service menus, confirmation, metrics refresh, drawer, resize and reconnect using OpenSSH + pyte | Native terminal emulator selection/clipboard or additional SSH clients |
 | Offline provider → real OpenSSH PTY | `scripts/offline-ai-terminal-integration.py`: normal local Ollama HTTP route, delayed answer frames, frozen screen during incoming output, cancellation/follow-up, real tool calls, mouse deny/keyboard approve with actual worker PID checks, foreground disconnect/reconnect and cleared session proposals | Erebine retry scheduling, native OS clipboard, remote provider quality or real account acceptance |
+| Erebine retry → real OpenSSH PTY | `scripts/ssh-retry-acceptance.py`: test-session HTTP 429/SSE transport, production retry countdown, a durable task completing in a second SSH connection, sidebar completion visible during retry and after recovery | Actual provider overload, native clipboard or additional terminal clients |
 | Live optional AI | `scripts/ai-terminal-integration.py` and `scripts/ai-workspace-integration.py`: configured-provider chat/tasks/approvals through real SSH | Offline deterministic behavior; these require credentials and may consume credits |
 
 ## Recorded local check
@@ -43,8 +45,9 @@ production test-provider switches or credentials. A foreground disconnect starts
 a new conversation on reconnect: no old history or session proposal is restored.
 Its successful tool exchange and metrics check run after reconnect.
 
-Keep issue #9 open for native emulator clipboard selection, additional clients
-beyond OpenSSH/pyte, and actual Erebine retry/sidebar behavior through SSH.
+Keep issue #9 open for native emulator clipboard selection and additional clients
+beyond OpenSSH/pyte. The Erebine retry/sidebar path through real SSH now has
+deterministic transport-fixture coverage; actual remote capacity events are not induced.
 The new fixture proves frozen painting during incoming stream content, while
 clipboard integration remains a separate OS-level check.
 
@@ -75,4 +78,5 @@ command drawer from chat and after Escape, and `status` executes as a CLI comman
 
 Native clipboard copying was not verified: the available native automation lacked
 Accessibility permission or blocked Terminal. These results do not close the
-broader native-client matrix or actual Erebine retry/sidebar acceptance gate.
+broader native-client matrix. Erebine retry/sidebar behavior is separately covered
+by the real SSH retry fixture above.

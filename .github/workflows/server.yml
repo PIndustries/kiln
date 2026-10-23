@@ -72,6 +72,8 @@ jobs:
           "$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/vault-integration.py
       - name: Offline AI streaming, approvals and reconnect through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/offline-ai-terminal-integration.py'
+      - name: Task sidebar refresh during Erebine retry through OpenSSH
+        run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/ssh-retry-acceptance.py'
       - name: Explicit node adoption and durable peer operations
         run: python3 scripts/cluster-integration.py
       - name: Managed deployment and rollback
@@ -119,6 +121,8 @@ jobs:
           "$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/vault-integration.py
       - name: Offline AI streaming, approvals and reconnect through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/offline-ai-terminal-integration.py'
+      - name: Task sidebar refresh during Erebine retry through OpenSSH
+        run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/ssh-retry-acceptance.py'
       - name: Explicit node adoption and durable peer operations
         run: KILN_TEST_MULTICAST=1 python3 scripts/cluster-integration.py
       - name: Managed deployment and rollback
