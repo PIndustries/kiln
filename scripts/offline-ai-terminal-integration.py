@@ -122,7 +122,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             return int(next(line for line in command("app list").splitlines() if "fixture" in line and "worker" in line).split()[-1])
 
         def connect():
-            global master, screen, stream, client
+            global master, screen, stream, client, raw
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 38, 120, 0, 0))
             client = subprocess.Popen(base + ["-tt", "admin@127.0.0.1"], stdin=slave, stdout=slave, stderr=slave, env={**os.environ, "TERM": "xterm-256color"})
@@ -130,6 +130,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             clients.append((client, master))
             screen = pyte.Screen(120, 38)
             stream = pyte.ByteStream(screen)
+            raw = bytearray()
             expect("7 AI Chat")
             send(b"7")
             expect("KILN AI CHAT")
@@ -144,6 +145,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
                 if ready:
                     data = os.read(master, 65536)
                     assert data, "SSH client disconnected unexpectedly"
+                    raw.extend(data)
                     stream.feed(data)
 
         def expect(text, seconds=15):
@@ -157,6 +159,10 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             pump()
 
         def click(text):
+            # SSH may deliver the heading before the button rows in the same
+            # frame. Wait for the actual target instead of treating a partial
+            # terminal paint as a complete review screen.
+            expect(text)
             for y, line in enumerate(screen.display):
                 x = line.find(text)
                 if x >= 0:
@@ -186,8 +192,16 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         print("PASS offline SSH: backtick opens commands from AI chat and after Escape; status executes as a CLI command", flush=True)
         send(b"fixture slow\r")
         expect("frame-02")
+        selection_start = len(raw)
         send(b"\x13")
         expect("SELECT TEXT")
+        # Mouse capture is disabled after the selection frame is fully sent.
+        # Freezing a partially received frame would mistake its remaining bytes
+        # for a repaint during selection.
+        end = time.monotonic() + 15
+        while b"\x1b[?1000l\x1b[?1002l\x1b[?1006l" not in raw[selection_start:]:
+            pump()
+            assert time.monotonic() < end, "Selection frame did not finish"
         frozen = list(screen.display)
         pump(0.7)
         assert screen.display == frozen, "Selection repainted during incoming content"
