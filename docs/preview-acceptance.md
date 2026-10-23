@@ -94,8 +94,15 @@ operator-supplied scoped Vault credential.
 - Live Grok account and other API providers remain separately unverified where
   account credentials/consent are unavailable.
 
-The next packaged preview candidate is `26.10.23.2`; it incorporates the merged
-provider indicator without a development overlay. Its exact packages must pass
-the release gates above before replacing the local preview. No new public binary
-release is claimed by these notes. Portable application bundles remain the next
-platform milestone after the core preview acceptance work.
+The packaged `26.10.23.2` core refresh passed [server validation](https://github.com/PIndustries/kiln/actions/runs/40037688857),
+[package/clean-install/rollback validation](https://github.com/PIndustries/kiln/actions/runs/40037688944)
+and secret scanning. Its downloaded macOS archive passed all 62 file digests,
+source/tree verification and local SSH/REST/WebSocket installation checks. The
+local development overlay was replaced after confirmed runtime/session-service
+shutdown and cold state/key backups. Account restore, model discovery and live
+inference passed on the installed package, and the terminal was reopened.
+
+Portable application directory bundles are the next candidate (`26.10.23.3`),
+developed separately from that installed core preview. Their integrity and state
+format boundaries are documented in [application bundles](application-bundles.md).
+No new public binary release is claimed by these notes.

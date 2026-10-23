@@ -97,7 +97,7 @@ app list
 
 The REST example serves `http://127.0.0.1:18080/api/hello`. The WebSocket example echoes text and binary messages at `ws://127.0.0.1:18081/ws`; fragmented frames are not supported. Both expose `/health` and use local, unencrypted connections.
 
-The examples run the same executable with different arguments in separate processes. Your modules can use different executables and dependencies. Installation currently copies the executable only; packaging assets, app bundles, and shared libraries is not implemented.
+The examples run the same executable with different arguments in separate processes. Your modules can use different executables and dependencies. A plain manifest installs its executable only. [Portable application directory bundles](docs/application-bundles.md) also carry declared assets and libraries for a matching OS/architecture, with checksums and full-release rollback.
 
 ## How it fits together
 
