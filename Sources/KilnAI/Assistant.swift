@@ -47,6 +47,30 @@ public actor KilnAssistant {
         AITool("release_info", "Read active and previous release and ingress address.", properties: ["module": .init("Exact application/module identity")]),
         AITool("request_operation", "PROPOSE an operation for explicit user approval. This does NOT execute it. Return the approval ID to the user.", properties: ["module": .init("Exact application/module identity"), "operation": .init("Operation to propose", values: ["start", "stop", "restart", "rollback"])])
     ]
+    /// Metadata for this connection only; never returns message content or credentials.
+    public func contextStatus(_ session: String, now: Date = Date()) -> String {
+        let conversation = conversations[session]
+        let history = conversation?.history ?? AIConversationHistory()
+        let working = busy.contains(session)
+        let idle = conversation.map { now.timeIntervalSince($0.touched) } ?? 0
+        let expired = conversation != nil && idle >= 3600 && !working
+        let state = working ? "turn in progress" : expired ? "expired" : conversation == nil ? "empty" : "active"
+        let next = expired ? "fresh context after idle expiry" : history.needsTrimming ? "oldest complete turns will be omitted to fit limits" : "retained history fits the current limits"
+        let expiry = working ? "resets when the current turn completes" : conversation == nil ? "starts after the first completed turn" : "\(max(0, Int(3600 - idle))) seconds remaining"
+        let approvals = pendingProposals(session: session, now: now).count
+        return """
+        AI context / current connection
+        State: \(state)
+        Completed turns: \(history.turnStarts.count)
+        Stored history: \(history.messages.count) messages / \(AIConversationHistory.messageLimit) limit
+        Encoded history: \(history.encodedBytes.map(String.init) ?? "unavailable") bytes / \(AIConversationHistory.byteLimit) limit
+        Next request: \(next)
+        Idle expiry: \(expiry)
+        Pending interactive approvals: \(approvals)
+        Storage: in memory; reconnect or runtime restart starts fresh.
+        These are Kiln history limits, not the model's token window.
+        """
+    }
     public func reset(_ session: String) throws -> String {
         guard !busy.contains(session) else { throw AIError.message("Wait for this turn to finish") }
         conversations.removeValue(forKey: session)
