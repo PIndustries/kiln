@@ -27,6 +27,8 @@ Historical provider context is bounded to 40 messages and 64 KiB of encoded hist
 
 This context remains in memory: SSH reconnect starts a new foreground conversation, runtime restart clears it, and idle conversations expire after an hour. Persisted transcripts and resumable conversations remain tracked in issue #40.
 
+Foreground native AI responses carry their request’s provider, profile and model in the answer heading. The activity line identifies the provider while a turn runs. These labels come from the controller’s admitted request configuration, and remain attached to that answer if the selected profile changes. Local command replies carry no provider label.
+
 The chat sidebar lists session-owned pending approvals and administrator-visible background tasks, refreshed every second. Click a proposal to review the exact operation, then click **Approve** or **Deny**; the same server-side authorization, expiry, single-use and generation checks apply as `/approve` and `/deny`. Click a task to inspect its current record. Type a request into the composer and click **+ New task from message** to run it as a background investigation. With an empty composer, this button prepares `/task` input.
 
 **Tab** switches focus between the composer and sidebar; arrows select an item and **Enter** opens it. In the approval review, Tab/arrows choose a button, Enter activates it, and Esc returns. On terminals narrower than 110 columns, Tab opens a full-width task/approval panel. Background task state remains visible across SSH sessions for administrators; proposals remain private to the originating session and expire after five minutes.

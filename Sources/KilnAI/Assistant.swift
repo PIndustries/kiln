@@ -124,6 +124,7 @@ public actor KilnAssistant {
             proposals = proposals.filter { $0.value.session != oldest }
         }
         busy.insert(session); defer { busy.remove(session) }
+        progress(.provider(AIProviderSnapshot(provider: configuration.provider.rawValue, profile: configuration.profile, model: configuration.model)))
         var history = conversations[session]?.history ?? AIConversationHistory()
         let trimmed = history.trim()
         let contextNotice = "Context trimmed: oldest conversation turns were omitted to stay within limits. Recent complete turns were retained where they fit. Previous interactive proposal IDs for this session were invalidated; request any needed operation again."

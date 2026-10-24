@@ -119,6 +119,7 @@ public actor AITasks {
     private func update(_ id: String, _ event: AIProgress) {
         guard let i = index.records.firstIndex(where: { $0.id == id }), index.records[i].state == "running" else { return }
         switch event {
+        case .provider: return // Task records already retain their pinned configuration.
         case .answer(let text): index.records[i].output = String((index.records[i].output + text).suffix(24000))
         case .snapshot(let text): index.records[i].output = String(text.suffix(24000))
         case .reasoning: break // Live provider reasoning is transient, not stored in task history.
