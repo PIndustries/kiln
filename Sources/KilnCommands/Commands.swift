@@ -556,8 +556,28 @@ private extension KilnCommands {
             throw AIError.message("Use ai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET] | use NAME --new-context")
         }
         switch parts {
+        case ["ai", "chat-help"]:
+            return CommandResult("""
+            Chat commands / local reference
+            /help                 Show this reference
+            /context              Inspect this connection's history limits
+            /reset                Clear conversation and interactive proposals
+            /theme [PRESET]       Show or save colors (green/cyan/amber/mono)
+            /task PROMPT          Start a background investigation
+            /tasks                List background tasks
+            /watch TASK-ID        Watch a task
+            /cancel TASK-ID       Cancel a task
+            /recover APP/MODULE   Propose a durable recovery
+            /approve PROPOSAL-ID  Execute the reviewed interactive proposal
+            /deny PROPOSAL-ID     Decline an interactive proposal
+            /exit                 Return to the command drawer
+            Ctrl-C cancels; Ctrl-S selects text/resumes; PgUp/PgDn scroll.
+            Backtick opens commands; Esc returns to the dashboard.
+            Plain messages go to the selected provider.
+            Help makes no provider request.
+            """)
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /context shows history limits; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai context                    Current connection history counts and limits\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /help lists chat commands; /exit leaves chat; /context shows history limits; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai context                    Current connection history counts and limits\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
         case ["ai", "metrics"]:
             try authorizeAdmin()
             let metrics = await assistant.providerMetrics.snapshot()
@@ -682,7 +702,7 @@ private extension KilnCommands {
             if ["install", "deploy"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if p.first == "ai" {
-            if p.count == 1 || ["help", "status", "context", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
+            if p.count == 1 || ["help", "chat-help", "status", "context", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
             if ["task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
         }

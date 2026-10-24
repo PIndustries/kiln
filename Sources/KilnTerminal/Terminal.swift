@@ -402,6 +402,14 @@ public struct KilnTerminal {
                 openAIChat(); return []
             }
             if aiMode {
+                if command == "/help" { return execute("ai chat-help") }
+                let requiredArguments = ["/task": "PROMPT", "/recover": "APP/MODULE", "/watch": "TASK-ID", "/cancel": "TASK-ID", "/approve": "PROPOSAL-ID", "/deny": "PROPOSAL-ID"]
+                if let argument = requiredArguments[command] {
+                    messages.append(ChatMessage(role: "You", text: command))
+                    messages.append(ChatMessage(role: "Kiln", text: "Usage: \(command) \(argument). Use /help for chat commands."))
+                    messages = Array(messages.suffix(40)); scroll = 0
+                    return []
+                }
                 if command == "/exit" { setAIChatMode(false); transcript.append("Left AI chat."); return [] }
                 if command.hasPrefix("/recover ") { return execute("ai recovery new " + Self.quote(String(command.dropFirst(9)))) }
                 if command == "/context" { return execute("ai context") }
@@ -544,7 +552,7 @@ public struct KilnTerminal {
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
         lines.append(row("Enter send   Ctrl-C stop   Ctrl-S select/copy   PgUp/PgDn", muted))
-        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /reset | /task", muted))
+        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /help", muted))
         return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", hits + [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
     }
 

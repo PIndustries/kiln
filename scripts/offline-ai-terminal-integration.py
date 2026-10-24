@@ -190,6 +190,14 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         expect("ollama / offline")
         with Fixture.requests_lock:
             count = Fixture.request_count
+        send(b"/help\r")
+        expect("Help makes no provider request.")
+        expect("[ready]")
+        for shortcut in [b"/task", b"/watch", b"/cancel", b"/recover", b"/approve", b"/deny"]:
+            send(shortcut + b"\r")
+            expect("Usage: " + shortcut.decode())
+        with Fixture.requests_lock:
+            assert Fixture.request_count == count, "Help or incomplete command called the provider"
         send(b"/context\r")
         expect("Completed turns: 0")
         expect("[ready]")
