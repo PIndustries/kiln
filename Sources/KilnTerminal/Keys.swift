@@ -12,6 +12,7 @@ public struct TerminalKeys {
     private var sequence: [UInt8] = []
     private var utf8: [UInt8] = []
     private var pasted: [UInt8]? = nil
+    private var pasteTail: [UInt8] = []
     private var lastCR = false
     public init() {}
     public var awaitingEscape: Bool { !sequence.isEmpty }
@@ -24,11 +25,18 @@ public struct TerminalKeys {
         var keys: [TerminalKey] = []
         for byte in bytes {
             if pasted != nil {
-                pasted!.append(byte)
-                if pasted!.suffix(6).elementsEqual([27,91,50,48,49,126]) {
-                    keys.append(.paste(String(decoding: pasted!.dropLast(6), as: UTF8.self)))
-                    pasted = nil
-                } else if pasted!.count > 16384 { pasted = nil }
+                // Keep the end marker separate from a bounded payload. Even after
+                // truncation, stay in paste mode so pasted newlines/control bytes
+                // cannot become command keys.
+                pasteTail.append(byte)
+                if pasteTail.count > 6 {
+                    let payload = pasteTail.removeFirst()
+                    if pasted!.count < 16384 { pasted!.append(payload) }
+                }
+                if pasteTail == [27,91,50,48,49,126] {
+                    keys.append(.paste(String(decoding: pasted!, as: UTF8.self)))
+                    pasted = nil; pasteTail = []
+                }
                 continue
             }
             if !sequence.isEmpty {
@@ -55,7 +63,7 @@ public struct TerminalKeys {
                     case "[6~": .pageDown
                     default: nil
                     }
-                    if tail == "[200~" { pasted = [] }
+                    if tail == "[200~" { pasted = []; pasteTail = [] }
                     if let key { keys.append(key) }
                     sequence = []
                 } else if sequence.count > 24 { sequence = [] }

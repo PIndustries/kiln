@@ -106,6 +106,9 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         if a.preview: preview(screen,a.preview/'kiln-command-drawer.png')
         send(b'\x1b[A'); expect('kiln > app list')
         send(b'\x03')
+        send(b'\x1b[200~' + b'a' * 17000 + b'\nexit\r\x03\x04' + b'\x1b[201~')
+        assert process.poll() is None, 'Oversized paste escaped into command keys'
+        send(b'\x03')
         send(b'\x1b[200~status\nexit\x1b[201~'); expect('kiln > status exit')
         assert process.poll() is None
         send(b'\x03\x1b'); pump(.3)

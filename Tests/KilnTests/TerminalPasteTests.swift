@@ -53,3 +53,14 @@ import KilnTerminal
     _ = flags.handle(.text("!"))
     #expect(flags.input == "🇺🇸!")
 }
+
+
+@Test func oversizedBracketedPasteNeverExecutesTrailingPayloadAsKeys() {
+    var decoder = TerminalKeys()
+    #expect(decoder.feed(Array("\u{1b}[200~".utf8)).isEmpty)
+    #expect(decoder.feed(Array(String(repeating: "a", count: 17000).utf8)).isEmpty)
+    #expect(decoder.feed(Array("\nexit\r\u{3}\u{4}\u{1b}[20".utf8)).isEmpty)
+    let ended = decoder.feed(Array("1~".utf8))
+    #expect(ended == [.paste(String(repeating: "a", count: 16384))])
+    #expect(decoder.feed(Array("status\r".utf8)) == "status".map { .text(String($0)) } + [.enter])
+}
