@@ -304,6 +304,14 @@ public struct KilnTerminal {
         input = ""; cursor = 0; historyPosition = nil; draft = ""
         sidebarFocus = false; reviewID = nil; scroll = 0
     }
+    private mutating func insertComposerText(_ text: String) {
+        let characters = Array(input)
+        let prefix = String(characters.prefix(cursor)) + text
+        input = prefix + String(characters.dropFirst(cursor))
+        // Inserted combining marks and regional indicators can join neighboring
+        // graphemes; the cursor must count the resulting prefix, not input events.
+        cursor = min(prefix.count, input.count)
+    }
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
@@ -313,12 +321,19 @@ public struct KilnTerminal {
         case .eof: if input.isEmpty { drawer = false }
         case .text(let text):
             if input.utf8.count + text.utf8.count <= 4096 {
-                characters.insert(contentsOf: Array(text), at: cursor); cursor += text.count; input = String(characters)
+                insertComposerText(text)
             }
         case .paste(let text):
             let safe = text.components(separatedBy: .newlines).joined(separator: " ").filter { !$0.unicodeScalars.contains { $0.value < 32 || $0.value == 127 } }
-            let addition = String(safe.prefix(max(0, 4096 - input.utf8.count)))
-            characters.insert(contentsOf: Array(addition), at: cursor); cursor += addition.count; input = String(characters)
+            var remaining = max(0, 4096 - input.utf8.count)
+            let prefix = safe.prefix { character in
+                let bytes = character.utf8.count
+                guard bytes <= remaining else { return false }
+                remaining -= bytes
+                return true
+            }
+            let addition = String(prefix)
+            insertComposerText(addition)
         case .left: cursor = max(0, cursor - 1)
         case .right: cursor = min(characters.count, cursor + 1)
         case .home: cursor = 0
@@ -389,6 +404,7 @@ public struct KilnTerminal {
             }
             return execute(command)
         }
+        cursor = min(cursor, input.count)
         return []
     }
 
