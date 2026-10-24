@@ -143,7 +143,7 @@ private final class ShellHandler: ChannelInboundHandler {
         guard !selectingText, remote == nil, !attaching, let terminal, interactive, channel.isWritable else { return }
         let frame: String
         if secretName != nil || secretSaving {
-            frame = "\u{1B}[2J\u{1B}[H\u{1B}[33mKILN VAULT\u{1B}[0m\r\n\r\n" + (secretSaving ? "Saving credential..." : "Secret: \(secretName!)\r\nValue: [hidden]\r\n\r\nEnter saves. Escape/Ctrl-C cancels. Backspace edits. Maximum 16 KiB." + (secretInputRejected ? "\r\nInput rejected (size or newline). Ctrl-U clears the field; enter it again." : ""))
+            frame = "\u{1B}[0m" + terminal.theme.backgroundCode + terminal.theme.accentCode + "\u{1B}[2J\u{1B}[HKILN VAULT\u{1B}[0m\r\n\r\n" + (secretSaving ? "Saving credential..." : "Secret: \(secretName!)\r\nValue: [hidden]\r\n\r\nEnter saves. Escape/Ctrl-C cancels. Backspace edits. Maximum 16 KiB." + (secretInputRejected ? "\r\nInput rejected (size or newline). Ctrl-U clears the field; enter it again." : ""))
         } else { frame = terminal.render() }
         if frame != lastFrame {
             // Chat frames have fixed rows and no overlay cursor escapes. Patch changed
@@ -198,6 +198,8 @@ private final class ShellHandler: ChannelInboundHandler {
                 columns = max(10, request.terminalCharacterWidth); rows = max(3, request.terminalRowHeight)
                 if request.term != "dumb" {
                     terminal = KilnTerminal()
+                    do { terminal?.applyTheme(try commands.terminalTheme()) }
+                    catch { terminal?.finish(text: "Saved theme unavailable. Using black and green; theme default can reset it.", status: 1) }
                     terminal?.resize(width: request.terminalCharacterWidth, height: request.terminalRowHeight)
                 }
             }
@@ -407,6 +409,7 @@ private final class ShellHandler: ChannelInboundHandler {
                 }
                 if shell.terminal != nil {
                     shell.terminal?.update(modules)
+                    if let theme = result.terminalTheme { shell.terminal?.applyTheme(theme) }
                     shell.terminal?.finish(text: result.text, status: result.status)
                     if result.disconnect { shell.close(channel: channel, status: result.status) }
                     else { shell.paint(channel: channel) }

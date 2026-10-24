@@ -65,7 +65,7 @@ ssh -e none -i ~/.ssh/id_ed25519 -p 2222 admin@127.0.0.1
 
 Compare the host fingerprint before accepting it. The default listener is loopback-only. `-e none` lets Kiln receive the tilde key instead of OpenSSH treating it as a local escape.
 
-The dashboard supports keyboard and mouse navigation. Select a service and press Enter to manage it. Backtick or `~` opens the command drawer; `help` lists commands. In AI Chat, Tab opens or focuses tasks and approvals, and Ctrl-S freezes redraws for text selection. Non-PTY connections use plain text:
+The dashboard supports keyboard and mouse navigation. Select a service and press Enter to manage it. Backtick or `~` opens the command drawer; `help` lists commands. In AI Chat, Tab opens or focuses tasks and approvals, and Ctrl-S freezes redraws for text selection. The default theme is black and green. In the drawer, `theme` shows saved colors; `theme green|cyan|amber|mono|default` selects a preset, and `theme custom <accent> <background> <text> <muted>` accepts four distinct ANSI palette indices (0–255). In chat use `/theme` with the same arguments. Choices are saved on the node for your authenticated SSH identity and key, and restored on reconnect or runtime restart. Other connected sessions keep their current colors until reconnecting. `theme default` saves the black-and-green default. Non-PTY connections use plain text:
 
 ```sh
 ssh -i ~/.ssh/id_ed25519 -p 2222 admin@127.0.0.1 'app list'

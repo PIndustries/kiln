@@ -15,9 +15,10 @@ public struct CommandResult: Sendable {
     public let text: String
     public let status: Int
     public let disconnect: Bool
+    public let terminalTheme: TerminalTheme?
     public let attachSession: String?
-    public init(_ text: String, status: Int = 0, disconnect: Bool = false, attachSession: String? = nil) {
-        self.text = text; self.status = status; self.disconnect = disconnect; self.attachSession = attachSession
+    public init(_ text: String, status: Int = 0, disconnect: Bool = false, attachSession: String? = nil, terminalTheme: TerminalTheme? = nil) {
+        self.text = text; self.status = status; self.disconnect = disconnect; self.attachSession = attachSession; self.terminalTheme = terminalTheme
     }
 }
 
@@ -30,6 +31,7 @@ public struct KilnCommands: Sendable {
     private let assistant: KilnAssistant
     private let aiTasks: AITasks
     private let recoveries: AIRecoveryTasks
+    var terminalPreferencesDirectory: URL { runtime.stateDirectory.appendingPathComponent("terminal-preferences", isDirectory: true) }
     public let identities: KilnIdentityStore
     public private(set) var principal: KilnPrincipal? = nil
     public func forIdentity(name: String, publicKey: String) -> KilnCommands { var copy = self; copy.principal = KilnPrincipal(name: name, publicKey: (try? KilnIdentityStore.canonicalKey(publicKey)) ?? "invalid"); return copy }
@@ -153,6 +155,7 @@ public struct KilnCommands: Sendable {
             try authorize(parts)
             authorized = true
             if auditsMutation(parts) { try identities.audit(principal, verb: verb, outcome: "authorized", target: target, requestID: auditID) }
+            if parts.first == "theme" { return try terminalThemeCommand(parts) }
             if parts.first == "node" || parts.first == "cluster" { return try await nodeCommand(parts, requestID: auditID) }
             if parts.first == "identity" { return try identityCommand(parts) }
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
@@ -194,6 +197,7 @@ public struct KilnCommands: Sendable {
                 node help               Explicit peer discovery and adoption
                 app resources <name>    Worker resource policy and usage
                 status                  Runtime status
+                theme [preset|custom]   Saved terminal colors for your SSH identity/key
                 metrics                 Host CPU, memory, disk, uptime and load
                 app list                Installed applications and process state
                 app install <manifest>  Install a trusted local executable release
@@ -667,6 +671,7 @@ private extension KilnCommands {
     func authorize(_ p: [String]) throws {
         try identities.require(principal)
         if p == ["help"] || p == ["status"] || p == ["metrics"] || p == ["exit"] || p == ["quit"] || p == ["app", "list"] { return }
+        if p.first == "theme" { return }
         if p.first == "app", p.count == 3 {
             if ["health", "logs", "releases", "resources"].contains(p[1]) { try identities.require(principal, module: p[2]); return }
             if ["start", "stop", "restart", "rollback"].contains(p[1]) { try identities.require(principal, mutation: true, module: p[2]); return }

@@ -59,8 +59,8 @@ The following real local suites passed, using disposable runtime state:
   Python environment (`--build-system native` on this Swift 6.4 host).
 - Live ChatGPT sign-out confirmed remote renewable-session revocation and local
   credential removal. `ai accounts` reported signed out and model discovery was
-  rejected pending renewed consent. The account is intentionally signed out after
-  this acceptance check.
+  rejected pending renewed consent. The account was subsequently reconnected
+  with fresh consent, then restored and verified after restart.
 
 The offline fixtures passed in both macOS and Linux server workflows. Exact
 candidate evidence:
@@ -84,18 +84,26 @@ ChatGPT consent, model discovery, account restore, native tool/stream/cancellati
 renewal and sign-out passed. Fresh Erebine native acceptance also passed with an
 operator-supplied scoped Vault credential.
 
-## Remaining release gates
+## Installed core preview and remaining coverage
 
-- Native terminal clipboard/client-matrix acceptance. The attempted native Terminal clipboard check could
-  not run: Orca lacks Accessibility permission and the alternate computer-use
-  provider blocks Terminal. No clipboard pass is claimed.
-- Fresh Swift 6.2.3 Linux/macOS CI, Linux kernel resource enforcement and packaged
-  clean-install/upgrade/rollback checks for the final candidate.
-- Live Grok account and other API providers remain separately unverified where
-  account credentials/consent are unavailable.
+PR #51 promoted the merged core to `26.10.23.2`. Its
+[server validation](https://github.com/PIndustries/kiln/actions/runs/40037688857),
+[package/clean-install/upgrade/rollback checks](https://github.com/PIndustries/kiln/actions/runs/40037688944),
+and [secret scan](https://github.com/PIndustries/kiln/actions/runs/40037688969)
+passed. The downloaded macOS package passed archive, source-tree and all 62
+embedded file-digest checks before local SSH/REST/WebSocket verification and
+installation. ChatGPT cold restore, model discovery and inference passed; Erebine
+remained selected.
 
-The next packaged preview candidate is `26.10.23.2`; it incorporates the merged
-provider indicator without a development overlay. Its exact packages must pass
-the release gates above before replacing the local preview. No new public binary
-release is claimed by these notes. Portable application bundles remain the next
-platform milestone after the core preview acceptance work.
+The operator confirmed Apple Terminal selection, copying into another app and
+Ctrl-S return to chat on 2026-10-23. Additional native terminal clients remain
+tracked in issue #9. Live Grok and other unconfigured providers remain separately
+unverified.
+
+PR #53 adds the black-and-green brand default and saved terminal colors scoped
+to each authenticated SSH identity/key. Its local development preview is distinct
+from the retained validated `26.10.23.2` package. The change does not publish a
+new binary release or migrate application state.
+
+Portable application bundles are deferred at the maintainer's request. Current
+work prioritizes features and stability in the macOS operator workflow.

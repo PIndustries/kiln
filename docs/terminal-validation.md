@@ -45,8 +45,9 @@ production test-provider switches or credentials. A foreground disconnect starts
 a new conversation on reconnect: no old history or session proposal is restored.
 Its successful tool exchange and metrics check run after reconnect.
 
-Keep issue #9 open for native emulator clipboard selection and additional clients
-beyond OpenSSH/pyte. The Erebine retry/sidebar path through real SSH now has
+Apple Terminal copy/paste into another app and Ctrl-S return to chat were
+confirmed by the operator on 2026-10-23 using preview `26.10.23.2`. Keep issue #9
+open for additional native terminal clients beyond that recorded manual check. The Erebine retry/sidebar path through real SSH now has
 deterministic transport-fixture coverage; actual remote capacity events are not induced.
 The new fixture proves frozen painting during incoming stream content, while
 clipboard integration remains a separate OS-level check.
@@ -76,7 +77,24 @@ proposal, live background task completion, and narrow-terminal Tab navigation.
 The delayed offline SSH fixture separately verifies that backtick opens the
 command drawer from chat and after Escape, and `status` executes as a CLI command.
 
-Native clipboard copying was not verified: the available native automation lacked
-Accessibility permission or blocked Terminal. These results do not close the
-broader native-client matrix. Erebine retry/sidebar behavior is separately covered
+Native automation could not check clipboard access, but the operator subsequently
+confirmed Apple Terminal copying and return to chat. Other native clients remain
+unverified. Erebine retry/sidebar behavior is separately covered
 by the real SSH retry fixture above.
+
+
+## Theme persistence
+
+Black and green is the default. `theme` in the command drawer (or `/theme` in
+chat) shows the saved palette. Presets and custom ANSI palettes are saved for the
+authenticated SSH identity and canonical public key. Changing a theme updates the
+requesting connection after the state write succeeds; other open connections keep
+their colors until reconnecting. Revoked identities cannot read or change their
+preferences. `theme default` saves the brand default.
+
+The real OpenSSH fixture verifies a custom palette after both reconnect and runtime
+restart. Unit tests additionally cover separate identities, revocation, private
+file permissions, corrupt or oversized state, and a failed write without a success
+response. Corrupt preferences fall back to black and green with a visible warning;
+`theme default` replaces invalid saved content. Preferences contain color indices
+only and do not affect provider selection or chat context.
