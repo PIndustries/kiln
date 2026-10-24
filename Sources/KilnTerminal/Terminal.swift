@@ -13,7 +13,8 @@ public struct KilnTerminal {
     public private(set) var selected = 0
     public private(set) var busy = false
     private var management = ManagementUI()
-    private var theme = TerminalTheme()
+    public private(set) var theme = TerminalTheme()
+    public mutating func applyTheme(_ theme: TerminalTheme) { self.theme = theme }
     private var accessLabel: String?
     private var aiWorkspace = AIWorkspaceSnapshot()
     private var sidebarFocus = false
@@ -361,16 +362,11 @@ public struct KilnTerminal {
             input = ""; cursor = 0; historyPosition = nil
             if (!aiMode && (command == "theme" || command.hasPrefix("theme "))) ||
                 (aiMode && (command == "/theme" || command.hasPrefix("/theme "))) {
-                let arguments = Array(command.split(whereSeparator: { $0.isWhitespace }).dropFirst())
-                let message: String
-                if arguments.isEmpty {
-                    message = "Session theme: accent \(theme.accent), background \(theme.background), text \(theme.foreground), muted \(theme.muted). theme green|cyan|amber|mono|default or theme custom <accent> <background> <text> <muted> (distinct ANSI 0...255)."
-                } else if let chosen = TerminalTheme.parse(arguments) {
-                    theme = chosen
-                    message = "Session theme updated. Reconnect restores black and green."
-                } else {
-                    message = "Invalid theme. Use green, cyan, amber, mono, default, or custom with four distinct ANSI colors (0...255)."
+                let arguments = command.split(whereSeparator: { $0.isWhitespace }).dropFirst().map(String.init)
+                if arguments.isEmpty || TerminalTheme.parse(arguments) != nil {
+                    return execute((["theme"] + arguments).joined(separator: " "))
                 }
+                let message = "Invalid theme. Use green, cyan, amber, mono, default, or custom with four distinct ANSI colors (0...255)."
                 transcript.append(message); transcript = Array(transcript.suffix(300)); scroll = 0
                 if aiMode { messages.append(("Kiln", message)); messages = Array(messages.suffix(40)) }
                 notice = message
@@ -583,7 +579,7 @@ public struct KilnTerminal {
             }
             if sessions.isEmpty { lines.append(row("  No sessions yet. Press n or click New terminal.", muted)) }
         } else if page == 3 {
-            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5 / 6  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  theme                 Session colors (default black/green)", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
+            for text in ["  Click tabs, services, actions or the drawer bar.", "  Mouse wheel scrolls output or service selection.", "  Navigate", "  Up / Down or j / k    Select a service", "  Enter                 Open its action menu", "  Tab or 1 / 2 / 3 / 4 / 5 / 6  Switch views", "  ` or ~                Toggle command drawer", "  Esc                   Close drawer or menu", "  q                     Disconnect", "", "  Command drawer", "  theme                 Saved colors (default black/green)", "  Up / Down             Command history", "  Tab                   Complete commands and service IDs", "  Left / Right          Edit the command", "  Ctrl-A / E            Beginning / end of line", "  PgUp / PgDn           Scroll command output", "", "  Process state is not a health check."] {
                 if lines.count < bodyEnd { lines.append(row(text, muted)) }
             }
         } else if page == 2 {

@@ -73,9 +73,10 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
                     send(f'\x1b[<0;{x+2};{y+1}M\x1b[<0;{x+2};{y+1}m'.encode()); return
             raise AssertionError(('Missing click target',text))
         assert b'\x1b[48;5;0m' in raw and b'\x1b[38;5;46m' in raw
-        send(b'`theme cyan\r'); expect('Session theme updated')
+        send(b'`theme cyan\r'); expect('Theme saved for your SSH identity')
         assert b'\x1b[38;5;51m' in raw
-        send(b'theme default\r'); expect('Session theme updated')
+        send(b'theme default\r'); pump(.5)
+        assert b'\x1b[38;5;46m' in raw
         send(b'`')
         assert b'\x1b[?1000h' in raw and b'\x1b[?1006h' in raw
         click_text('3 Metrics'); expect('CPU:')
@@ -134,13 +135,24 @@ with tempfile.TemporaryDirectory(prefix='kiln-terminal-') as tmp:
         send(b'\x1b[B\r\x1b[B\r'); expect('Confirm: app stop storefront/websocket')
         send(b'\r'); expect('Stopped storefront/websocket')
         send(b'\r\r'); expect('Started storefront/websocket')
-        send(b'q'); process.wait(timeout=5); pump()
+        send(b'`theme custom 51 16 255 244\r'); expect('Theme saved for your SSH identity')
+        send(b'`q'); process.wait(timeout=5); pump()
         assert b'\x1b[?1049l' in raw and b'\x1b[?25h' in raw and b'\x1b[?1000l' in raw and b'\x1b[?1006l' in raw
         assert process.returncode==0
         process,master=connect(); screen=pyte.Screen(100,30); stream=pyte.ByteStream(screen); raw=bytearray()
         expect('storefront/rest')
+        assert b'\x1b[38;5;51m' in raw and b'\x1b[48;5;16m' in raw, 'Custom theme lost on reconnect'
         runtime.terminate(); pump(1); runtime.wait(timeout=12); process.wait(timeout=5); pump(.1)
         assert b'\x1b[?1000l' in raw and b'\x1b[?1006l' in raw and b'\x1b[?1049l' in raw
+        runtime=subprocess.Popen([str(BIN/'kiln'),'up','--state',str(tmp/'state'),'--authorized-keys',str(key)+'.pub','--port',str(port)],stdout=log,stderr=log)
+        deadline=time.monotonic()+10
+        while subprocess.run(base+['admin@127.0.0.1','status'],capture_output=True).returncode:
+            assert time.monotonic()<deadline; time.sleep(.1)
+        process,master=connect(); screen=pyte.Screen(100,30); stream=pyte.ByteStream(screen); raw=bytearray()
+        expect('P.INDUSTRIES')
+        assert b'\x1b[38;5;51m' in raw and b'\x1b[48;5;16m' in raw, 'Custom theme lost on runtime restart'
+        send(b'q'); process.wait(timeout=5); pump()
+        print('PASS: saved custom theme survives SSH reconnect and runtime restart')
         print('PASS: SSH dashboard, mouse clicks, streaming host metrics, colors, menus, confirmation, stop/start actions, health action, completion, history, paste, resize, terminal cleanup including server shutdown')
     finally:
         for process,master in clients:

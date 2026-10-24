@@ -1,5 +1,6 @@
 import Testing
 import KilnTerminal
+import KilnKit
 
 private func themeCommand(_ command: String, in ui: inout KilnTerminal) -> [TerminalEffect] {
     _ = ui.handle(.text(command))
@@ -23,7 +24,9 @@ private func themeCommand(_ command: String, in ui: inout KilnTerminal) -> [Term
 @Test func terminalThemeCommandsStayLocalAndRejectInvalidColors() {
     var ui = KilnTerminal()
     _ = ui.handle(.text("`"))
-    #expect(themeCommand("theme custom 51 16 255 244", in: &ui).isEmpty)
+    #expect(themeCommand("theme custom 51 16 255 244", in: &ui) == [.command("theme custom 51 16 255 244")])
+    ui.applyTheme(TerminalTheme.parse(["custom", "51", "16", "255", "244"])!)
+    ui.finish(text: "Theme saved", status: 0)
     #expect(!ui.busy)
     #expect(ui.render().contains("\u{1b}[48;5;16m"))
     #expect(ui.render().contains("\u{1b}[38;5;51m"))
@@ -32,7 +35,8 @@ private func themeCommand(_ command: String, in ui: inout KilnTerminal) -> [Term
         #expect(!ui.busy)
         #expect(ui.render().contains("\u{1b}[38;5;51m"))
     }
-    #expect(themeCommand("theme default", in: &ui).isEmpty)
+    #expect(themeCommand("theme default", in: &ui) == [.command("theme default")])
+    ui.applyTheme(TerminalTheme()); ui.finish(text: "Theme saved", status: 0)
     #expect(ui.render().contains("\u{1b}[38;5;46m"))
     #expect(KilnTerminal().render().contains("\u{1b}[38;5;46m"))
 }
@@ -40,9 +44,11 @@ private func themeCommand(_ command: String, in ui: inout KilnTerminal) -> [Term
 @Test func chatThemeDoesNotSendProviderRequests() {
     var ui = KilnTerminal()
     _ = ui.handle(.text("`")); _ = themeCommand("ai", in: &ui)
-    #expect(themeCommand("/theme cyan", in: &ui).isEmpty)
+    #expect(themeCommand("/theme cyan", in: &ui) == [.command("theme cyan")])
+    ui.applyTheme(TerminalTheme.parse(["cyan"])!); ui.finish(text: "Theme saved", status: 0)
     #expect(ui.chatVisible && !ui.busy)
     #expect(ui.render().contains("\u{1b}[38;5;51m"))
-    #expect(themeCommand("/theme green", in: &ui).isEmpty)
+    #expect(themeCommand("/theme green", in: &ui) == [.command("theme green")])
+    ui.applyTheme(TerminalTheme()); ui.finish(text: "Theme saved", status: 0)
     #expect(ui.render().contains("\u{1b}[38;5;46m"))
 }
