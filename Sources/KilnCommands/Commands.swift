@@ -358,6 +358,37 @@ private extension KilnCommands {
         }
         try configuration.validate(); return configuration
     }
+    func aiProfileDetails() -> String {
+        let active = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile, model: $0.model) }
+        var rows = [active.map { "Active: \($0.profile) / \($0.displayName) / \($0.model) / \($0.billingLabel)" } ?? "Active: not configured", "Saved profiles / name / provider / model / access:"]
+        let directory = runtime.stateDirectory.appendingPathComponent("ai-profiles")
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).filter { $0.hasSuffix(".json") }.sorted()
+        if names.isEmpty { rows.append("No saved profiles. Configure them with ai profile add in the command drawer.") }
+        for file in names.prefix(16) {
+            let name = String(file.dropLast(5))
+            guard AIProviderSnapshot(provider: "unknown", profile: name).profile == name else {
+                rows.append("Invalid saved profile name (omitted)"); continue
+            }
+            do {
+                let url = directory.appendingPathComponent(file)
+                let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular,
+                      let size = attributes[.size] as? NSNumber, size.intValue <= 16384 else { throw CommandSyntaxError.unknown }
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                let bytes = try handle.read(upToCount: 16385) ?? Data()
+                guard bytes.count <= 16384 else { throw CommandSyntaxError.unknown }
+                let config = try JSONDecoder().decode(AIConfiguration.self, from: bytes)
+                try config.validate()
+                guard config.profile == name else { throw CommandSyntaxError.unknown }
+                let snapshot = AIProviderSnapshot(provider: config.provider.rawValue, profile: name, model: config.model)
+                rows.append("\(name) / \(snapshot.displayName) / \(snapshot.model) / \(snapshot.billingLabel)")
+            } catch { rows.append(name + " / unavailable (invalid or unreadable profile)") }
+        }
+        if names.count > 16 { rows.append("Showing the first 16 saved profiles.") }
+        rows += ["Selection is node-wide. Switching clears foreground conversations and interactive proposals.", "Switch: /provider NAME --new-context", "CLI: ai profile use NAME --new-context", "Saved configuration does not establish account readiness or provider health."]
+        return rows.joined(separator: "\n")
+    }
     func createRecoveryTask(_ module: String) async throws -> String {
         try authorizeAdmin()
         let requestID = UUID().uuidString.lowercased()
@@ -530,6 +561,7 @@ private extension KilnCommands {
         if parts.count >= 3, parts[1] == "profile" {
             try authorizeAdmin()
             let directory = runtime.stateDirectory.appendingPathComponent("ai-profiles")
+            if parts == ["ai", "profile", "list", "--details"] { return CommandResult(aiProfileDetails()) }
             if parts == ["ai", "profile", "list"] {
                 let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
                 return CommandResult(names.filter { $0.hasSuffix(".json") }.sorted().map { String($0.dropLast(5)) }.joined(separator: "\n"))
@@ -561,6 +593,9 @@ private extension KilnCommands {
             Chat commands / local reference
             /help                 Show this reference
             /context              Inspect this connection's history limits
+            /provider             Inspect the active provider
+            /providers            List saved profiles (administrator)
+            /provider NAME --new-context  Switch node-wide; clears contexts
             /reset                Clear conversation and interactive proposals
             /theme [PRESET]       Show or save colors (green/cyan/amber/mono)
             /task PROMPT          Start a background investigation

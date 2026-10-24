@@ -403,6 +403,18 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/help" { return execute("ai chat-help") }
+                if command == "/providers" { return execute("ai profile list --details") }
+                if command == "/provider" { return execute("ai status") }
+                if command.split(whereSeparator: { $0.isWhitespace }).first == "/provider" {
+                    let parts = command.split(whereSeparator: { $0.isWhitespace })
+                    if parts.count == 3, parts[2] == "--new-context" {
+                        return execute("ai profile use " + Self.quote(String(parts[1])) + " --new-context")
+                    }
+                    messages.append(ChatMessage(role: "You", text: command))
+                    messages.append(ChatMessage(role: "Kiln", text: "Use /provider NAME --new-context. Selection is node-wide and clears foreground conversations and interactive proposals. Use /providers to list saved profiles."))
+                    messages = Array(messages.suffix(40)); scroll = 0
+                    return []
+                }
                 let requiredArguments = ["/task": "PROMPT", "/recover": "APP/MODULE", "/watch": "TASK-ID", "/cancel": "TASK-ID", "/approve": "PROPOSAL-ID", "/deny": "PROPOSAL-ID"]
                 if let argument = requiredArguments[command] {
                     messages.append(ChatMessage(role: "You", text: command))
