@@ -86,8 +86,11 @@ public struct KilnTerminal {
     private var liveAnswer = ""
     private var liveReasoning = ""
     private var liveStatus = ""
+    private var responseProvider: AIProviderSnapshot?
     public mutating func progress(_ event: AIProgress) {
         switch event {
+        case .provider(let provider):
+            if busy && commandInChat && responseProvider == nil { responseProvider = provider }
         case .answer(let text): liveAnswer = String((liveAnswer + text).suffix(24000))
         case .reasoning(let text): liveReasoning = String((liveReasoning + text).suffix(6000))
         case .status(let text):
@@ -97,7 +100,15 @@ public struct KilnTerminal {
         }
     }
     public var chatVisible: Bool { aiMode && drawer }
-    private var messages: [(String, String)] = []
+    private struct ChatMessage {
+        let role: String
+        let text: String
+        let provider: AIProviderSnapshot?
+        init(role: String, text: String, provider: AIProviderSnapshot? = nil) {
+            self.role = role; self.text = text; self.provider = provider
+        }
+    }
+    private var messages: [ChatMessage] = []
     private var started = Date()
     private var animation = 0
     private var toolCount = 0
@@ -135,8 +146,8 @@ public struct KilnTerminal {
     private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int), workspace(Int), review(Int), newTask }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
-        if commandInChat { messages.append((status == 0 ? "Kiln" : "Error", text)); messages = Array(messages.suffix(40)) }
-        commandInChat = false
+        if commandInChat { messages.append(ChatMessage(role: status == 0 ? "Kiln" : "Error", text: text, provider: responseProvider)); messages = Array(messages.suffix(40)) }
+        commandInChat = false; responseProvider = nil
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""
         busy = false; management.finish(text:text,status:status)
         let lines = text.components(separatedBy: "\n")
@@ -146,11 +157,11 @@ public struct KilnTerminal {
     }
     private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
         guard !busy else { return [] }
-        commandInChat = chatVisible
+        commandInChat = chatVisible; responseProvider = nil
         busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
         started = Date(); animation = 0; toolCount = 0
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""
-        if commandInChat { messages.append(("You", display.map { String($0.dropFirst(5)) } ?? command)) }
+        if commandInChat { messages.append(ChatMessage(role: "You", text: display.map { String($0.dropFirst(5)) } ?? command)) }
         notice = "Working: " + command
         return [.command(command)]
     }
@@ -383,7 +394,7 @@ public struct KilnTerminal {
                 }
                 let message = "Invalid theme. Use green, cyan, amber, mono, default, or custom with four distinct ANSI colors (0...255)."
                 transcript.append(message); transcript = Array(transcript.suffix(300)); scroll = 0
-                if aiMode { messages.append(("Kiln", message)); messages = Array(messages.suffix(40)) }
+                if aiMode { messages.append(ChatMessage(role: "Kiln", text: message)); messages = Array(messages.suffix(40)) }
                 notice = message
                 return []
             }
@@ -440,13 +451,17 @@ public struct KilnTerminal {
         }
         return result
     }
+    private func chatHeading(_ role: String, provider: AIProviderSnapshot?) -> String {
+        guard let provider else { return role.uppercased() }
+        return [role.uppercased(), provider.displayName, provider.profile, provider.model].filter { !$0.isEmpty }.joined(separator: " / ")
+    }
     private func chatBody(columns: Int) -> [String] {
         var body: [String] = []
-        for (role, text) in messages {
-            body += [role.uppercased()] + chatText(text, columns: columns) + [""]
+        for message in messages {
+            body += [chatHeading(message.role, provider: message.provider)] + chatText(message.text, columns: columns) + [""]
         }
         if busy {
-            body += ["KILN"]
+            body += [chatHeading("Kiln", provider: responseProvider)]
             if !liveAnswer.isEmpty { body += chatText(liveAnswer, columns: columns) }
             else if !liveReasoning.isEmpty { body += ["Provider reasoning"] + Array(chatText(liveReasoning, columns: columns).suffix(3)) }
             else { body += ["Waiting for provider..."] }
@@ -517,13 +532,14 @@ public struct KilnTerminal {
         let body = chatBody(columns: columns), capacity = height - 9
         let end = max(0, body.count - scroll)
         for text in body.prefix(end).suffix(capacity) {
-            lines.append(row(text, ["YOU", "KILN", "ERROR"].contains(text) ? accent : normal))
+            lines.append(row(text, (["YOU", "KILN", "ERROR"].contains(text) || text.hasPrefix("KILN / ") || text.hasPrefix("ERROR / ")) ? accent : normal))
         }
         while lines.count < height - 5 { lines.append(row()) }
         let backingOff = liveStatus.hasPrefix("Provider busy;")
         let phase = backingOff ? liveStatus : !liveAnswer.isEmpty ? "Receiving response" : !liveReasoning.isEmpty ? "Reasoning" : !liveStatus.isEmpty ? liveStatus : toolCount > 0 ? "Inspecting system" : "Waiting for provider"
         let spinner = ["|", "/", "-", "\\"][animation]
-        let activity = busy ? "\(spinner) \(phase)  \(Int(Date().timeIntervalSince(started)))s  /  \(toolCount) tool calls" : "Ready" + (toolCount > 0 ? "  /  \(toolCount) tool calls" : "")
+        let source = responseProvider.map { "via " + $0.displayName + " / " + $0.profile + ": " } ?? ""
+        let activity = busy ? "\(spinner) \(source)\(phase)  \(Int(Date().timeIntervalSince(started)))s  /  \(toolCount) tool calls" : "Ready" + (toolCount > 0 ? "  /  \(toolCount) tool calls" : "")
         lines += [row(selectingText ? "SELECT TEXT: drag to copy; Ctrl-S resumes" : activity, muted), row(String(repeating: "-", count: columns), accent)]
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))

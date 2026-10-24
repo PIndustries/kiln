@@ -36,6 +36,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
     requests_lock = threading.Lock()
     request_count = 0
     last_messages = []
+    last_model = ""
 
     def log_message(self, *_):
         pass
@@ -48,6 +49,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         with Fixture.requests_lock:
             Fixture.request_count += 1
             Fixture.last_messages = messages
+            Fixture.last_model = body["model"]
         prompt = next(item["content"] for item in reversed(messages) if item["role"] == "user")
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
@@ -68,6 +70,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 emit("Fixture tool result received. ")
                 time.sleep(0.25)
                 emit("Review the local evidence and approval.", done=True)
+            elif prompt == "fixture attributed follow-up":
+                emit("Alternate source answer complete.", done=True)
             elif prompt.startswith("fixture context turn "):
                 emit("Context turn " + prompt.rsplit(" ", 1)[1] + " completed.", done=True)
             elif "fixture restart" in prompt:
@@ -121,6 +125,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             time.sleep(0.05)
         command(f"ai profile add offline ollama http://127.0.0.1:{fixture.server_port} fixture-model")
         command("ai profile use offline --new-context")
+        command(f"ai profile add alternate ollama http://127.0.0.1:{fixture.server_port} fixture-other")
         manifest = root / "worker.json"
         manifest.write_text(json.dumps(dict(application="fixture", name="worker", version="1", executable=str(BIN / "kiln-example-backend"), arguments=["--port", str(app_port)], healthURL=f"http://127.0.0.1:{app_port}/health")))
         command(f"app install {manifest}")
@@ -296,6 +301,26 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         with Fixture.requests_lock:
             assert Fixture.request_count == count, "Context command called the provider"
         print("PASS offline SSH: context metadata makes no provider request; 22 turns retain recent context and show trimming", flush=True)
+        # Switch the selected profile while a slow request keeps its original
+        # immutable configuration. The stream's actual source must stay visible.
+        send(b"fixture slow\r")
+        expect("frame-02")
+        command("ai profile use alternate --new-context")
+        expect("Model: fixture-other")
+        expect("via Ollama / offline")
+        with Fixture.requests_lock:
+            assert Fixture.last_model == "fixture-model", "In-flight wire model changed"
+        expect("frame-39")
+        expect("[ready]")
+        expect("KILN / Ollama / offline / fixture-model")
+        send(b"fixture attributed follow-up\r")
+        expect("Alternate source answer complete.")
+        expect("[ready]")
+        expect("KILN / Ollama / alternate / fixture-other")
+        expect("KILN / Ollama / offline / fixture-model")
+        with Fixture.requests_lock:
+            assert Fixture.last_model == "fixture-other"
+        print("PASS offline SSH: request source stays pinned during profile switch; completed answers retain their actual models", flush=True)
         print("KILN_OFFLINE_AI_TERMINAL_COMPLETE", flush=True)
     except Exception:
         log.flush()
