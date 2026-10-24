@@ -9,11 +9,23 @@ import Glibc
 /// Shared, rate-limited sampler. No credentials, command lines or environment are collected.
 public actor KilnTelemetry {
     private var cached: HostMetrics?
+    private var cachedAt: ContinuousClock.Instant?
+    private let cacheNow: @Sendable () -> ContinuousClock.Instant
+    private let processSampler: @Sendable () -> [Int32: ProcessMetrics]
     private var lastTicks: (UInt64, UInt64)?
     private let diskPath: String
-    public init(diskPath: String) { self.diskPath = diskPath }
+    public init(diskPath: String) {
+        self.diskPath = diskPath
+        self.cacheNow = { ContinuousClock.now }
+        self.processSampler = { Self.processMetrics() }
+    }
+    // Deterministic cache/slow-collector checks without sleeps or production flags.
+    init(diskPath: String, cacheNow: @escaping @Sendable () -> ContinuousClock.Instant,
+         processSampler: @escaping @Sendable () -> [Int32: ProcessMetrics]) {
+        self.diskPath = diskPath; self.cacheNow = cacheNow; self.processSampler = processSampler
+    }
     public func sample() -> HostMetrics {
-        if let cached, Date().timeIntervalSince(cached.timestamp) < 0.9 { return cached }
+        if let cached, let cachedAt, cachedAt.duration(to: cacheNow()) < .milliseconds(900) { return cached }
         var cpu: Double?
         var memoryResident: UInt64?
         #if canImport(Darwin)
@@ -68,11 +80,12 @@ public actor KilnTelemetry {
             memoryResident: memoryResident, memoryTotal: ProcessInfo.processInfo.physicalMemory,
             diskFree: (disk?[.systemFreeSize] as? NSNumber)?.uint64Value,
             diskTotal: (disk?[.systemSize] as? NSNumber)?.uint64Value,
-            uptime: ProcessInfo.processInfo.systemUptime, load: validLoad ? loads : [], processes: processMetrics())
+            uptime: ProcessInfo.processInfo.systemUptime, load: validLoad ? loads : [], processes: processSampler())
         cached = metrics
+        cachedAt = cacheNow()
         return metrics
     }
-    private func processMetrics() -> [Int32: ProcessMetrics] {
+    private static func processMetrics() -> [Int32: ProcessMetrics] {
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/ps")
         process.arguments = ["-axo", "pid=,pcpu=,rss="]
         process.environment = ["LC_ALL":"C", "PATH":"/usr/bin:/bin"]
