@@ -86,22 +86,15 @@ public actor KilnTelemetry {
         return metrics
     }
     private static func processMetrics() -> [Int32: ProcessMetrics] {
-        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,pcpu=,rss="]
-        process.environment = ["LC_ALL":"C", "PATH":"/usr/bin:/bin"]
-        let pipe = Pipe(); process.standardOutput = pipe; process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile(); process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return [:] }
-            var values: [Int32:ProcessMetrics] = [:]
-            for line in String(decoding: data,as: UTF8.self).split(separator: "\n") {
-                let parts = line.split(whereSeparator: { $0.isWhitespace })
-                if parts.count == 3, let pid = Int32(parts[0]), let cpu = Double(parts[1]), let rss = UInt64(parts[2]) {
-                    values[pid] = ProcessMetrics(cpuPercent: cpu, residentBytes: rss*1024)
-                }
+        guard let data = ProcessSnapshot.read() else { return [:] }
+        var values: [Int32:ProcessMetrics] = [:]
+        for line in String(decoding: data,as: UTF8.self).split(separator: "\n") {
+            let parts = line.split(whereSeparator: { $0.isWhitespace })
+            if parts.count == 3, let pid = Int32(parts[0]), let cpu = Double(parts[1]), cpu.isFinite, cpu >= 0,
+               let rss = UInt64(parts[2]), rss <= UInt64.max / 1024 {
+                values[pid] = ProcessMetrics(cpuPercent: cpu, residentBytes: rss*1024)
             }
-            return values
-        } catch { return [:] }
+        }
+        return values
     }
 }

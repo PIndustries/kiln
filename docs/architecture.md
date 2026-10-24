@@ -59,6 +59,15 @@ A manifest:
 
 Legacy `app install` uses explicit health checks. Managed `app deploy` adds readiness admission, stable loopback ingress, draining and rollback; see [deployments](deployments.md). Releases are local executable copies using distinct worker ports. Artifact signing, architecture metadata and cluster routing remain future work. Applications must currently avoid spawning unmanaged descendant processes. Clean runtime shutdown stops direct children; persistent desired state starts them again on the next launch. Supervisor-lifetime guardians terminate and reap direct workers after supervisor SIGKILL; startup reconciles their ownership locks before restoration. See [supervision](supervision.md) for the boundaries.
 
+## Host metrics
+
+Host/process metrics share a cache that expires 900 ms after collection completes.
+The process collector runs `/bin/ps` with a minimal environment and drains stdout
+without blocking reads, with a two-second read/exit deadline and a 4 MiB output
+limit. Timeout, excess output, read/launch failure or unsuccessful exit discards
+the process snapshot. A still-running collector is killed and reaped; other host
+metrics remain available and missing process gauges are shown as unavailable.
+
 ## Optional interfaces
 
 KilnRuntime neither imports nor starts KilnSSH. The executable chooses whether to enable the SSH adapter. Local console and SSH dispatch to the same command engine. Future APIs and Apple UIs should use the same operations and authorization contract.
