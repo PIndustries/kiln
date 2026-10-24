@@ -393,6 +393,7 @@ public struct KilnTerminal {
             if aiMode {
                 if command == "/exit" { setAIChatMode(false); transcript.append("Left AI chat."); return [] }
                 if command.hasPrefix("/recover ") { return execute("ai recovery new " + Self.quote(String(command.dropFirst(9)))) }
+                if command == "/context" { return execute("ai context") }
                 if command == "/tasks" { return execute("ai task list") }
                 if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
                 if command.hasPrefix("/watch ") { return execute("ai task watch " + Self.quote(String(command.dropFirst(7)))) }
@@ -683,7 +684,7 @@ public struct KilnTerminal {
             let shown = String(Array(input).dropFirst(offset).prefix(room))
             hits.append(Hit(row: height-2, column: 10, width: room, click: .cursor(offset)))
             lines.append(row((aiMode ? "  chat > " : "  kiln > ") + shown, accent))
-            lines.append(row(aiMode ? "  Ctrl-S select/copy | /task | /tasks | /exit | PgUp/PgDn" : "  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
+            lines.append(row(aiMode ? "  Ctrl-S copy | /context | /task | /tasks | /exit" : "  Tab complete  |  Up/Down history  |  PgUp/PgDn output", muted))
             lines.append(row("  " + (selectingText ? "SELECT TEXT: drag to select and copy; Ctrl-S resumes." : notice), muted))
             let cursorColumn = min(w, 10 + cursor - offset)
             return ("\u{1b}[?25l\u{1b}[H" + lines.prefix(height).joined(separator: "\r\n") + "\u{1b}[\(height-2);\(cursorColumn)H\u{1b}[?25h", hits)

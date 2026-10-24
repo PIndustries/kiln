@@ -557,13 +557,17 @@ private extension KilnCommands {
         }
         switch parts {
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /exit leaves chat; /context shows history limits; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai context                    Current connection history counts and limits\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
         case ["ai", "metrics"]:
             try authorizeAdmin()
             let metrics = await assistant.providerMetrics.snapshot()
             try authorizeAdmin()
             return CommandResult(metrics.summary)
         case ["ai", "operations"]: return CommandResult(try await runtime.operationHistory())
+        case ["ai", "context"]:
+            let status = await assistant.contextStatus(sessionID)
+            try identities.require(principal)
+            return CommandResult(status)
         case ["ai", "reset"]: return CommandResult(try await assistant.reset(sessionID))
         default: break
         }
@@ -678,7 +682,7 @@ private extension KilnCommands {
             if ["install", "deploy"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if p.first == "ai" {
-            if p.count == 1 || ["help", "status", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
+            if p.count == 1 || ["help", "status", "context", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
             if ["task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
         }

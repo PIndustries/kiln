@@ -33,6 +33,9 @@ def freeport():
 
 class Fixture(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    requests_lock = threading.Lock()
+    request_count = 0
+    last_messages = []
 
     def log_message(self, *_):
         pass
@@ -42,6 +45,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         assert self.path == "/api/chat" and 0 < length <= 262144
         body = json.loads(self.rfile.read(length))
         messages = body["messages"]
+        with Fixture.requests_lock:
+            Fixture.request_count += 1
+            Fixture.last_messages = messages
         prompt = next(item["content"] for item in reversed(messages) if item["role"] == "user")
         self.send_response(200)
         self.send_header("Content-Type", "application/x-ndjson")
@@ -62,6 +68,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 emit("Fixture tool result received. ")
                 time.sleep(0.25)
                 emit("Review the local evidence and approval.", done=True)
+            elif prompt.startswith("fixture context turn "):
+                emit("Context turn " + prompt.rsplit(" ", 1)[1] + " completed.", done=True)
             elif "fixture restart" in prompt:
                 emit(tools={"name": "request_operation", "arguments": {"module": "fixture/worker", "operation": "restart"}}, done=True)
             elif "fixture inspect" in prompt:
@@ -175,6 +183,13 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
 
         connect()
         expect("ollama / offline")
+        with Fixture.requests_lock:
+            count = Fixture.request_count
+        send(b"/context\r")
+        expect("Completed turns: 0")
+        expect("[ready]")
+        with Fixture.requests_lock:
+            assert Fixture.request_count == count, "Context command called the provider"
         send(b"unsent AI draft")
         send(b"`")
         expect("COMMAND DRAWER")
@@ -259,6 +274,28 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         metrics = command("ai metrics")
         assert "ollama: usage supplied for" in metrics and "total=unavailable" in metrics, metrics
         print("PASS offline SSH: disconnect during foreground stream; reconnect has no stale proposal/history; fresh read tool and usage report work", flush=True)
+        # Query metadata and cross the history limit in one real SSH connection.
+        # Distinct replies prevent an old answer from satisfying a later wait.
+        send(b"/reset\r")
+        expect("AI conversation and pending proposals cleared")
+        expect("[ready]")
+        for index in range(22):
+            send(f"fixture context turn {index}\r".encode())
+            expect(f"Context turn {index} completed.")
+            expect("[ready]")
+        expect("Context trimmed:")
+        with Fixture.requests_lock:
+            users = [m["content"] for m in Fixture.last_messages if m["role"] == "user"]
+            count = Fixture.request_count
+        assert "fixture context turn 0" not in users and "fixture context turn 1" in users
+        send(b"/context\r")
+        expect("Completed turns: 21")
+        expect("42 messages / 40 limit")
+        expect("oldest complete turns will be omitted")
+        expect("[ready]")
+        with Fixture.requests_lock:
+            assert Fixture.request_count == count, "Context command called the provider"
+        print("PASS offline SSH: context metadata makes no provider request; 22 turns retain recent context and show trimming", flush=True)
         print("KILN_OFFLINE_AI_TERMINAL_COMPLETE", flush=True)
     except Exception:
         log.flush()
