@@ -193,6 +193,12 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         send(b"/help\r")
         expect("Help makes no provider request.")
         expect("[ready]")
+        send(b"/provider\r")
+        expect("Provider: ollama / profile offline")
+        expect("[ready]")
+        send(b"/providers\r")
+        expect("Switch: /provider NAME --new-context")
+        expect("[ready]")
         for shortcut in [b"/task", b"/watch", b"/cancel", b"/recover", b"/approve", b"/deny"]:
             send(shortcut + b"\r")
             expect("Usage: " + shortcut.decode())
@@ -329,6 +335,27 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         with Fixture.requests_lock:
             assert Fixture.last_model == "fixture-other"
         print("PASS offline SSH: request source stays pinned during profile switch; completed answers retain their actual models", flush=True)
+        with Fixture.requests_lock:
+            count = Fixture.request_count
+        send(b"/provider offline\r")
+        expect("Use /provider NAME --new-context")
+        expect("Model: fixture-other")
+        send(b"/provider offline --new-context\r")
+        expect("Selected offline.")
+        expect("[ready]")
+        expect("Model: fixture-model")
+        send(b"/context\r")
+        expect("Completed turns: 0")
+        expect("[ready]")
+        with Fixture.requests_lock:
+            assert Fixture.request_count == count, "Profile selection called the provider"
+        send(b"fixture context turn 999\r")
+        expect("Context turn 999 completed.")
+        expect("[ready]")
+        with Fixture.requests_lock:
+            assert Fixture.last_model == "fixture-model"
+            assert not any(m.get("content") == "fixture attributed follow-up" for m in Fixture.last_messages)
+        print("PASS offline SSH: provider inspection and explicit chat selection make no model request; next turn uses a fresh context and selected model", flush=True)
         print("KILN_OFFLINE_AI_TERMINAL_COMPLETE", flush=True)
     except Exception:
         log.flush()
