@@ -435,9 +435,10 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         command("ai conversation retention durable-acceptance 1")
         command("ai conversation delete durable-acceptance")
         deadline = time.monotonic() + 5
-        while "Saved: durable-acceptance" in frame():
-            pump(); assert time.monotonic() < deadline, "Deleted conversation still selected"
-        assert "Saved after cold restart." not in frame()
+        # Header and body rows can arrive in separate SSH packets. Wait for
+        # both changes rather than asserting against a partially painted frame.
+        while "Saved: durable-acceptance" in frame() or "Saved after cold restart." in frame():
+            pump(); assert time.monotonic() < deadline, "Deleted conversation still selected or visible"
         assert "No saved conversations" in command("ai conversation list")
         print("PASS offline SSH: full visible thinking retained and restored; named context survives reconnect/cold restart; approvals never revive; cursor reads and connected deletion verified", flush=True)
         print("KILN_OFFLINE_AI_TERMINAL_COMPLETE", flush=True)
