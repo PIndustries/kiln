@@ -148,10 +148,18 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
         assert len(first['commit'])==40
         diff=ssh('web diff dev/site '+first['id'])
         assert '+        <h1>Built through Kiln AI.' in diff or ('+<h1>' in diff or 'Built through Kiln AI.' in diff)
+        retained_code=ssh('web code dev/site '+first['id'])
+        assert 'complete retained source' in retained_code
+        code_lines=retained_code.split('File App.swift / complete retained source\n',1)[1].removesuffix('\n').split('\n')
+        assert all(line[8:]==original for line,original in zip(code_lines,source.read_text().split('\n')))
+        assert len(code_lines)==len(source.read_text().split('\n'))
         Fixture.original_source=source.read_bytes()
         second=ssh('ai ask Make a second development version')
         assert 'Published development change' in second and 'Second retained version.' in source.read_text(),second
         previous=source.read_bytes()
+        assert ssh('web code dev/site '+first['id'])==retained_code
+        assert source.read_bytes()==previous
+        print('PASS: full line-numbered retained code includes unchanged lines and remains stable after a new release',flush=True)
         rollback=ssh('app rollback dev/site')
         assert 'Source-aware rollback' in rollback and 'Built through Kiln AI.' in get('/counter')
         assert source.read_bytes()==Fixture.original_source

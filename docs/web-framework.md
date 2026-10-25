@@ -308,10 +308,14 @@ All validation jobs count toward retained development artifact limits.
 
 Services → Changes / diffs opens retained changes with timestamps, publication
 state, current-release marker and Git commit IDs. Select a change to view its
-before/after diff or restore its source. Releases opens a full-height result view;
+before/after diff. Press C for the complete retained App.swift with line numbers,
+D to return to the colored diff, Left/Right to browse versions in either view,
+and PgUp/PgDn to scroll. Esc returns to the selected history entry; R opens
+confirmation before restoring its source. Releases opens a full-height result view;
 Rollback reports its result in the same visible viewer. Keyboard and mouse use
 the same management commands. `web history APP/MODULE` returns structured history,
-`web diff APP/MODULE CHANGE-ID` (or `latest`) shows the diff, and
+`web diff APP/MODULE CHANGE-ID` (or `latest`) shows the diff,
+`web code APP/MODULE CHANGE-ID` shows the complete integrity-checked source, and
 `web restore APP/MODULE CHANGE-ID` builds and deploys a retained published source
 as a new release. Existing history remains available.
 

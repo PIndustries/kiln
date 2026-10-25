@@ -147,6 +147,15 @@ public actor WebDevelopment {
         guard let item = id == "latest" ? all.last(where: { $0.1.status == "active" }) : all.first(where: { $0.1.id == id }), UUID(uuidString: item.1.id) != nil else { throw KilnError.message("Unknown retained source change") }
         return item
     }
+    /// The complete retained source, independent of the current workspace or running release.
+    public func code(module: String, id: String) throws -> String {
+        let (folder, receipt) = try retained(module, id: id)
+        let source = try bounded(folder.appendingPathComponent("App.swift"), limit: 65536)
+        guard WebIsolation.digest(source) == receipt.after else { throw KilnError.message("Retained source integrity failed") }
+        let lines = String(decoding: source, as: UTF8.self).components(separatedBy: "\n")
+        let numbered = lines.enumerated().map { String(format: "%5d | ", $0.offset + 1) + $0.element }.joined(separator: "\n")
+        return "Change \(receipt.id) / \(receipt.status)\nRelease \(receipt.version)\nFile App.swift / complete retained source\n" + numbered
+    }
     public func diff(module: String, id: String) throws -> String {
         let (folder, receipt) = try retained(module, id: id)
         let before = try bounded(folder.appendingPathComponent("Before.swift"), limit: 65536), after = try bounded(folder.appendingPathComponent("App.swift"), limit: 65536)

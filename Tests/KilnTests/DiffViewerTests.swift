@@ -44,3 +44,23 @@ private func diffHistory() throws -> String {
     viewer.finish(text: "Restored as a new release", status: 0)
     #expect(viewer.handle(.enter, width: 100, height: 30) == "'web' 'history' 'demo/web'")
 }
+@Test func codeViewTogglesInPlaceAndPreservesModeAcrossVersionsAndRestoreCancel() throws {
+    var viewer = ManagementUI()
+    _ = viewer.changeHistory("demo/web"); viewer.finish(text: try diffHistory(), status: 0)
+    _ = viewer.handle(.enter, width: 100, height: 30); viewer.finish(text: "+changed", status: 0)
+    #expect(viewer.handle(.text("c"), width: 100, height: 30) == "'web' 'code' 'demo/web' 'change-0'")
+    viewer.finish(text: "File App.swift\n    1 | import Foundation\n    2 | +ordinary source", status: 0)
+    let code = viewer.render(width: 100, height: 30)
+    #expect(code.contains("Source code 1/2"))
+    #expect(code.contains("1 | import Foundation"))
+    #expect(!code.contains(";38;5;114m| "))
+    #expect(viewer.handle(.right, width: 100, height: 30) == "'web' 'code' 'demo/web' 'change-1'")
+    viewer.finish(text: "second source", status: 0)
+    _ = viewer.handle(.text("r"), width: 100, height: 30)
+    #expect(viewer.handle(.enter, width: 100, height: 30) == "'web' 'code' 'demo/web' 'change-1'")
+    viewer.finish(text: "second source", status: 0)
+    _ = viewer.handle(.escape, width: 100, height: 30)
+    #expect(viewer.handle(.enter, width: 100, height: 30) == "'web' 'code' 'demo/web' 'change-1'")
+    viewer.finish(text: "second source", status: 0)
+    #expect(viewer.handle(.text("d"), width: 100, height: 30) == "'web' 'diff' 'demo/web' 'change-1'")
+}

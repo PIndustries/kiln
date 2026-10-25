@@ -59,17 +59,18 @@ struct ManagementUI {
     private var changeID = ""
     private var changeIndex = 0
     private var diffMode = false
-    private let diffHelp = "Left/Right  PgUp/Dn  R restore  Esc list"
+    private var codeMode = false
+    private let diffHelp = "C code / D diff  Left/Right  PgUp/Dn  R restore  Esc list"
     private mutating func historyMenu() {
         menu("changes", title: "Changes / " + changeModule, options: changes.map { String($0.created.prefix(16)) + " " + ($0.current == "yes" ? "CURRENT" : $0.status == "active" ? "published" : $0.status) + " " + String($0.id.prefix(8)) + " git:" + String($0.commit.prefix(8)) } + ["Back"])
         selected = min(changeIndex, max(0,changes.count-1))
         diffMode = false
         if changes.isEmpty { kind = "message"; message = "No retained development changes for this service." }
     }
-    private mutating func showDiff(_ index: Int) -> String? {
+    private mutating func showChange(_ index: Int) -> String? {
         guard changes.indices.contains(index) else { return nil }
         changeIndex = index; changeID = changes[index].id
-        let command = result(title: "Source diff \(index+1)/\(changes.count) / " + String(changeID.prefix(8)), command: ["web", "diff", changeModule, changeID])
+        let command = result(title: "Source \(codeMode ? "code" : "diff") \(index+1)/\(changes.count) / " + String(changeID.prefix(8)), command: ["web", codeMode ? "code" : "diff", changeModule, changeID])
         diffMode = true; help = diffHelp
         return command
     }
@@ -79,7 +80,7 @@ struct ManagementUI {
         return run(command)
     }
     mutating func changeHistory(_ module: String) -> String {
-        changeModule = module; changeIndex = 0
+        changeModule = module; changeIndex = 0; codeMode = false
         return result(title: "Changes / " + module, command: ["web", "history", module])
     }
     mutating func finish(text: String, status: Int) {
@@ -99,13 +100,13 @@ struct ManagementUI {
         }
         kind = "message"; if pending == "server scan" { title = "Unverified host identity" }
         message = text; messageOffset = 0; labels = []; options = ["Back"]; selected = 0
-        help = diffMode && pending == "web diff" ? diffHelp : "PgUp/PgDn scroll | Enter / Esc close"
+        help = diffMode && ["web diff", "web code"].contains(pending) ? diffHelp : "PgUp/PgDn scroll | Enter / Esc close"
     }
     mutating func handle(_ key: TerminalKey, width: Int, height: Int) -> String? {
         if key == .escape || key == .interrupt {
             guard !waiting else { return nil }
             if diffMode {
-                if kind == "confirm" { return showDiff(changeIndex) }
+                if kind == "confirm" { return showChange(changeIndex) }
                 if pending == "web restore" { return changeHistory(changeModule) }
                 historyMenu(); return nil
             }
@@ -130,9 +131,11 @@ struct ManagementUI {
             return nil
         }
         if kind == "message" {
-            if diffMode, pending == "web diff" {
-                if key == .left { return showDiff(changeIndex-1) }
-                if key == .right { return showDiff(changeIndex+1) }
+            if diffMode, ["web diff", "web code"].contains(pending) {
+                if key == .text("c") || key == .text("C") { codeMode = true; return showChange(changeIndex) }
+                if key == .text("d") || key == .text("D") { codeMode = false; return showChange(changeIndex) }
+                if key == .left { return showChange(changeIndex-1) }
+                if key == .right { return showChange(changeIndex+1) }
                 if key == .text("r") || key == .text("R"), changes[changeIndex].status == "active" {
                     confirm("Restore source " + String(changeID.prefix(8)) + "?", command: ["web", "restore", changeModule, changeID], detail: "Builds and publishes this retained source as a new healthy release. History is preserved.")
                     return nil
@@ -186,11 +189,11 @@ struct ManagementUI {
         guard options.indices.contains(selected) else { return nil }
         let choice = options[selected]
         if choice == "Back" || choice == "Cancel" {
-            if choice == "Cancel" && diffMode { return showDiff(changeIndex) }
+            if choice == "Cancel" && diffMode { return showChange(changeIndex) }
             close(); return nil
         }
         switch kind {
-        case "changes": return showDiff(selected)
+        case "changes": return showChange(selected)
         case "server":
             guard let server else { return nil }
             switch choice {

@@ -22,6 +22,8 @@ extension KilnCommands {
             try authorizeAdmin(); return CommandResult(text)
         case let p where p.count == 3 && p[1] == "history":
             return CommandResult(try await webDevelopment.history(module: p[2], currentVersion: await runtime.developmentTarget(p[2]).version))
+        case let p where p.count == 4 && p[1] == "code":
+            return CommandResult(try await webDevelopment.code(module: p[2], id: p[3]))
         case let p where p.count == 4 && p[1] == "diff":
             return CommandResult(try await webDevelopment.diff(module: p[2], id: p[3]))
         case let p where p.count == 4 && p[1] == "restore":
@@ -36,7 +38,7 @@ extension KilnCommands {
         case let p where p.count == 3 && p[1] == "changes":
             let text = try await webDevelopment.changes(module: p[2])
             try authorizeAdmin(); return CommandResult(text)
-        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
+        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
         }
     }
     func rollbackService(_ module: String, expectedGeneration: String? = nil) async throws -> String {
