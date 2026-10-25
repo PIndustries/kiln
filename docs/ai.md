@@ -52,7 +52,14 @@ ai deny <id>
 
 Independent SSH exec connections have separate conversation identities; approve in the same interactive session that produced the proposal. The local console has its own conversation.
 
+## Check local setup
+
+Administrators can run `/check` in chat or `ai check` in the command drawer before inference. The check reports the selected provider/model and verifies the local prerequisite for its route: scoped Vault credential access for API profiles, saved owner-bound sign-in/plan permission and encrypted grant for ChatGPT, or a clear proxy environment for local Ollama. Missing or invalid configuration and blocked local prerequisites return status 2, with next steps. A locally expired ChatGPT access token reports that renewal is still required on the next request; the check does not renew it.
+
+This is a local setup check, not a provider health or billing check. It makes no HTTP or inference requests, does not switch profiles or reset context, and omits secret values, credential references and account IDs. Remote consent, quota, endpoint availability and model/tool capability remain unverified until separately tested. Other roles cannot inspect credential readiness.
+
 ## Configure Erebine
+
 
 Initialize Vault as described in [Vault setup](vault.md). Store the Erebine inference API key using hidden entry, then configure its reference:
 

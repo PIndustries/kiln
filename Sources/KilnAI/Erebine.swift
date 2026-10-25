@@ -57,6 +57,9 @@ public struct AIConfiguration: Codable, Sendable, Equatable {
     public func freshContext() -> AIConfiguration {
         AIConfiguration(baseURL: baseURL, model: model, secret: secret, provider: provider, profile: profile, contextID: UUID().uuidString)
     }
+    public func validateRuntimeEnvironment(_ environment: [String: String] = ProcessInfo.processInfo.environment) throws {
+        if provider == .ollama { try OllamaClient.validateProxyEnvironment(environment) }
+    }
     public func validate() throws {
         guard let url = URL(string: baseURL), let host = url.host,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil,

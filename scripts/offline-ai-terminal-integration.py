@@ -199,11 +199,17 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         send(b"/providers\r")
         expect("Switch: /provider NAME --new-context")
         expect("[ready]")
+        selected_before_check = (state / "ai.json").read_bytes()
+        send(b"/check\r")
+        expect("Local setup checks passed.")
+        expect("No credentials were renewed")
+        expect("[ready]")
+        assert (state / "ai.json").read_bytes() == selected_before_check
         for shortcut in [b"/task", b"/watch", b"/cancel", b"/recover", b"/approve", b"/deny"]:
             send(shortcut + b"\r")
             expect("Usage: " + shortcut.decode())
         with Fixture.requests_lock:
-            assert Fixture.request_count == count, "Help or incomplete command called the provider"
+            assert Fixture.request_count == count, "Local chat controls called the provider"
         send(b"/context\r")
         expect("Completed turns: 0")
         expect("[ready]")
