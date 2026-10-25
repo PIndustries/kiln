@@ -7,6 +7,21 @@ extension KilnCommands {
     func webCommand(_ parts: [String], sessionID: String = "web-console", progress: @escaping @Sendable (AIProgress) -> Void) async throws -> CommandResult {
         try authorizeAdmin()
         switch parts {
+        case let p where p.count == 6 && p[1] == "ide":
+            guard let cursor = Int(p[5]) else { throw KilnError.message("Invalid Swift caret offset") }
+            let raw = try await webDevelopment.file(module:p[2],path:p[4])
+            let object = try JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any]
+            guard let text = object?["source"] as? String, let hash = object?["sha256"] as? String else { throw KilnError.message("Invalid Swift source") }
+            let request = SwiftIDERequest(action:p[3],path:p[4],sha256:hash,text:text,cursor:cursor)
+            let result = try await webDevelopment.ide(module:p[2],request:request)
+            try authorizeAdmin()
+            return CommandResult(String(decoding:try JSONEncoder().encode(result),as:UTF8.self))
+        case let p where p.count == 4 && p[1] == "ide":
+            guard p[3].utf8.count <= 2_097_152 else { throw KilnError.message("Oversized IDE request") }
+            let request = try JSONDecoder().decode(SwiftIDERequest.self,from:Data(p[3].utf8))
+            let result = try await webDevelopment.ide(module:p[2],request:request)
+            try authorizeAdmin()
+            return CommandResult(String(decoding:try JSONEncoder().encode(result),as:UTF8.self))
         case ["web", "projects"]: return CommandResult(try await webDevelopment.inventory())
         case let p where p.count == 3 && p[1] == "register":
             let url = URL(fileURLWithPath: p[2])
@@ -34,7 +49,7 @@ extension KilnCommands {
         case let p where p.count == 4 && p[1] == "apply":
             let target = try await runtime.developmentTarget(p[2]), owner = try aiOwnerFingerprint()
             let generation = await runtime.snapshot().first(where: { $0.id == p[2] })?.generationFingerprint
-            return CommandResult(try await webDevelopment.change(module: p[2], owner: owner, edits: p[3], target: target, progress: { progress(.status($0)) }, validate: { try authorizeAdmin() }, deploy: { path in
+            return CommandResult(try await webDevelopment.change(module: p[2], owner: owner, edits: p[3], target: target, operationLimit:32, progress: { progress(.status($0)) }, validate: { try authorizeAdmin() }, deploy: { path in
                 try await runtime.deploy(path: path, expectedGeneration: generation, validateAccess: { try authorizeAdmin() })
             }))
         case let p where p.count == 4 && p[1] == "code":

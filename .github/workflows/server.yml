@@ -78,6 +78,8 @@ jobs:
           "$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/vault-integration.py
       - name: Offline AI streaming, approvals and reconnect through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/offline-ai-terminal-integration.py'
+      - name: Swift IDE compiler and terminal acceptance
+        run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/swift-ide-acceptance.py'
       - name: Editor draft recovery after failed compilation
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/editor-draft-acceptance.py'
       - name: Side-by-side code and AI context through OpenSSH

@@ -1,0 +1,44 @@
+import Foundation
+
+public struct SwiftIDEBuffer: Codable, Sendable {
+    public let sha256: String
+    public let text: String
+    public init(sha256: String, text: String) { self.sha256 = sha256; self.text = text }
+}
+public struct SwiftIDERequest: Codable, Sendable {
+    public let action: String
+    public let path: String
+    public let sha256: String
+    public let text: String
+    public let cursor: Int
+    public let buffers: [String:SwiftIDEBuffer]?
+    public init(action: String, path: String, sha256: String, text: String, cursor: Int, buffers: [String:SwiftIDEBuffer]? = nil) {
+        self.action = action; self.path = path; self.sha256 = sha256; self.text = text; self.cursor = cursor; self.buffers = buffers
+    }
+}
+public struct SwiftIDECompletion: Codable, Sendable {
+    public let label: String
+    public let detail: String
+    public let text: String
+    public let start: Int
+    public let end: Int
+    public init(label: String, detail: String, text: String, start: Int, end: Int) {
+        self.label = label; self.detail = detail; self.text = text; self.start = start; self.end = end
+    }
+}
+public struct SwiftIDELocation: Codable, Sendable {
+    public let path: String
+    public let line: Int
+    public let column: Int
+    public let message: String
+    public init(path: String, line: Int, column: Int, message: String = "") {
+        self.path = path; self.line = line; self.column = column; self.message = message
+    }
+}
+public struct SwiftIDEResult: Codable, Sendable {
+    public var action: String
+    public var message: String
+    public var completions: [SwiftIDECompletion] = []
+    public var locations: [SwiftIDELocation] = []
+    public init(action: String, message: String) { self.action = action; self.message = message }
+}

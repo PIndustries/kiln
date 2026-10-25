@@ -507,15 +507,42 @@ lifecycle and write integrity; they are not advertised as Erebine model limits.
 Incomplete tool calls never execute, and a failed turn is never automatically
 replayed. Reasoning remains visible/retained under the existing transcript limits.
 
-### Next Swift IDE milestone (planned)
+### Swift IDE workspace
 
-The workspace currently provides registered-project browsing/editing, syntax
-colors, AI context, isolated compilation, preview publishing and retained changes.
-It is not yet a Swift language-service IDE. The next milestone should connect
-SourceKit-LSP to the actual application build configuration, then provide code
-completion, go-to-definition, hover information and compiler diagnostics that
-navigate to file/line positions. Project build/run/test controls and multi-file
-editing should use the same registered application scope and preserve unsaved
-buffers. Debugging, rename/find-references and formatting follow once the language
-service and build/diagnostic path are verified. These are planned capabilities,
-not features delivered by the draggable-divider preview.
+Registered Swift applications use the installed SourceKit-LSP beside their pinned
+SDK compiler. Kiln creates a private snapshot and compilation database from the
+registered compiler flags and all project Swift files, including open drafts.
+It never runs Package.swift, package plugins, a user shell or dependency downloads.
+The language process uses the existing file/network sandbox, with the installed
+SourceKit XPC service name read from that toolchain's metadata and explicitly
+allowed for semantic requests. Language processes and snapshots are bounded and
+cleaned up; permissions are checked again before returning results.
+
+The code toolbar provides **Build**, **Run**, **Def**, **Wrap** and **Complete**:
+
+- **Complete / Ctrl-Space:** compiler-backed Swift suggestions at the caret. Typing
+  a dot also requests member completion. Arrows select, Enter inserts the returned
+  edit, Esc closes. Typing while a request runs preserves input and discards a
+  reply that belongs to an older buffer.
+- **Def / F12:** click a symbol in source, request its definition, and click or
+  press Enter on the returned project location. Unsaved buffers survive navigation
+  and reappear when returning through the tree. SDK definitions outside the
+  registered project are reported without opening arbitrary filesystem paths.
+- **Build / F11:** compile a private snapshot of the current application and open
+  buffers. Compiler errors/warnings show file, line and column; click or Enter
+  opens that location. Failed builds preserve buffers and the running application.
+- **Run / F5:** restart the selected application's deployed release through Kiln's
+  existing supervisor and readiness check. Publish pending drafts with Ctrl-D
+  first; Run never silently discards or deploys unsaved text. Manual publication
+  commits pending file buffers together through the existing validated history
+  path, with explicit confirmation.
+- **Wrap / F6:** toggle visual source wrapping. The default is **Wrap OFF**, with
+  horizontal scrolling through Left/Right in browse mode, Shift-wheel/horizontal
+  wheel, or the `[<]`/`[>]` controls. In edit mode Left/Right move the caret and
+  horizontal scrolling follows it. Wrapping changes the view, never source text.
+
+Use the toolbar if macOS reserves a function key or Ctrl-Space. Ctrl-W still
+switches code/chat; dragging the center divider resizes both panes. This milestone
+covers registered Kiln Swift applications, not arbitrary SwiftPM/Xcode workspaces.
+Debugging, rename/find-references and general package/project import are future
+work; the current language service does not pretend those capabilities exist.

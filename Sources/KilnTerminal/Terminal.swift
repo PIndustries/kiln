@@ -38,15 +38,16 @@ public struct KilnTerminal {
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
         if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
-        if busy, ![.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape].contains(key) {
+        if busy, ![.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.build,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
+        if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
         let paneWidth = width >= 110 ? splitWidth : width
         guard let command = codeWorkspace?.handle(key, width: paneWidth, height: height) else {
             if codeWorkspace?.active == false { codeWorkspace = nil }
             return []
         }
-        if command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") {
+        if command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") || command.hasPrefix("'web' 'ide' ") {
             return [.workspaceRead(command)]
         }
         guard !busy else { return [] }
@@ -65,7 +66,7 @@ public struct KilnTerminal {
         chat.width = width-splitWidth
         let code = workspace.render(width: splitWidth, height: height, theme: theme)
         let right = Self.positionPane(chat.chatLayout(embedded: true).0, column: splitWidth)
-        let label = "\u{1b}[1;3H" + theme.accentCode + "CODE " + (codeFocus ? "[focus]" : "") + " | Ctrl-W: code/chat | Drag |"
+        let label = "\u{1b}[\(height);3H" + theme.accentCode + "CODE " + (codeFocus ? "[focus]" : "") + " | Ctrl-W: code/chat | Drag |"
         let cursorPattern = try! NSRegularExpression(pattern: "\\u001B\\[\\d+;\\d+H\\u001B\\[\\?25h$")
         let cursorRange = cursorPattern.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)).flatMap { Range($0.range, in: code) }
         let codeCursor = cursorRange.map { String(code[$0]) } ?? "\u{1b}[?25l"
@@ -460,7 +461,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .selectText, .toggleThinking, .focusWorkspace: break
+        case .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }
@@ -578,7 +579,7 @@ public struct KilnTerminal {
                 if command.hasPrefix("/approve ") || command.hasPrefix("/deny ") { return execute("ai " + command.dropFirst()) }
                 let quoted = "\"" + command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
                 if let workspace = codeWorkspace {
-                    guard let context = workspace.contextJSON else {
+                    guard let context = workspace.contextJSON(width: width >= 110 ? splitWidth : width) else {
                         messages.append(ChatMessage(role: "Kiln", text: "Wait for the file to load, or return from the result view before sending a contextual message."))
                         input = command; cursor = command.count
                         return []

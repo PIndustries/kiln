@@ -17,7 +17,7 @@ public struct WebProjectConfiguration: Codable, Sendable {
     public let autoPublish: Bool
     public var root: String? = nil
 }
-private struct RegisteredProject: Codable {
+struct RegisteredProject: Codable {
     let configuration: WebProjectConfiguration
     let sdk: WebBuildSDK
 }
@@ -34,9 +34,10 @@ private struct WebChange: Codable {
     var created = Date()
 }
 public actor WebDevelopment {
-    private let directory: URL
+    let directory: URL
     private var busy = Set<String>()
     private var activeJobs = Set<String>()
+    var ideRequests = 0
     public init(directory: URL) { self.directory = directory.appendingPathComponent("web-development") }
     private var projects: URL { directory.appendingPathComponent("projects") }
     private var jobs: URL { directory.appendingPathComponent("jobs") }
@@ -44,7 +45,7 @@ public actor WebDevelopment {
         for url in [directory, projects, jobs] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
     }
     private func projectFile(_ name: String) -> URL { projects.appendingPathComponent(WebIsolation.digest(Data(name.utf8)) + ".json") }
-    private func project(_ name: String) throws -> RegisteredProject {
+    func project(_ name: String) throws -> RegisteredProject {
         try setup()
         let data = try bounded(projectFile(name), limit: 1_048_576)
         let record = try JSONDecoder().decode(RegisteredProject.self, from: data)
@@ -307,7 +308,7 @@ public actor WebDevelopment {
             throw KilnError.message("Web change \(id): \(receipt.result)")
         }
     }
-    private func compile(sdk: WebBuildSDK, job: URL) async throws {
+    func compile(sdk: WebBuildSDK, job: URL) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: sdk.builder); process.arguments = [job.path]
         process.currentDirectoryURL = job
