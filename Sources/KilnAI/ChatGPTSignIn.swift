@@ -94,6 +94,19 @@ public actor ChatGPTSignIn {
         _ = try vault.grant("chatgpt-" + id, to: "kiln/chatgpt-" + id)
     }
     public func accounts(owner: String) -> [AccountSummary] { state.accounts.filter { $0.owner == owner } }
+    /// Inspect saved local state without token renewal, remote discovery or inference.
+    public func localCredentialStatus(account id: String, owner: String) throws -> String {
+        let lock = try ChatGPTStateLock(directory: directory); defer { lock.release() }
+        try reload()
+        let account = try self.account(id, owner: owner)
+        guard account.signedIn, account.planEnabled else { throw AIError.message("ChatGPT sign-in or plan permission unavailable") }
+        let saved = try tokens(id)
+        guard !saved.accessToken.isEmpty, !saved.refreshToken.isEmpty, !saved.idToken.isEmpty,
+              saved.scopes.contains("chatgpt.tokens.use.direct") else { throw AIError.message("Saved ChatGPT grant unavailable") }
+        return saved.expiresAt > Date().addingTimeInterval(60)
+            ? "Saved sign-in and encrypted grant available for this identity."
+            : "Saved grant available; renewal will be required on the next request."
+    }
     public func start(owner: String, account id: String? = nil, port: Int = 0) async throws -> Start {
         guard !owner.isEmpty, owner.utf8.count <= 512, (0...65535).contains(port), pending.count + processing.count + starting < 8,
               id != nil || state.accounts.count < 64 else { throw AIError.message("ChatGPT sign-in capacity or parameters invalid") }

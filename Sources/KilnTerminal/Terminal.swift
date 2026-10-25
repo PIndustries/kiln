@@ -403,6 +403,7 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/help" { return execute("ai chat-help") }
+                if command == "/check" { return execute("ai check") }
                 if command == "/providers" { return execute("ai profile list --details") }
                 if command == "/provider" { return execute("ai status") }
                 if command.split(whereSeparator: { $0.isWhitespace }).first == "/provider" {

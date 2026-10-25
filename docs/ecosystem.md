@@ -1,6 +1,34 @@
 # Ecosystem direction
 
-Design requirements collected for Kiln. Except where README explicitly states implementation, this document describes future work.
+Design requirements and core priorities for Kiln. README and capability-specific documentation record implemented behavior; contracts below remain future work unless explicitly marked.
+
+## Core punch list (2026-10-24)
+
+Kiln has a working single-node operations foundation: independent processes,
+deployment/readiness/rollback, identity and Vault controls, ordinary SSH, native
+AI providers, approved operations and durable investigation/recovery records.
+The next milestones should finish complete operator journeys. The items below
+are gaps and acceptance targets, not claims that these capabilities have shipped.
+
+| Order | Gap | Acceptance target |
+| --- | --- | --- |
+| 1 | Foreground continuity ([#40](https://github.com/PIndustries/kiln/issues/40)) | Reconnect to an identity/application-scoped named conversation with retained transcript and task references. Add retention/deletion, ordered replay and restart/revocation tests. Never replay a mutation merely to restore a view. |
+| 2 | Visible readiness | Distinguish configured profiles, locally available credentials and live-verified provider/model behavior. Show running build revision and actionable recovery steps. Local AI setup checks cover only part of this journey; remote authentication, quota and inference need separate evidence. |
+| 3 | Full-node recovery | Rehearse restore into a clean destination with state, separately protected Vault keys, application data and compatible binaries. Verify revoked access, stopped intent, operation receipts and migration boundaries. Existing storage/Vault tests do not establish a complete disaster-recovery experience. |
+| 4 | Stable operator API ([#20](https://github.com/PIndustries/kiln/issues/20)) | Version authenticated status/task/approval/event/receipt contracts, with reconnect cursors, revocation and compatibility tests. SSH and later clients share the same authorization; application HTTP examples are not a management API. |
+| 5 | Application state and a reference application ([#15](https://github.com/PIndustries/kiln/issues/15)) | REST and WebSocket modules share scoped durable state using atomic/versioned operations, with backup, migrations and explicit rollback limits. Define cache and job semantics separately. Prove a complete install/update/recovery journey before adding a catalog of templates. |
+| 6 | Workload isolation ([#44](https://github.com/PIndustries/kiln/issues/44)) | Establish OS-enforced filesystem, process, credential and network boundaries before admitting third-party code or AI coding tools. Management roles and Linux resource limits already serve narrower purposes; same-UID trusted processes remain outside a hostile-code sandbox. |
+| 7 | Budgets and outcome evidence ([#45](https://github.com/PIndustries/kiln/issues/45)) | Persist run/provider/model/tool versions, usage when supplied, time limits, approvals and authoritative outcomes. Enforce run budgets and evaluate quota, fabricated success, prompt injection and uncertain writes. Keep estimates separate from provider-reported usage. |
+| 8 | Extensible tools and durable workflows ([#41](https://github.com/PIndustries/kiln/issues/41), [#43](https://github.com/PIndustries/kiln/issues/43)) | Introduce typed, versioned tool contracts and reduced-capability profiles before workflow steps, delegation or schedules. Define cancellation, retries and idempotency outside prompts. Existing independent investigations are not a dependency graph or scheduler. |
+| 9 | Public application ingress ([#7](https://github.com/PIndustries/kiln/issues/7)) | Implement route ownership, TLS termination, certificate renewal and expired/failed-renewal behavior before exposing public web applications. Existing loopback routing does not supply this layer. |
+| Ongoing gate | Native-client and sustained-load acceptance ([#9](https://github.com/PIndustries/kiln/issues/9)) | Extend the recorded Apple Terminal/OpenSSH acceptance to additional clients and long sessions with multiple operators, cancellation, restart and overload. Record exact revisions and live-provider evidence separately from fixtures. Keep hosted macOS/Linux gates and make redundant CI work visible. |
+
+The next larger product milestone is foreground reconnect/resume, designed with
+the operator event contract. Local diagnostics can improve onboarding while that
+work proceeds. Portable application bundles, appliance formats, optional Git and
+registry hosting, automatic cluster placement/failover and native Apple clients
+remain later work. Cluster automation still requires ownership/fencing design;
+adding nodes does not create replicated state or safe failover.
 
 ## Source and prebuilt distribution
 

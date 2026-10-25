@@ -415,6 +415,47 @@ private extension KilnCommands {
     }
     func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil) async throws -> CommandResult {
         let accountOwner = (principal?.name ?? "local-console") + ":" + SHA256.hash(data: Data((principal?.publicKey ?? "local-console").utf8)).map { String(format: "%02x", $0) }.joined()
+        if parts == ["ai", "check"] {
+            try authorizeAdmin()
+            var rows = ["AI setup check / local only"]
+            guard let config = try? activeAIConfiguration() else {
+                return CommandResult((rows + ["BLOCKED: active profile missing or invalid.", "Use /providers, then /provider NAME --new-context.", "Network, authentication and inference were not tested."]).joined(separator: "\n"), status: 2)
+            }
+            let source = AIProviderSnapshot(provider: config.provider.rawValue, profile: config.profile, model: config.model)
+            rows.append("Selected: \(source.displayName) / \(source.profile) / \(source.model)")
+            var ready = true
+            if config.provider == .ollama {
+                do {
+                    try config.validateRuntimeEnvironment()
+                    rows.append("PASS: local Ollama requires no credential; proxy environment is clear.")
+                } catch {
+                    ready = false; rows.append("BLOCKED: local Ollama cannot run with proxy environment variables.")
+                    rows.append("Launch Kiln without HTTP_PROXY, HTTPS_PROXY or ALL_PROXY (any case).")
+                }
+            } else if config.provider == .chatgpt {
+                do {
+                    guard FileManager.default.fileExists(atPath: runtime.stateDirectory.appendingPathComponent("chatgpt-accounts/chatgpt-accounts.json").path) else { throw CommandSyntaxError.unknown }
+                    let status = try await aiAccounts.chatGPT().localCredentialStatus(account: config.secret, owner: accountOwner)
+                    try authorizeAdmin()
+                    rows.append("PASS: " + status)
+                } catch {
+                    ready = false; rows.append("BLOCKED: saved sign-in, plan permission or encrypted grant unavailable for this identity.")
+                    rows.append("Inspect ai accounts; complete Continue with ChatGPT if needed.")
+                }
+            } else {
+                do {
+                    let values = try runtime.vault.environment(for: config.credentialScope, bindings: ["API_KEY": config.secret])
+                    guard values["API_KEY"]?.isEmpty == false else { throw CommandSyntaxError.unknown }
+                    rows.append("PASS: configured API credential is readable through this profile's Vault grant.")
+                } catch {
+                    ready = false; rows.append("BLOCKED: Vault unavailable, configured secret missing or profile grant denied.")
+                    rows.append("Review Vault initialization and this profile's credential grant.")
+                }
+            }
+            try authorizeAdmin()
+            rows += [ready ? "Local setup checks passed." : "Resolve blocked local checks before inference.", "Network, remote authentication, quota, model capability and inference were not tested.", "No credentials were renewed and no provider request was sent."]
+            return CommandResult(rows.joined(separator: "\n"), status: ready ? 0 : 2)
+        }
         if parts.count >= 3, parts[1] == "login", ["grok", "grok-status", "grok-cancel"].contains(parts[2]) {
             try authorizeAdmin()
             guard parts.count == 4 else { throw AIError.message("Use ai login grok ABSOLUTE-EXECUTABLE | ai login grok-status/grok-cancel ACCOUNT") }
@@ -593,6 +634,7 @@ private extension KilnCommands {
             Chat commands / local reference
             /help                 Show this reference
             /context              Inspect this connection's history limits
+            /check                Check local AI setup (administrator)
             /provider             Inspect the active provider
             /providers            List saved profiles (administrator)
             /provider NAME --new-context  Switch node-wide; clears contexts
@@ -739,7 +781,7 @@ private extension KilnCommands {
         if p.first == "ai" {
             if p.count == 1 || ["help", "chat-help", "status", "context", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
-            if ["task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
+            if ["check", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if ["identity", "vault", "server", "key", "session", "node", "cluster"].contains(p[0]) { try authorizeAdmin(); return }
         throw CommandSyntaxError.unknown
