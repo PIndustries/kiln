@@ -60,10 +60,16 @@ public enum WebIsolation {
     }
     static func buildProfile(sdk: WebBuildSDK, job: String) -> String {
         let compilerRoot = URL(fileURLWithPath: canonical(sdk.compiler)).deletingLastPathComponent().path
+        // A standalone Swift toolchain can delegate linking to Xcode's ld.
+        // Keep execution restricted to installed toolchain binaries, not SDK
+        // build objects or the edited source/job directory.
+        let linkers = sdk.readRoots.filter { $0.hasPrefix("/Applications/") && $0.hasSuffix("/Contents") }.map {
+            "(subpath \(quote(canonical($0 + "/Developer/Toolchains"))))"
+        }.joined(separator: " ")
         let read = sdk.readRoots.map { "(subpath \(quote(canonical($0))))" }.joined(separator: " ")
         return systemProfile() + """
         \n(allow process-fork)
-        (allow process-exec (subpath \(quote(compilerRoot))) (subpath "/usr/bin"))
+        (allow process-exec (subpath \(quote(compilerRoot))) (subpath "/usr/bin") \(linkers))
         (allow file-read* \(read))
         (allow file-read* file-write* (subpath \(quote(canonical(job)))))
         """
