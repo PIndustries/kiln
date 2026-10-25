@@ -570,18 +570,26 @@ extension KilnRuntime {
         }
     }
 
+    public func developmentTarget(_ name: String) throws -> ApplicationManifest {
+        guard let item = installed[name] else { throw KilnError.message("Unknown application") }; return item.manifest
+    }
+
     public func releases(_ name: String) throws -> String {
         guard let item = installed[name] else { throw KilnError.message("Unknown application") }
         return "Active: \(item.manifest.version)\nPrevious: \(item.previous?.version ?? "none")\nIngress: \(item.manifest.ingressPort.map { "127.0.0.1:\($0)" } ?? "none")"
     }
 
-    public func deploy(path: String) async throws -> String {
+    public func deploy(path: String, expectedGeneration: String? = nil, validateAccess: @escaping @Sendable () throws -> Void = {}) async throws -> String {
         var manifest = try JSONDecoder().decode(ApplicationManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
         try manifest.validate()
         try ResourceController.ensureSupported(manifest.resources)
         guard manifest.ingressPort != nil else { throw KilnError.message("app deploy requires ingressPort") }
         let name = "\(manifest.application)/\(manifest.name)"
         guard !shuttingDown, !persistenceFault, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
+        try validateAccess()
+        if let expectedGeneration, snapshot().first(where: { $0.id == name })?.generationFingerprint != expectedGeneration {
+            throw KilnError.message("Application generation changed before development deployment")
+        }
         deploying.insert(name)
         defer { deploying.remove(name) }
         let directory = stateDirectory.appendingPathComponent("releases/\(name)/\(manifest.version)")
@@ -596,7 +604,7 @@ extension KilnRuntime {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: destination.path)
             try flushRelease(destination)
             manifest.executable = destination.path
-            let result = try await activate(manifest)
+            let result = try await activate(manifest, validateAccess: validateAccess)
             try? FileManager.default.removeItem(at: staging)
             return result
         } catch {
@@ -616,7 +624,7 @@ extension KilnRuntime {
         return try await activate(previous)
     }
 
-    private func activate(_ manifest: ApplicationManifest) async throws -> String {
+    private func activate(_ manifest: ApplicationManifest, validateAccess: @Sendable () throws -> Void = {}) async throws -> String {
         let name = "\(manifest.application)/\(manifest.name)"
         let old = installed[name]
         if let old, old.manifest.ingressPort != manifest.ingressPort {
@@ -646,6 +654,7 @@ extension KilnRuntime {
                 try await listener.start(port: manifest.ingressPort!)
             }
             guard !shuttingDown, !persistenceFault else { throw KilnError.message("Runtime is shutting down or requires recovery after a state persistence failure") }
+            try validateAccess()
             installed[name] = Installation(manifest: manifest, desiredRunning: true, previous: old?.manifest)
             do { try save() } catch { if !persistenceFault { installed[name] = old }; throw error }
         } catch {
