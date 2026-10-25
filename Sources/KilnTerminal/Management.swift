@@ -59,7 +59,7 @@ struct ManagementUI {
     private var changeID = ""
     private var changeIndex = 0
     private var diffMode = false
-    private let diffHelp = "←/→ change  PgUp/Dn  R restore  Esc list"
+    private let diffHelp = "Left/Right  PgUp/Dn  R restore  Esc list"
     private mutating func historyMenu() {
         menu("changes", title: "Changes / " + changeModule, options: changes.map { String($0.created.prefix(16)) + " " + ($0.current == "yes" ? "CURRENT" : $0.status == "active" ? "published" : $0.status) + " " + String($0.id.prefix(8)) + " git:" + String($0.commit.prefix(8)) } + ["Back"])
         selected = min(changeIndex, max(0,changes.count-1))

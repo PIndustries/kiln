@@ -18,6 +18,7 @@ private func diffHistory() throws -> String {
     #expect(output.contains(";38;5;81m| --- Before.swift"))
     #expect(output.contains(";38;5;81m| +++ App.swift"))
     #expect(output.contains("unchanged context"))
+    #expect(output.contains("Left/Right"))
 }
 @Test func diffBrowserMovesBetweenVersionsAndReturnsToSelectionWithoutExtraMenus() throws {
     var viewer = ManagementUI()
