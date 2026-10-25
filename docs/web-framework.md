@@ -213,7 +213,8 @@ file using `web register /absolute/dev/project.json`:
 {
   "schemaVersion": 1,
   "module": "web-demo/live",
-  "source": "/absolute/dev/App.swift",
+  "source": "/absolute/dev/source/App.swift",
+  "root": "/absolute/dev/source",
   "sdk": "/absolute/dev/sdk.json",
   "publicOrigin": "http://127.0.0.1:18085",
   "ingressPort": 18085,
@@ -221,6 +222,12 @@ file using `web register /absolute/dev/project.json`:
   "autoPublish": true
 }
 ```
+
+`root` explicitly opts in a dedicated codebase directory with `App.swift` as its
+entry point. Keep SDK/configuration and other private files outside this root.
+Re-export the SDK with the current builder before enabling a root: the recipe
+must declare `projectFiles: true`. Omitting root preserves the existing one-file
+grant and does not implicitly grant access to neighboring files.
 
 The installed module and ingress must match; Vault-bound apps are excluded.
 Source must be owned by the current OS user, UTF-8, at most 64 KiB and not writable
@@ -260,9 +267,10 @@ Active and rollback releases reference these retained artifacts: do not delete
 them blindly. A crash or uncertain publish/source-write outcome is recorded for
 inspection and never automatically replayed or rolled back. `active-source-pending`
 means a release activated before the registered source commit; reconcile its
-receipt, active release and job source before making another change. Multi-file
-repositories, dependency changes, Git commits and production publishing are not
-part of this first milestone. Portable bundles remain deferred.
+receipt, active release and job source before making another change. Project
+snapshots and local Git commits retain all files, including creates/deletes.
+Dependency changes, remote Git hosting and production publishing remain outside
+this development grant. Portable bundles remain deferred.
 
 `WebDevelopmentTests` covers source grants, invalid edits, SDK drift, failed-build
 invariance and foreground tool gating. `web-sandbox-integration.py` compiles and
@@ -308,9 +316,9 @@ All validation jobs count toward retained development artifact limits.
 
 Services → Changes / diffs opens retained changes with timestamps, publication
 state, current-release marker and Git commit IDs. Select a change to view its
-before/after diff. Press C for the complete retained App.swift with line numbers,
+before/after diff. Press C for syntax-highlighted retained App.swift with line numbers,
 D to return to the colored diff, Left/Right to browse versions in either view,
-and PgUp/PgDn to scroll. Esc returns to the selected history entry; R opens
+and PgUp/PgDn to scroll. F opens that revision's read-only file tree and code browser; W opens the current workspace. Esc returns to the selected history entry; R opens
 confirmation before restoring its source. Releases opens a full-height result view;
 Rollback reports its result in the same visible viewer. Keyboard and mouse use
 the same management commands. `web history APP/MODULE` returns structured history,
@@ -326,8 +334,7 @@ are checked before committing or diffing. Git uses fixed plumbing operations,
 private input/output files and a clean environment, with hooks, global/system
 configuration, external diffs and text conversion disabled. No Git remote,
 credentials, network listener, push protocol or package scripts are used. This
-is local source history inside Kiln; multi-file repositories and Git hosting
-remain future framework work.
+is local source history inside Kiln; remote Git hosting remains future work.
 
 For registered development apps, `app rollback` coordinates the previous healthy
 executable with its matching source snapshot. It verifies release generation and
@@ -357,3 +364,87 @@ history list with the selection preserved. R opens restore confirmation from the
 diff; Cancel returns to that diff. Completing restore refreshes history before
 returning. Added source lines are green and removed lines red across every wrapped
 continuation; file headers and hunk markers use a separate metadata color.
+
+
+### Project tree, editor and AI file operations
+
+Services → Codebase / files opens the current workspace. The left pane shows
+folders and files; Up/Down selects a file and Enter opens it. Tab moves focus to
+the code pane, where arrows pan and scroll. The mouse wheel over code scrolls
+that pane directly, without Tab; the tree scrolls independently. PgUp/PgDn and
+the clickable page/top/end controls scroll within the file. The status line shows
+visible line numbers and the horizontal column. Home/End jump to the start/end
+of a file; Shift-wheel or horizontal wheel events pan long lines. Highlighting
+covers keywords, types, strings, numbers and multiline comments/strings while
+preserving source text and terminal geometry. Diff additions/deletions retain
+their green/red semantic colors.
+
+E edits the displayed file, A creates a relative file path and X requests deletion.
+The editor accepts multiline paste, arrows, Home/End and newlines. Ctrl-D opens
+publish confirmation; Cancel is selected initially. Esc offers to discard drafts.
+Every publish compiles and health-checks before saving; stale replacements and
+deletes fail if the file hash changed. App.swift cannot be deleted. Viewing
+retained revisions is read-only; restoring remains a separate confirmed action.
+
+A project holds at most 32 UTF-8 files, 64 KiB per file and 256 KiB total, within
+8 path components. Swift, HTML, CSS, JS, JSON, Markdown, text and SVG files are
+supported; binary/hidden files, symbolic links, absolute paths and traversal are
+excluded. All Swift files compile together against the pinned SDK. Other text
+files are source/history artifacts; serving assets requires explicit application
+routes. The build has no package/dependency execution. On macOS the entire source
+directory is replaced with one atomic exchange after source-drift checks, so
+added/deleted files move with restores and rollbacks. Old single-file receipts
+remain readable and restorable.
+
+Commands: `web tree APP/MODULE [CHANGE]`, `web file APP/MODULE PATH [CHANGE]`,
+`web browse APP/MODULE PATH [CHANGE]` and `web apply APP/MODULE OPERATIONS-JSON`.
+The optional change ID addresses an integrity-checked retained tree; omitting it
+reads the registered workspace. The AI has `list_web_files` and paginated
+`read_web_file(module,path,offset)` behind the same foreground admin grant.
+`validate_web_source` and `update_web_source` accept a JSON-string array:
+
+```json
+[
+  {"path":"Views/Header.swift","action":"create","content":"import KilnWeb\nfunc heading() -> HTML { \"<h1>Hello</h1>\" }"},
+  {"path":"App.swift","before":"unique old text","after":"new text"}
+]
+```
+
+Create refuses an existing path. Delete is
+`{"path":"Views/Header.swift","action":"delete","sha256":"HASH_FROM_READ"}`.
+Full replace uses `action: replace`, the matching `sha256` and `content`.
+Legacy `{before,after}` edits still target App.swift. The existing 4096-byte AI
+argument limit and one publish attempt per turn remain in force. Tools cannot
+expand the root grant, read host filesystem files or change SDK configuration.
+
+
+### Refactor from the code browser
+
+The visible **R Refactor** button (also keyboard R) offers:
+
+- **Split into smaller components**: extract cohesive types into focused files.
+- **One function per file**: separate ordinary methods into Swift extensions of
+  the same type, such as `Models/CounterModel+snapshot.swift`. This preserves the
+  type and its existing inheritance; inheritance is not used just to split files.
+
+Cancel is selected initially. The action uses the selected provider and the
+existing development autoPublish grant. It binds the displayed file hash and
+registration, narrows the AI turn to project tools, reads the affected source,
+validates the proposed group and publishes once after compilation and health
+checks. Provider failures remain visible in the result view; no success is
+claimed and uncertain writes are not retried. Historical code is read-only;
+W opens the current workspace before refactoring.
+
+An explicit refactor turn can propose up to 32 operations with 256 KiB of tool
+arguments, still bounded by the 32-file/256-KiB project snapshot. Ordinary AI edits
+retain their 8-operation/4096-byte limits. The source/registration guards run again
+inside the build coordinator, before it snapshots files. All extracted functions
+must compile together, and the complete refactor remains one retained change
+with a diff and whole-project rollback. Initializers, stored properties, overrides
+or other declarations stay in place when Swift cannot safely move them. Necessary
+private/fileprivate access changes stay internal to the application, never public.
+A large refactor that cannot fit must report any remaining scope.
+
+Command: `web refactor APP/MODULE PATH SHA256 components|functions`. This is a
+foreground administrator action requiring a registered project root and a current
+Swift file. It grants neither host filesystem access nor unrelated service tools.

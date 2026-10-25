@@ -50,7 +50,43 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         messages = body['messages']
         prompt = next(m['content'] for m in reversed(messages) if m['role'] == 'user')
         tool_results = [m for m in messages if m['role'] == 'tool']
-        if not tool_results:
+        if 'KILN PROJECT REFACTOR / functions' in prompt:
+            assert 'request_operation' not in [t['function']['name'] for t in body['tools']]
+            if not tool_results: name,args='tool_help',dict(topic='web')
+            elif tool_results[-1]['tool_name']=='tool_help':
+                assert '1–32 operations' in tool_results[-1]['content'] and '262144' in tool_results[-1]['content']
+                name,args='list_web_files',dict(module='dev/site')
+            elif tool_results[-1]['tool_name']=='list_web_files': name,args='read_web_file',dict(module='dev/site',path='App.swift',offset='0')
+            elif tool_results[-1]['tool_name']=='read_web_file':
+                page=json.loads(tool_results[-1]['content'])
+                if not page['complete']: name,args='read_web_file',dict(module='dev/site',path='App.swift',offset=str(page['nextOffset']))
+                else: name,args='validate_web_source',dict(module='dev/site',edits=json.dumps(Fixture.refactor_operations))
+            elif tool_results[-1]['tool_name']=='validate_web_source':
+                assert 'Isolated compile passed' in tool_results[-1]['content'],tool_results[-1]['content']
+                name,args='update_web_source',dict(module='dev/site',edits=json.dumps(Fixture.refactor_operations))
+            else: raise AssertionError('Unexpected refactor phase')
+        elif 'component' in prompt:
+            deleting = 'Delete' in prompt
+            before, after = (r'\(projectHeading())', 'Built through Kiln AI.') if deleting else ('Built through Kiln AI.', r'\(projectHeading())')
+            operations = [dict(path='App.swift', before=before, after=after)]
+            if deleting:
+                read = next((json.loads(m['content']) for m in tool_results if m.get('tool_name')=='read_web_file' and json.loads(m['content'])['file']=='Components/Heading.swift'), None)
+                if read: operations.append(dict(path='Components/Heading.swift',action='delete',sha256=read['sha256']))
+            else:
+                operations.append(dict(path='Components/Heading.swift',action='create',content='import Foundation\nfunc projectHeading() -> String { "Multi-file published." }\n'))
+            if not tool_results: name, args = 'tool_help', dict(topic='web')
+            elif tool_results[-1]['tool_name']=='tool_help': name, args = 'list_web_files', dict(module='dev/site')
+            elif tool_results[-1]['tool_name']=='list_web_files': name, args = 'read_web_file', dict(module='dev/site',path='Components/Heading.swift' if deleting else 'App.swift',offset='0')
+            elif tool_results[-1]['tool_name']=='read_web_file':
+                page=json.loads(tool_results[-1]['content'])
+                if not page['complete']: name, args = 'read_web_file',dict(module='dev/site',path=page['file'],offset=str(page['nextOffset']))
+                elif page['file']=='Components/Heading.swift': name, args = 'read_web_file',dict(module='dev/site',path='App.swift',offset='0')
+                else: name, args = 'validate_web_source',dict(module='dev/site',edits=json.dumps(operations))
+            elif tool_results[-1]['tool_name']=='validate_web_source':
+                assert 'Isolated compile passed' in tool_results[-1]['content'],tool_results[-1]['content']
+                name, args = 'update_web_source',dict(module='dev/site',edits=json.dumps(operations))
+            else: raise AssertionError('Unexpected project phase')
+        elif not tool_results:
             name, args = 'tool_help', dict(topic='web')
         elif tool_results[-1]['tool_name'] == 'tool_help':
             assert 'KILNWEB GUIDE' in tool_results[-1]['content'] and 'validate_web_source' in tool_results[-1]['content']
@@ -194,6 +230,53 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
         denied=subprocess.run(base+['web register '+str(config)],capture_output=True,text=True)
         assert denied.returncode!=0 and 'Trusted SDK changed' in denied.stdout
         print('PASS: unregistered module read and changed trusted SDK are denied',flush=True)
+        # Explicitly opt in a dedicated project directory, separate from the SDK/config.
+        workspace=root/'Project'; workspace.mkdir(mode=0o700)
+        (workspace/'App.swift').write_bytes(source.read_bytes()); (workspace/'App.swift').chmod(0o600)
+        original_sdk=bad; original_sdk['inputDigests'][str(sdk_input)]=hashlib.sha256(sdk_input.read_bytes()).hexdigest(); sdk.write_text(json.dumps(original_sdk))
+        settings=json.loads(config.read_text()); settings.update(root=str(workspace),source=str(workspace/'App.swift')); config.write_text(json.dumps(settings))
+        ssh('web register '+str(config)); source=workspace/'App.swift'; Fixture.source_path=source
+        created=ssh('ai ask Create a component for the heading')
+        assert 'Published development change' in created,created
+        assert (workspace/'Components/Heading.swift').is_file() and 'Multi-file published.' in get('/counter')
+        multi_history=json.loads(ssh('web history dev/site')); multi=next(r for r in multi_history if r['current']=='yes')
+        multi_diff=ssh('web diff dev/site '+multi['id'])
+        assert 'Components/Heading.swift' in multi_diff and '+func projectHeading' in multi_diff
+        browse=json.loads(ssh('web browse dev/site Components/Heading.swift'))
+        assert browse['tree']['projectRoot'] and browse['file']['source'].startswith('import Foundation')
+        deleted=ssh('ai ask Delete the heading component and inline its old heading')
+        assert 'Published development change' in deleted,deleted
+        assert not (workspace/'Components/Heading.swift').exists() and 'Built through Kiln AI.' in get('/counter')
+        ssh('app rollback dev/site')
+        assert (workspace/'Components/Heading.swift').is_file() and 'Multi-file published.' in get('/counter')
+        ssh('app rollback dev/site')
+        assert not (workspace/'Components/Heading.swift').exists() and 'Built through Kiln AI.' in get('/counter')
+        retained=json.loads(ssh('web browse dev/site Components/Heading.swift '+multi['id']))
+        assert not retained['tree']['editable'] and 'Multi-file published.' in retained['file']['source']
+        print('PASS: AI lists/reads files, creates and deletes nested Swift component, compiles all files, publishes live HTML, whole-project rollback both ways and retained read-only tree',flush=True)
+        # The code-view Refactor command pins the displayed source and narrows
+        # the AI turn to registered-project tools. Compile real actor extensions.
+        entry=source.read_text(); sha=hashlib.sha256(source.read_bytes()).hexdigest()
+        method='    func snapshot() -> (Int, String) { (count, note) }\n'
+        Fixture.refactor_operations=[dict(path='App.swift',before=method,after=''),
+            dict(path='App.swift',before='private var count = 0',after='var count = 0'),
+            dict(path='App.swift',before='private var note =',after='var note ='),
+            dict(path='Models/CounterModel+snapshot.swift',action='create',content='import Foundation\nextension CounterModel {\n'+method+'}\n')]
+        stale=subprocess.run(base+['web refactor dev/site App.swift '+'0'*64+' functions'],capture_output=True,text=True)
+        assert stale.returncode!=0 and source.read_text()==entry
+        css_before=get('/assets/app.css')
+        refactored=ssh('web refactor dev/site App.swift '+sha+' functions')
+        assert 'Published development change' in refactored,refactored
+        assert (workspace/'Models/CounterModel+snapshot.swift').is_file()
+        assert method not in source.read_text() and 'Built through Kiln AI.' in get('/counter')
+        assert get('/assets/app.css')==css_before
+        history=json.loads(ssh('web history dev/site')); current=next(r for r in history if r['current']=='yes')
+        assert 'CounterModel+snapshot.swift' in ssh('web diff dev/site '+current['id'])
+        ssh('app rollback dev/site')
+        assert source.read_text()==entry and not (workspace/'Models/CounterModel+snapshot.swift').exists()
+        print('PASS: displayed-hash refactor guard / restricted AI tools / method extracted into Swift actor extension / isolated validation and publish / same HTML and CSS / whole-refactor rollback',flush=True)
+
+
     finally:
         if runtime.poll() is None:runtime.terminate();runtime.wait(timeout=20)
         subprocess.run([str(BIN/'kiln'),'session-service-stop','--state',str(state)],capture_output=True,timeout=15)

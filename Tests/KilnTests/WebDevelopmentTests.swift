@@ -96,3 +96,28 @@ private func webDevFixture(_ root: URL, auto: Bool = true) throws -> (Data, Appl
     try KilnStateFile.write(Data("tampered".utf8), to: file)
     await #expect(throws: (any Error).self) { _ = try await dev.code(module: "demo/web", id: id) }
 }
+@Test func refactorBindsDisplayedFileAndProjectGrantBeforeAnyAIWrite() async throws {
+    guard WebIsolation.supported else { return }
+    let root = try webDevRoot(); defer { try? FileManager.default.removeItem(at:root) }
+    let (legacy,target) = try webDevFixture(root), dev = WebDevelopment(directory:root)
+    _ = try await dev.register(data:legacy,target:target)
+    await #expect(throws:(any Error).self) { _ = try await dev.refactor(module:"demo/web",path:"App.swift",sha256:WebIsolation.digest(Data("original heading".utf8)),style:"functions") }
+    let sourceRoot = URL(fileURLWithPath:WebIsolation.canonical(root.path)).appendingPathComponent("source")
+    let snapshot = WebFiles(files:["App.swift":Data("import Foundation\n".utf8),"Models/Counter.swift":Data("actor Counter {}\n".utf8)])
+    try snapshot.writeSources(at:sourceRoot)
+    var sdk = try JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("sdk.json"))) as! [String:Any]; sdk["projectFiles"] = true
+    try KilnStateFile.write(JSONSerialization.data(withJSONObject:sdk),to:root.appendingPathComponent("sdk.json"))
+    var config = try JSONSerialization.jsonObject(with:legacy) as! [String:Any]; config["root"] = sourceRoot.path; config["source"] = sourceRoot.appendingPathComponent("App.swift").path
+    _ = try await dev.register(data:JSONSerialization.data(withJSONObject:config),target:target)
+    let hash = WebIsolation.digest(snapshot.files["Models/Counter.swift"]!)
+    let request = try await dev.refactor(module:"demo/web",path:"Models/Counter.swift",sha256:hash,style:"functions")
+    #expect(request.prompt.contains("extensions of the existing type")); #expect(request.prompt.contains("32 operations"))
+    try await dev.verifyRefactor(request,module:"demo/web")
+    await #expect(throws:(any Error).self) { try await dev.verifyRefactor(request,module:"elsewhere/web") }
+    try KilnStateFile.write(Data("actor Changed {}".utf8),to:sourceRoot.appendingPathComponent("Models/Counter.swift"))
+    await #expect(throws:(any Error).self) { try await dev.verifyRefactor(request,module:"demo/web") }
+    try snapshot.writeSources(at:sourceRoot)
+    config["autoPublish"] = false
+    _ = try await dev.register(data:JSONSerialization.data(withJSONObject:config),target:target)
+    await #expect(throws:(any Error).self) { try await dev.verifyRefactor(request,module:"demo/web") }
+}

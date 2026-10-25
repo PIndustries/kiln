@@ -8,6 +8,7 @@ import Glibc
 #endif
 
 public struct WebBuildSDK: Codable, Sendable {
+    public var projectFiles: Bool? = nil
     public let schemaVersion: Int
     public let compiler: String
     public let arguments: [String]
@@ -102,8 +103,12 @@ public enum WebIsolation {
         let environment = ["HOME": root.path, "TMPDIR": root.path + "/", "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
         for key in ProcessInfo.processInfo.environment.keys { unsetenv(key) }
         for (key, value) in environment { setenv(key, value, 1) }
+        let snapshot = try WebFiles.retained(at: root)
+        let sources = snapshot.files.keys.filter { $0.hasSuffix(".swift") }.sorted()
+        let sourceRoot = root.appendingPathComponent("Sources")
+        let paths = FileManager.default.fileExists(atPath: sourceRoot.path) ? sources.map { sourceRoot.appendingPathComponent($0).path } : [root.appendingPathComponent("App.swift").path]
         let args = ["/usr/bin/sandbox-exec", "-p", buildProfile(sdk: sdk, job: root.path), sdk.compiler] + sdk.arguments +
-            ["-module-cache-path", root.appendingPathComponent("cache").path, root.appendingPathComponent("App.swift").path] + sdk.objects +
+            ["-module-cache-path", root.appendingPathComponent("cache").path] + paths + sdk.objects +
             ["-o", root.appendingPathComponent("app").path]
         try replace(arguments: args)
     }

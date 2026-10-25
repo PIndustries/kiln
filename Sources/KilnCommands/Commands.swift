@@ -173,7 +173,7 @@ public struct KilnCommands: Sendable {
             if parts.first == "node" || parts.first == "cluster" { return try await nodeCommand(parts, requestID: auditID) }
             if parts.first == "identity" { return try identityCommand(parts) }
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
-            if parts.first == "web" { return try await webCommand(parts, progress: progress) }
+            if parts.first == "web" { return try await webCommand(parts, sessionID: aiSessionID(sessionID), progress: progress) }
             if parts.first == "ai" { return try await aiCommand(parts, sessionID: aiSessionID(sessionID), progress: progress) }
             if parts.first == "vault" {
                 switch parts {
@@ -429,7 +429,7 @@ extension KilnCommands {
         catch { throw AIError.message("Task was created but completion audit failed. Inspect ai task list before retrying.") }
         return result
     }
-    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil) async throws -> CommandResult {
+    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil, webRefactor: WebRefactor? = nil) async throws -> CommandResult {
         let accountOwner = (principal?.name ?? "local-console") + ":" + SHA256.hash(data: Data((principal?.publicKey ?? "local-console").utf8)).map { String(format: "%02x", $0) }.joined()
         if parts.count >= 2, parts[1] == "conversation" {
             let owner = try aiOwnerFingerprint()
@@ -780,13 +780,15 @@ extension KilnCommands {
         let webChange: (@Sendable (String, String) async throws -> String)?
         if !sessionID.hasPrefix("task:"), (try? identities.resolve(principal).role) == "admin", WebIsolation.supported {
             webChange = { module, edits in
-                try await publishWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, progress: progress)
+                if let webRefactor { try await webDevelopment.verifyRefactor(webRefactor, module: module) }
+                return try await publishWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, progress: progress)
             }
         } else { webChange = nil }
         let webValidation: (@Sendable (String, String) async throws -> String)?
         if webChange != nil {
             webValidation = { module, edits in
-                try await validateWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, progress: progress)
+                if let webRefactor { try await webDevelopment.verifyRefactor(webRefactor, module: module) }
+                return try await validateWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, progress: progress)
             }
         } else { webValidation = nil }
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
@@ -795,10 +797,17 @@ extension KilnCommands {
                 progress(event)
             }, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer"), validateAccess: {
                 guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Identity or authorization scope changed during this turn") }
-            }, webChange: webChange, webValidation: webValidation) { name, module in
+            }, webChange: webChange, webValidation: webValidation, webOnly: webRefactor != nil) { name, module in
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {
                 case "list_web_projects": try authorizeAdmin(); return try await webDevelopment.inventory()
+                case "list_web_files", "read_web_file":
+                    try authorizeAdmin()
+                    let args = try JSONDecoder().decode([String:String].self, from: Data((module ?? "").utf8))
+                    guard let target = args["module"] else { throw AIError.message("Missing web project") }
+                    if name == "list_web_files" { return try await webDevelopment.tree(module: target) }
+                    guard let path = args["path"], let offset = args["offset"].flatMap(Int.init) else { throw AIError.message("Invalid file arguments") }
+                    return try await webDevelopment.file(module: target, path: path, offset: offset)
                 case "read_web_source":
                     try authorizeAdmin()
                     let args = try JSONDecoder().decode([String: String].self, from: Data(module!.utf8))
@@ -846,7 +855,7 @@ private extension KilnCommands {
         case "key": return ["create", "delete"].contains(p[1])
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
-        case "web": return ["register", "restore"].contains(p[1])
+        case "web": return ["register", "restore", "apply", "refactor"].contains(p[1])
         case "ai": return ["configure", "knowledge", "approve", "deny", "headless", "login", "logout", "use"].contains(p[1]) || (p[1] == "recovery" && p.count > 2 && p[2] != "list") || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
@@ -854,7 +863,7 @@ private extension KilnCommands {
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["web", "app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["projects", "register", "source", "changes", "history", "diff", "code", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["projects", "register", "source", "changes", "history", "diff", "code", "tree", "file", "apply", "browse", "refactor", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)

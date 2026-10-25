@@ -52,7 +52,7 @@ private func diffHistory() throws -> String {
     viewer.finish(text: "File App.swift\n    1 | import Foundation\n    2 | +ordinary source", status: 0)
     let code = viewer.render(width: 100, height: 30)
     #expect(code.contains("Source code 1/2"))
-    #expect(code.contains("1 | import Foundation"))
+    #expect(code.replacingOccurrences(of:"\u{1b}\\[[0-9;?]*[A-Za-z]",with:"",options:.regularExpression).contains("1 | import Foundation"))
     #expect(!code.contains(";38;5;114m| "))
     #expect(viewer.handle(.right, width: 100, height: 30) == "'web' 'code' 'demo/web' 'change-1'")
     viewer.finish(text: "second source", status: 0)

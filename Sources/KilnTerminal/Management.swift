@@ -6,6 +6,7 @@ struct ManagementUI {
     var servers: [ServerSnapshot] = []
     var keys: [String] = []
     var active = false
+    private var workspace: WorkspaceUI?
     private var kind = ""
     private var server: ServerSnapshot?
     private var session = ""
@@ -23,7 +24,7 @@ struct ManagementUI {
     private var pending = ""
     private var anchor = 9
     private var messageOffset = 0
-    mutating func close() { active = false; waiting = false; diffMode = false }
+    mutating func close() { workspace = nil; active = false; waiting = false; diffMode = false }
     mutating func menu(_ kind: String, title: String, options: [String], row: Int = 9) {
         self.kind = kind; self.title = title; self.options = options; anchor = row
         labels = []; fields = []; selected = 0; error = ""; message = ""; help = "Up/Down select | Enter choose | Esc back"
@@ -60,7 +61,7 @@ struct ManagementUI {
     private var changeIndex = 0
     private var diffMode = false
     private var codeMode = false
-    private let diffHelp = "C code / D diff  Left/Right  PgUp/Dn  R restore  Esc list"
+    private let diffHelp = "C code / D diff  F files  Left/Right  PgUp/Dn  R restore  Esc list"
     private mutating func historyMenu() {
         menu("changes", title: "Changes / " + changeModule, options: changes.map { String($0.created.prefix(16)) + " " + ($0.current == "yes" ? "CURRENT" : $0.status == "active" ? "published" : $0.status) + " " + String($0.id.prefix(8)) + " git:" + String($0.commit.prefix(8)) } + ["Back"])
         selected = min(changeIndex, max(0,changes.count-1))
@@ -83,7 +84,13 @@ struct ManagementUI {
         changeModule = module; changeIndex = 0; codeMode = false
         return result(title: "Changes / " + module, command: ["web", "history", module])
     }
+    mutating func codebase(_ module: String, change: String? = nil, returning: Bool = false) -> String {
+        if !returning { diffMode = false }
+        workspace = WorkspaceUI(module: module, change: change); active = true
+        return workspace!.load()
+    }
     mutating func finish(text: String, status: Int) {
+        if workspace != nil { workspace!.finish(text: text, status: status); return }
         guard waiting else { return }; waiting = false
         if status != 0 {
             if ["message", "confirm", "change"].contains(kind) {
@@ -103,6 +110,11 @@ struct ManagementUI {
         help = diffMode && ["web diff", "web code"].contains(pending) ? diffHelp : "PgUp/PgDn scroll | Enter / Esc close"
     }
     mutating func handle(_ key: TerminalKey, width: Int, height: Int) -> String? {
+        if workspace != nil {
+            let command = workspace!.handle(key, width: width, height: height)
+            if !workspace!.active { workspace = nil; if diffMode { return showChange(changeIndex) }; close() }
+            return command
+        }
         if key == .escape || key == .interrupt {
             guard !waiting else { return nil }
             if diffMode {
@@ -132,6 +144,7 @@ struct ManagementUI {
         }
         if kind == "message" {
             if diffMode, ["web diff", "web code"].contains(pending) {
+                if key == .text("f") || key == .text("F") { return codebase(changeModule, change: changeID, returning: true) }
                 if key == .text("c") || key == .text("C") { codeMode = true; return showChange(changeIndex) }
                 if key == .text("d") || key == .text("D") { codeMode = false; return showChange(changeIndex) }
                 if key == .left { return showChange(changeIndex-1) }
@@ -151,6 +164,7 @@ struct ManagementUI {
             if key == .pageUp { messageOffset = max(0,messageOffset-max(1,height-8)) }
             return nil
         }
+        if kind == "changes", key == .text("f") || key == .text("F") { return codebase(changeModule) }
         let count = kind == "form" ? fields.count+2 : options.count
         switch key {
         case .tab, .down: selected = (selected+1) % max(1,count); cursor = fields.indices.contains(selected) ? fields[selected].count : 0
@@ -241,6 +255,7 @@ struct ManagementUI {
     }
     func render(width:Int,height:Int,theme:TerminalTheme = TerminalTheme()) -> String {
         guard active, width >= 50, height >= 16 else { return "" }
+        if let workspace { return workspace.render(width: width, height: height, theme: theme) }
         let g = geometry(width:width,height:height), room = g.width-4
         func fit(_ text:String) -> String { String(KilnTerminal.safe(text).prefix(room)).padding(toLength:room,withPad:" ",startingAt:0) }
         func wrap(_ text:String) -> [String] {
@@ -254,6 +269,7 @@ struct ManagementUI {
         }
         var rows = [(title,true)]
         var diffColors: [Int:Int] = [:]
+        var syntaxRows: [Int:[Int?]] = [:]
         if kind == "form" {
             for i in labels.indices {
                 let available = max(1,room-labels[i].count-2)
@@ -263,9 +279,14 @@ struct ManagementUI {
             rows.append(("",false)); rows.append(((selected == fields.count ? "> " : "  ") + "[Save]" + "        " + (selected == fields.count+1 ? "> " : "  ") + "[Cancel]", selected >= fields.count))
             rows += wrap(help).map { ($0,false) }
         } else if kind == "message" {
-            var wrapped: [(String,Int?)] = []
+            var wrapped: [(String,Int?,[Int?])] = []
+            var syntax = SourceSyntax()
             for line in message.components(separatedBy:"\n") {
-                var remaining = KilnTerminal.safe(line)
+                var remaining = KilnTerminal.safe(line).replacingOccurrences(of: "\t", with: "    ")
+                var colors: [Int?] = []
+                if diffMode && pending == "web code", line.count >= 8, line.prefix(8).contains("|") {
+                    colors = Array(repeating: Int?(244), count: 8) + syntax.colors(String(remaining.dropFirst(8)), path: "App.swift")
+                }
                 let color: Int?
                 if diffMode && pending == "web diff" {
                     if remaining.hasPrefix("+++") || remaining.hasPrefix("---") || remaining.hasPrefix("@@") { color = 81 }
@@ -273,10 +294,11 @@ struct ManagementUI {
                     else if remaining.hasPrefix("-") { color = 203 }
                     else { color = nil }
                 } else { color = nil }
-                repeat { wrapped.append((String(remaining.prefix(room)),color)); remaining = String(remaining.dropFirst(room)) } while !remaining.isEmpty
+                repeat { wrapped.append((String(remaining.prefix(room)),color,Array(colors.prefix(room)))); remaining = String(remaining.dropFirst(room)); colors = Array(colors.dropFirst(min(room,colors.count))) } while !remaining.isEmpty
             }
             for line in wrapped.dropFirst(min(messageOffset,max(0,wrapped.count-1))).prefix(g.height-5) {
                 if let color = line.1 { diffColors[rows.count] = color }
+                if !line.2.isEmpty { syntaxRows[rows.count] = line.2 }
                 rows.append((line.0,false))
             }
         } else {
@@ -295,7 +317,11 @@ struct ManagementUI {
             else if index-1 < rows.count { text = "| " + fit(rows[index-1].0) + " |"; highlighted = rows[index-1].1 }
             else { text = "| " + fit("") + " |"; highlighted = false }
             let foreground = highlighted ? theme.accent : diffColors[index-1] ?? theme.foreground
-            output += "\u{1b}[\(g.top+index);\(g.left)H\u{1b}[0;48;5;\(highlighted ? 238 : theme.background);38;5;\(foreground)m" + text + "\u{1b}[0m"
+            let styled: String
+            if let colors = syntaxRows[index-1], index > 1, index < g.height-2 {
+                styled = "| " + SourceSyntax.styled(fit(rows[index-1].0), colors: colors, base: foreground) + " |"
+            } else { styled = text }
+            output += "\u{1b}[\(g.top+index);\(g.left)H\u{1b}[0;48;5;\(highlighted ? 238 : theme.background);38;5;\(foreground)m" + styled + "\u{1b}[0m"
         }
         if kind == "form", fields.indices.contains(selected), !waiting {
             let offset = max(0,cursor-max(1,room-labels[selected].count-2)+1)
