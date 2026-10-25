@@ -23,6 +23,11 @@ public struct KilnTerminal {
     private var reviewButton = 0
     public mutating func updateAIWorkspace(_ snapshot: AIWorkspaceSnapshot) {
         let selectedID = workspaceItems.indices.contains(sidebarSelected) ? workspaceItems[sidebarSelected].id : nil
+        let scopeChanged = aiWorkspace.contextScope != nil && snapshot.contextScope != nil && aiWorkspace.contextScope != snapshot.contextScope
+        if scopeChanged || snapshot.error == "Identity revoked or unauthorized" || (conversationName != nil && snapshot.conversation == nil) {
+            messages = []; liveReasoning = ""; liveAnswer = ""; liveStatus = ""; reviewID = nil; input = ""; cursor = 0; scroll = 0
+        }
+        conversationName = snapshot.conversation
         aiWorkspace = snapshot
         sidebarSelected = selectedID.flatMap { id in workspaceItems.firstIndex { $0.id == id } } ?? min(sidebarSelected, max(0, workspaceItems.count - 1))
     }
@@ -87,16 +92,26 @@ public struct KilnTerminal {
     private var liveReasoning = ""
     private var liveStatus = ""
     private var responseProvider: AIProviderSnapshot?
+    private var chatColumns: Int { max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3) }
+    private var thinkingTruncated = false
     public mutating func progress(_ event: AIProgress) {
+        let previousLines = scroll > 0 ? chatBody(columns: chatColumns).count : 0
+        defer { if scroll > 0 { scroll = max(0, scroll + chatBody(columns: chatColumns).count - previousLines) } }
         switch event {
         case .provider(let provider):
             if busy && commandInChat && responseProvider == nil { responseProvider = provider }
         case .answer(let text): liveAnswer = String((liveAnswer + text).suffix(24000))
-        case .reasoning(let text): liveReasoning = String((liveReasoning + text).suffix(6000))
+        case .reasoning(let text):
+            let room = max(0, 131072 - liveReasoning.count)
+            liveReasoning += text.prefix(room)
+            if text.count > room && !thinkingTruncated {
+                liveReasoning += "\n[Visible thinking limit reached: later output omitted.]"
+                thinkingTruncated = true
+            }
         case .status(let text):
             liveStatus = text
             if text.hasPrefix("Tool: ") { toolCount += 1 }
-        case .snapshot(let text): liveAnswer = text; liveReasoning = ""
+        case .snapshot(let text): liveAnswer = text
         }
     }
     public var chatVisible: Bool { aiMode && drawer }
@@ -109,6 +124,15 @@ public struct KilnTerminal {
         }
     }
     private var messages: [ChatMessage] = []
+    private var conversationName: String?
+    public mutating func restoreConversation(_ view: AIConversationView) {
+        conversationName = view.name
+        messages = view.events.map { event in
+            ChatMessage(role: event.kind == .request ? "You" : event.kind == .reasoning ? "Provider thinking" : "Kiln", text: event.text, provider: event.source)
+        }
+        if !view.notice.isEmpty { messages.append(ChatMessage(role: "Kiln", text: view.notice)) }
+        messages = Array(messages.suffix(40)); scroll = 0
+    }
     private var started = Date()
     private var animation = 0
     private var toolCount = 0
@@ -146,13 +170,19 @@ public struct KilnTerminal {
     private enum Click { case key(TerminalKey), service(Int), session(Int), server(Int), action(Int), cursor(Int), workspace(Int), review(Int), newTask }
     private struct Hit { let row: Int; let column: Int; let width: Int; let click: Click }
     public mutating func finish(text: String, status: Int) {
-        if commandInChat { messages.append(ChatMessage(role: status == 0 ? "Kiln" : "Error", text: text, provider: responseProvider)); messages = Array(messages.suffix(40)) }
+        let previousLines = scroll > 0 ? chatBody(columns: chatColumns).count : 0
+        if commandInChat {
+            if !liveReasoning.isEmpty { messages.append(ChatMessage(role: "Provider thinking", text: liveReasoning, provider: responseProvider)) }
+            messages.append(ChatMessage(role: status == 0 ? "Kiln" : "Error", text: text, provider: responseProvider))
+            messages = Array(messages.suffix(40))
+        }
         commandInChat = false; responseProvider = nil
-        liveAnswer = ""; liveReasoning = ""; liveStatus = ""
+        liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
         busy = false; management.finish(text:text,status:status)
         let lines = text.components(separatedBy: "\n")
         transcript += lines
-        transcript = Array(transcript.suffix(300)); scroll = 0
+        transcript = Array(transcript.suffix(300))
+        if scroll > 0 { scroll = max(0, scroll + chatBody(columns: chatColumns).count - previousLines) }
         notice = status == 0 ? (lines.count > 1 ? "Command completed. Output is in the drawer." : lines.first ?? "Done") : "Failed: " + (lines.first ?? "Unknown error")
     }
     private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
@@ -160,7 +190,7 @@ public struct KilnTerminal {
         commandInChat = chatVisible; responseProvider = nil
         busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
         started = Date(); animation = 0; toolCount = 0
-        liveAnswer = ""; liveReasoning = ""; liveStatus = ""
+        liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
         if commandInChat { messages.append(ChatMessage(role: "You", text: display.map { String($0.dropFirst(5)) } ?? command)) }
         notice = "Working: " + command
         return [.command(command)]
@@ -403,6 +433,10 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/help" { return execute("ai chat-help") }
+                if command == "/conversations" { return execute("ai conversation list") }
+                if command.split(whereSeparator: { $0.isWhitespace }).first == "/conversation" {
+                    return execute("ai conversation" + command.dropFirst("/conversation".count))
+                }
                 if command == "/check" { return execute("ai check") }
                 if command == "/providers" { return execute("ai profile list --details") }
                 if command == "/provider" { return execute("ai status") }
@@ -483,9 +517,9 @@ public struct KilnTerminal {
         }
         if busy {
             body += [chatHeading("Kiln", provider: responseProvider)]
-            if !liveAnswer.isEmpty { body += chatText(liveAnswer, columns: columns) }
-            else if !liveReasoning.isEmpty { body += ["Provider reasoning"] + Array(chatText(liveReasoning, columns: columns).suffix(3)) }
-            else { body += ["Waiting for provider..."] }
+            if !liveReasoning.isEmpty { body += ["Provider thinking"] + chatText(liveReasoning, columns: columns) + [""] }
+            if !liveAnswer.isEmpty { body += ["Answer"] + chatText(liveAnswer, columns: columns) }
+            else if liveReasoning.isEmpty { body += ["Waiting for provider..."] }
         }
         if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools run automatically. Changes require your approval.", "Prompts and tool results go to the selected provider; keep credentials in Vault."] }
         return body
@@ -530,7 +564,7 @@ public struct KilnTerminal {
             return "\u{1b}[0m" + theme.backgroundCode + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row(aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured", muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
+        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row((conversationName.map { "Saved: " + $0 + " / " } ?? "") + (aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured"), muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
         if let id = reviewID {
             let proposal = aiWorkspace.proposals.first { $0.id == id }
             let valid = proposal.map { $0.expires > Date() } ?? false

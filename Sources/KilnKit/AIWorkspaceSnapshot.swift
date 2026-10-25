@@ -17,7 +17,7 @@ public struct AITaskSnapshot: Sendable, Equatable {
     public let status: String
     public init(id: String, prompt: String, status: String) { self.id = id; self.prompt = prompt; self.status = status }
 }
-public struct AIProviderSnapshot: Sendable, Equatable {
+public struct AIProviderSnapshot: Sendable, Equatable, Codable {
     public let provider: String
     public let profile: String
     public let model: String
@@ -61,7 +61,10 @@ public struct AIWorkspaceSnapshot: Sendable, Equatable {
     public let tasks: [AITaskSnapshot]
     public let error: String?
     public let provider: AIProviderSnapshot?
-    public init(proposals: [AIProposalSnapshot] = [], tasks: [AITaskSnapshot] = [], error: String? = nil, provider: AIProviderSnapshot? = nil) {
+    public let conversation: String?
+    public let contextScope: String?
+    public init(proposals: [AIProposalSnapshot] = [], tasks: [AITaskSnapshot] = [], error: String? = nil, provider: AIProviderSnapshot? = nil, conversation: String? = nil, contextScope: String? = nil) {
+        self.conversation = conversation; self.contextScope = contextScope
         self.proposals = proposals; self.tasks = tasks; self.error = error; self.provider = provider
     }
 }

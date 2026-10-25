@@ -56,8 +56,10 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
 
-        def emit(content="", tools=None, done=False):
+        def emit(content="", tools=None, done=False, thinking=""):
             value = {"message": {"role": "assistant", "content": content}, "done": done}
+            if thinking:
+                value["message"]["thinking"] = thinking
             if tools:
                 value["message"]["tool_calls"] = [{"function": tools}]
             if done:
@@ -70,6 +72,15 @@ class Fixture(http.server.BaseHTTPRequestHandler):
                 emit("Fixture tool result received. ")
                 time.sleep(0.25)
                 emit("Review the local evidence and approval.", done=True)
+            elif prompt == "fixture saved remember":
+                for i in range(12):
+                    emit(thinking=f"Visible investigation row {i:02d}\n")
+                    time.sleep(0.05)
+                emit("Saved checkpoint token MARBLE.", done=True)
+            elif prompt == "fixture saved continue":
+                emit("Saved context resumed.", done=True)
+            elif prompt == "fixture saved after restart":
+                emit("Saved after cold restart.", done=True)
             elif prompt == "fixture attributed follow-up":
                 emit("Alternate source answer complete.", done=True)
             elif prompt.startswith("fixture context turn "):
@@ -362,6 +373,74 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             assert Fixture.last_model == "fixture-model"
             assert not any(m.get("content") == "fixture attributed follow-up" for m in Fixture.last_messages)
         print("PASS offline SSH: provider inspection and explicit chat selection make no model request; next turn uses a fresh context and selected model", flush=True)
+        send(b"/conversation new durable-acceptance\r")
+        expect("Saved: durable-acceptance")
+        expect("[ready]")
+        send(b"fixture saved remember\r")
+        expect("Visible investigation row 00")
+        expect("Visible investigation row 11")
+        expect("Saved checkpoint token MARBLE.")
+        expect("[ready]")
+        saved = json.loads(command("ai conversation show durable-acceptance"))
+        cursor = saved["latestCursor"]
+        assert saved["schemaVersion"] == 1 and not saved["gap"]
+        thinking = "".join(e["text"] for e in saved["events"] if e["kind"] == "reasoning")
+        assert "Visible investigation row 00" in thinking and "Visible investigation row 11" in thinking
+        assert (state / "ai-conversations/index.json").stat().st_mode & 0o777 == 0o600
+        client.kill(); client.wait(timeout=5)
+        with Fixture.requests_lock:
+            count = Fixture.request_count
+        connect()
+        assert "Saved: durable-acceptance" not in frame()
+        send(b"/conversation use durable-acceptance\r")
+        expect("Saved: durable-acceptance")
+        expect("Visible investigation row 00")
+        expect("Saved checkpoint token MARBLE.")
+        expect("[ready]")
+        with Fixture.requests_lock:
+            assert Fixture.request_count == count, "Restoring transcript called provider"
+        send(b"fixture saved continue\r")
+        expect("Saved context resumed."); expect("[ready]")
+        with Fixture.requests_lock:
+            assert any(m.get("content") == "fixture saved remember" for m in Fixture.last_messages)
+            assert not any("Visible investigation row" in m.get("content", "") or m.get("content") == "fixture context turn 999" for m in Fixture.last_messages)
+        send(b"fixture restart saved pending\r")
+        expect("APPROVAL / restart"); expect("[ready]")
+        saved = json.loads(command("ai conversation show durable-acceptance"))
+        import re
+        proposal = next(re.search(r"Approve: /approve ([a-zA-Z0-9-]+)", e["text"]).group(1) for e in reversed(saved["events"]) if "Approve: /approve " in e["text"])
+        client.kill(); client.wait(timeout=5)
+        runtime.terminate(); runtime.wait(timeout=15)
+        stopped = subprocess.run([str(BIN / "kiln"), "session-service-stop", "--state", str(state)], capture_output=True, timeout=8)
+        assert stopped.returncode == 0 or not (state / "session-service.pid").exists()
+        runtime = subprocess.Popen([str(BIN / "kiln"), "up", "--state", str(state), "--authorized-keys", str(key) + ".pub", "--port", str(port)], stdout=log, stderr=log)
+        deadline = time.monotonic() + 15
+        while subprocess.run(base + ["admin@127.0.0.1", "status"], capture_output=True, timeout=3).returncode:
+            assert time.monotonic() < deadline, "Cold runtime restart failed"
+            time.sleep(0.1)
+        connect()
+        send(b"/conversation use durable-acceptance\r")
+        expect("Saved: durable-acceptance"); expect("[ready]")
+        expect("0 approvals / 0 tasks")
+        before = pid()
+        send(f"/approve {proposal}\r".encode())
+        expect("Unknown proposal"); expect("[ready]")
+        assert pid() == before and len(list((state / "operations").glob("*.json"))) == 1
+        send(b"fixture saved after restart\r")
+        expect("Saved after cold restart."); expect("[ready]")
+        with Fixture.requests_lock:
+            assert any(m.get("content") == "fixture saved continue" for m in Fixture.last_messages)
+        events = json.loads(command(f"ai conversation show durable-acceptance {cursor}"))
+        assert not events["gap"] and all(e["cursor"] > cursor for e in events["events"])
+        command("ai conversation retention durable-acceptance 1")
+        command("ai conversation delete durable-acceptance")
+        deadline = time.monotonic() + 5
+        # Header and body rows can arrive in separate SSH packets. Wait for
+        # both changes rather than asserting against a partially painted frame.
+        while "Saved: durable-acceptance" in frame() or "Saved after cold restart." in frame():
+            pump(); assert time.monotonic() < deadline, "Deleted conversation still selected or visible"
+        assert "No saved conversations" in command("ai conversation list")
+        print("PASS offline SSH: full visible thinking retained and restored; named context survives reconnect/cold restart; approvals never revive; cursor reads and connected deletion verified", flush=True)
         print("KILN_OFFLINE_AI_TERMINAL_COMPLETE", flush=True)
     except Exception:
         log.flush()

@@ -17,8 +17,10 @@ public struct CommandResult: Sendable {
     public let disconnect: Bool
     public let terminalTheme: TerminalTheme?
     public let attachSession: String?
-    public init(_ text: String, status: Int = 0, disconnect: Bool = false, attachSession: String? = nil, terminalTheme: TerminalTheme? = nil) {
+    public let conversation: AIConversationView?
+    public init(_ text: String, status: Int = 0, disconnect: Bool = false, attachSession: String? = nil, terminalTheme: TerminalTheme? = nil, conversation: AIConversationView? = nil) {
         self.text = text; self.status = status; self.disconnect = disconnect; self.attachSession = attachSession; self.terminalTheme = terminalTheme
+        self.conversation = conversation
     }
 }
 
@@ -38,7 +40,13 @@ public struct KilnCommands: Sendable {
     public func bootstrapIdentity(username: String, keys: [String]) throws { try identities.bootstrap(name: username, keys: keys) }
     public func isAuthorized() -> Bool { (try? identities.resolve(principal)) != nil }
     public func authorizeAdmin() throws { try identities.require(principal, admin: true) }
-    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault); self.assistant = KilnAssistant(); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    func aiOwnerFingerprint() throws -> String {
+        let identity = try identities.resolve(principal)
+        let data = try JSONEncoder().encode([identity.name, principal?.publicKey ?? "local-console", identity.role] + identity.modules.sorted())
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+    func aiSessionID(_ id: String) throws -> String { try aiOwnerFingerprint() + ":" + id }
+    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault); self.assistant = KilnAssistant(directory: runtime.stateDirectory); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     // Internal dependency injection keeps snapshot tests deterministic without
     // granting the presentation layer authority to create proposals.
     init(runtime: KilnRuntime, assistant: KilnAssistant) {
@@ -54,7 +62,10 @@ public struct KilnCommands: Sendable {
         guard (try? identities.resolve(principal)) != nil else {
             return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized")
         }
-        var proposals = await assistant.pendingProposals(session: (principal?.name ?? "local-console") + ":" + sessionID)
+        guard let scopedSession = try? aiSessionID(sessionID) else { return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized") }
+        let scope = try? aiOwnerFingerprint()
+        let conversation = await assistant.selectedConversation(session: scopedSession)
+        var proposals = await assistant.pendingProposals(session: scopedSession)
         var tasks: [AITaskSnapshot] = []
         var taskError: String?
         if (try? authorizeAdmin()) != nil {
@@ -74,13 +85,14 @@ public struct KilnCommands: Sendable {
         guard let identity = try? identities.resolve(principal) else {
             return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized")
         }
+        guard (try? aiSessionID(sessionID)) == scopedSession else { return AIWorkspaceSnapshot(error: "Authorization scope changed", contextScope: try? aiOwnerFingerprint()) }
         let visible = proposals.filter {
             (!$0.id.hasPrefix("recovery:") || identity.role == "admin") && $0.expires > Date() && identity.role != "viewer" &&
             (identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.module))
         }
         let provider = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile, model: $0.model) }
         return AIWorkspaceSnapshot(proposals: visible, tasks: identity.role == "admin" ? tasks : [],
-                                   error: identity.role == "admin" ? taskError : nil, provider: provider)
+                                   error: identity.role == "admin" ? taskError : nil, provider: provider, conversation: conversation, contextScope: scope)
     }
     public func allowForward(host: String, port: Int) async -> Bool {
         guard (try? authorizeAdmin()) != nil else { return false }
@@ -159,7 +171,7 @@ public struct KilnCommands: Sendable {
             if parts.first == "node" || parts.first == "cluster" { return try await nodeCommand(parts, requestID: auditID) }
             if parts.first == "identity" { return try identityCommand(parts) }
             if parts.first == "server" || parts.first == "key" { return try await bastionCommand(parts) }
-            if parts.first == "ai" { return try await aiCommand(parts, sessionID: (principal?.name ?? "local-console") + ":" + sessionID, progress: progress) }
+            if parts.first == "ai" { return try await aiCommand(parts, sessionID: aiSessionID(sessionID), progress: progress) }
             if parts.first == "vault" {
                 switch parts {
                 case ["vault", "help"]:
@@ -415,6 +427,39 @@ private extension KilnCommands {
     }
     func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil) async throws -> CommandResult {
         let accountOwner = (principal?.name ?? "local-console") + ":" + SHA256.hash(data: Data((principal?.publicKey ?? "local-console").utf8)).map { String(format: "%02x", $0) }.joined()
+        if parts.count >= 2, parts[1] == "conversation" {
+            let owner = try aiOwnerFingerprint()
+            let result: CommandResult
+            switch parts {
+            case ["ai", "conversation", "list"]:
+                result = CommandResult(try await assistant.savedConversations(owner: owner))
+            case let p where p.count == 4 && p[2] == "new":
+                let view = try await assistant.newConversation(owner: owner, name: p[3], session: sessionID, configuration: activeAIConfiguration())
+                result = CommandResult(view.notice, conversation: view)
+            case let p where (p.count == 4 || (p.count == 5 && p[4] == "--new-context")) && p[2] == "use":
+                let view = try await assistant.useConversation(owner: owner, name: p[3], session: sessionID, configuration: activeAIConfiguration(), reset: p.count == 5)
+                result = CommandResult(view.notice, conversation: view)
+            case ["ai", "conversation", "leave"]:
+                let view = try await assistant.leaveConversation(session: sessionID)
+                result = CommandResult(view.notice, conversation: view)
+            case let p where p.count == 4 && p[2] == "delete":
+                let view = try await assistant.deleteConversation(owner: owner, name: p[3], session: sessionID)
+                result = CommandResult("Saved conversation deleted.", conversation: view)
+            case let p where p.count == 5 && p[2] == "retention":
+                guard let days = Int(p[4]) else { throw AIError.message("Retention must be 1-30 days") }
+                try await assistant.conversationRetention(owner: owner, name: p[3], days: days)
+                result = CommandResult("Conversation retention updated.")
+            case let p where (p.count == 4 || p.count == 5) && p[2] == "show":
+                let after: UInt64
+                if p.count == 5 { guard let value = UInt64(p[4]) else { throw AIError.message("Invalid event cursor") }; after = value } else { after = 0 }
+                let view = try await assistant.conversationEvents(owner: owner, name: p[3], after: after)
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]; encoder.dateEncodingStrategy = .iso8601
+                result = CommandResult(String(decoding: try encoder.encode(view), as: UTF8.self))
+            default: throw AIError.message("Use /conversation new/use NAME [--new-context], list, show NAME [AFTER], leave, delete NAME, or retention NAME DAYS. Saving is explicit; private files are not Vault-encrypted.")
+            }
+            guard try aiOwnerFingerprint() == owner else { throw AIError.message("Identity or authorization scope changed") }
+            return result
+        }
         if parts == ["ai", "check"] {
             try authorizeAdmin()
             var rows = ["AI setup check / local only"]
@@ -634,6 +679,9 @@ private extension KilnCommands {
             Chat commands / local reference
             /help                 Show this reference
             /context              Inspect this connection's history limits
+            /conversations        List your saved conversations
+            /conversation new/use NAME   Save or resume on this connection
+            /conversation leave   Return to temporary context
             /check                Check local AI setup (administrator)
             /provider             Inspect the active provider
             /providers            List saved profiles (administrator)
@@ -689,8 +737,8 @@ private extension KilnCommands {
                 let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint, requestID: parts[2]) {
                     try identities.require(principal, mutation: true, module: action.module)
                 }
-                await assistant.record(result, session: sessionID)
-                return CommandResult("Executed approved operation: " + result)
+                let warning = await assistant.record(result, session: sessionID)
+                return CommandResult("Executed approved operation: " + result + (warning.map { "\n" + $0 } ?? ""))
             } catch {
                 await assistant.record("Operation failed; inspect current state. Proposal consumed.", session: sessionID)
                 throw error
@@ -703,7 +751,7 @@ private extension KilnCommands {
             knowledge = try JSONDecoder().decode(AIKnowledgePack.self, from: Data(contentsOf: knowledgeURL)); try knowledge?.validate()
         } else { knowledge = nil }
         if parts == ["ai", "status"] {
-            return CommandResult("Provider: \(configuration.provider.rawValue) / profile \(configuration.profile) (native Swift HTTP)\nModel: \(configuration.model)\nAccess: \(configuration.provider.accessDescription)\nDestination: \(URL(string: configuration.baseURL)?.host ?? "unavailable")\nCredential: \(configuration.provider == .ollama ? "none (local loopback)" : configuration.provider == .chatgpt ? "owner-bound ChatGPT account" : "Vault grant to " + configuration.credentialScope)\nBuilt-in knowledge: 6\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. No persisted chat history.")
+            return CommandResult("Provider: \(configuration.provider.rawValue) / profile \(configuration.profile) (native Swift HTTP)\nModel: \(configuration.model)\nAccess: \(configuration.provider.accessDescription)\nDestination: \(URL(string: configuration.baseURL)?.host ?? "unavailable")\nCredential: \(configuration.provider == .ollama ? "none (local loopback)" : configuration.provider == .chatgpt ? "owner-bound ChatGPT account" : "Vault grant to " + configuration.credentialScope)\nBuilt-in knowledge: 6\nOperator pack: \(knowledge?.version ?? "none")\nRead tools automatic; mutations require explicit proposal approval. Default chat is ephemeral. Use ai conversation new NAME to save prompts, answers and provider-visible thinking.")
         }
         guard parts.count >= 3, parts[1] == "ask" else { throw AIError.message("Use ai help") }
         let key: String
@@ -719,8 +767,14 @@ private extension KilnCommands {
         }
         let modules = await snapshot()
         let context = "Kiln release \(KilnVersion.current)\n" + (await visibleModules())
+        let expectedOwner = try aiOwnerFingerprint()
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
-            modules: modules, context: context, knowledge: knowledge, progress: progress, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer")) { name, module in
+            modules: modules, context: context, knowledge: knowledge, progress: { event in
+                guard (try? aiOwnerFingerprint()) == expectedOwner else { return }
+                progress(event)
+            }, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer"), validateAccess: {
+                guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Identity or authorization scope changed during this turn") }
+            }) { name, module in
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {
                 case "create_task": try authorizeAdmin(); return try await createAITask(module!, configuration: configuration)
@@ -779,7 +833,7 @@ private extension KilnCommands {
             if ["install", "deploy"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if p.first == "ai" {
-            if p.count == 1 || ["help", "chat-help", "status", "context", "ask", "reset", "deny", "providers", "usage"].contains(p[1]) { return }
+            if p.count == 1 || ["help", "chat-help", "status", "context", "ask", "reset", "deny", "providers", "usage", "conversation"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
             if ["check", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
         }
