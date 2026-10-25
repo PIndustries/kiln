@@ -10,6 +10,13 @@ AI providers, approved operations and durable investigation/recovery records.
 The next milestones should finish complete operator journeys. The items below
 are gaps and acceptance targets, not claims that these capabilities have shipped.
 
+First foreground-continuity milestone: opt-in named conversations now retain bounded
+prompts, answers, provider-visible thinking and controller receipts across SSH reconnect
+and runtime restart. Local JSON cursors, retention/deletion and key/role/grant isolation
+are implemented; interactive approvals never revive through transcript replay.
+Application-specific context, richer typed tool/task/approval event replay, streaming API
+backpressure and evidence-based compaction remain open under #40 and #20.
+
 | Order | Gap | Acceptance target |
 | --- | --- | --- |
 | 1 | Foreground continuity ([#40](https://github.com/PIndustries/kiln/issues/40)) | Reconnect to an identity/application-scoped named conversation with retained transcript and task references. Add retention/deletion, ordered replay and restart/revocation tests. Never replay a mutation merely to restore a view. |

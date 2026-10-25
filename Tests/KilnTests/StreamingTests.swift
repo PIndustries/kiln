@@ -46,10 +46,10 @@ import KilnTerminal
     _ = ui.handle(.text("/task check all services"))
     #expect(ui.handle(.enter) == [.command("ai task new \"check all services\"")])
     ui.progress(.reasoning("Provider text"))
-    #expect(ui.render().contains("Provider reasoning"))
+    #expect(ui.render().contains("Provider thinking"))
     ui.progress(.answer("Partial answer"))
     #expect(ui.render().contains("Partial answer"))
-    #expect(!ui.render().contains("Provider reasoning"))
+    #expect(ui.render().contains("Provider thinking"))
     ui.finish(text: "Final answer", status: 0)
     #expect(!ui.render().contains("Partial answer"))
 }

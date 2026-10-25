@@ -131,3 +131,48 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     _ = ui.handle(.text("`")); _ = ui.handle(.text("7"))
     #expect(ui.render().contains("Completed chat answer"))
 }
+
+@Test func thinkingUsesFullTranscriptAndSurvivesAnswerAndSnapshot() {
+    var ui = KilnTerminal(); ui.resize(width: 100, height: 32)
+    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    ui.progress(.reasoning((1...12).map { "Thinking row \($0)" }.joined(separator: "\n")))
+    let running = ui.render()
+    #expect(running.contains("Thinking row 1"))
+    #expect(running.contains("Thinking row 12"))
+    ui.progress(.snapshot("")); ui.progress(.answer("Final visible answer"))
+    #expect(ui.render().contains("Thinking row 1"))
+    #expect(ui.render().contains("Final visible answer"))
+    ui.finish(text: "Final visible answer", status: 0)
+    #expect(ui.render().contains("Thinking row 1"))
+    #expect(ui.render().contains("Thinking row 12"))
+    #expect(ui.render().contains("Final visible answer"))
+}
+
+@Test func scrolledThinkingStaysAnchoredAsDeltasArriveAndTurnEnds() {
+    var ui = KilnTerminal(); ui.resize(width: 90, height: 24)
+    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    ui.progress(.reasoning((1...35).map { "Anchor row \($0)" }.joined(separator: "\n")))
+    _ = ui.handle(.pageUp); _ = ui.handle(.pageUp)
+    let before = ui.render()
+    ui.progress(.reasoning("\nNew later row\nAnother later row"))
+    let after = ui.render()
+    for i in 1...35 { #expect(before.contains("Anchor row \(i) ") == after.contains("Anchor row \(i) ")) }
+    #expect(!after.contains("New later row"))
+    ui.finish(text: "Completed", status: 0)
+    #expect(ui.render().contains("Scrolled up"))
+    for _ in 0..<20 { _ = ui.handle(.pageDown) }
+    #expect(ui.render().contains("Completed"))
+}
+
+@Test func thinkingLimitsAreExplicitAndScopeChangesRemovePrivateTranscript() {
+    var ui = KilnTerminal(); ui.resize(width: 90, height: 24)
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(contextScope: "first"))
+    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    ui.progress(.reasoning(String(repeating: "a", count: 131073)))
+    #expect(ui.render().contains("Visible thinking limit reached"))
+    ui.finish(text: "PRIVATE ANSWER", status: 0)
+    #expect(ui.render().contains("PRIVATE ANSWER"))
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(contextScope: "second"))
+    #expect(!ui.render().contains("PRIVATE ANSWER"))
+    #expect(!ui.render().contains("Visible thinking limit reached"))
+}

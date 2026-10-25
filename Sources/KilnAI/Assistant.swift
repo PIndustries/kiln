@@ -13,16 +13,83 @@ public actor KilnAssistant {
     private var conversations: [String: Conversation] = [:]
     private var proposals: [String: Proposal] = [:]
     private var busy: Set<String> = []
+    private struct Binding { let owner: String; let id: String; let name: String; let epoch: String }
+    private var bindings: [String: Binding] = [:]
+    private let archive: ConversationArchive?
+    private var archiveSweep: Task<Void, Never>?
     public let providerMetrics = AIProviderMetrics()
     private var activeContextID: String?
     private var configurationUncertain = false
     private let completion: AICompletion?
     private let streamingCompletion: (@Sendable (AIConfiguration, String, [AIMessage], [AITool], @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage)?
-    public init(completion: AICompletion? = nil) { self.completion = completion; self.streamingCompletion = nil }
+    public init(directory: URL? = nil, completion: AICompletion? = nil) {
+        self.completion = completion; self.streamingCompletion = nil
+        self.archive = directory.map { ConversationArchive(directory: $0) }
+    }
     // Internal injection lets SSH tests exercise the real retry/stream decoder
     // without adding a fake-provider switch to runtime configuration.
-    init(streamingCompletion: @escaping @Sendable (AIConfiguration, String, [AIMessage], [AITool], @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage) {
+    init(directory: URL? = nil, streamingCompletion: @escaping @Sendable (AIConfiguration, String, [AIMessage], [AITool], @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage) {
         self.completion = nil; self.streamingCompletion = streamingCompletion
+        self.archive = directory.map { ConversationArchive(directory: $0) }
+    }
+    init(archive: ConversationArchive, completion: @escaping AICompletion) {
+        self.archive = archive; self.completion = completion; self.streamingCompletion = nil
+    }
+    deinit { archiveSweep?.cancel() }
+    public func savedConversations(owner: String) throws -> String { try archiveRequired().list(owner: owner) }
+    private func archiveRequired() throws -> ConversationArchive {
+        guard let archive else { throw AIError.message("Saved conversation storage is not configured") }
+        if archiveSweep == nil {
+            archiveSweep = Task.detached { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(600)) } catch { return }
+                    await self?.pruneExpiredArchive()
+                }
+            }
+        }
+        return archive
+    }
+    private func pruneExpiredArchive() { try? archive?.pruneExpired() }
+    private func bind(_ record: ConversationArchive.Record, session: String, configuration: AIConfiguration) throws -> AIConversationView {
+        guard !busy.contains(session) else { throw AIError.message("Wait for this turn to finish") }
+        if bindings[session] == nil, bindings.count >= 256 {
+            guard let old = bindings.keys.first(where: { !busy.contains($0) }) else { throw AIError.message("Too many attached conversations") }
+            bindings.removeValue(forKey: old); conversations.removeValue(forKey: old)
+            proposals = proposals.filter { $0.value.session != old }
+        }
+        proposals = proposals.filter { $0.value.session != session }
+        bindings[session] = Binding(owner: record.owner, id: record.id, name: record.name, epoch: record.contextEpoch)
+        conversations[session] = Conversation(history: record.context, configuration: configuration)
+        return record.view()
+    }
+    public func newConversation(owner: String, name: String, session: String, configuration: AIConfiguration) throws -> AIConversationView {
+        guard !busy.contains(session) else { throw AIError.message("Wait for this turn to finish") }
+        try configuration.validate()
+        return try bind(archiveRequired().create(owner: owner, name: name, config: configuration), session: session, configuration: configuration)
+    }
+    public func useConversation(owner: String, name: String, session: String, configuration: AIConfiguration, reset: Bool = false) throws -> AIConversationView {
+        guard !busy.contains(session) else { throw AIError.message("Wait for this turn to finish") }
+        try configuration.validate()
+        return try bind(archiveRequired().select(owner: owner, name: name, config: configuration, reset: reset), session: session, configuration: configuration)
+    }
+    public func conversationEvents(owner: String, name: String, after: UInt64 = 0) throws -> AIConversationView {
+        try archiveRequired().lookup(owner: owner, name: name).view(after: after)
+    }
+    public func leaveConversation(session: String) throws -> AIConversationView {
+        guard !busy.contains(session) else { throw AIError.message("Wait for this turn to finish") }
+        bindings.removeValue(forKey: session); conversations.removeValue(forKey: session)
+        proposals = proposals.filter { $0.value.session != session }
+        return AIConversationView(name: nil, events: [], notice: "Left saved conversation. This connection now uses temporary context.")
+    }
+    public func deleteConversation(owner: String, name: String, session: String) throws -> AIConversationView? {
+        try archiveRequired().delete(owner: owner, name: name)
+        let affected = Set(bindings.filter { $0.value.owner == owner && $0.value.name == name }.keys)
+        for key in affected { bindings.removeValue(forKey: key); conversations.removeValue(forKey: key) }
+        proposals = proposals.filter { !affected.contains($0.value.session) }
+        return affected.contains(session) ? AIConversationView(name: nil, events: [], notice: "Saved conversation deleted. Historical approval IDs are inactive.") : nil
+    }
+    public func conversationRetention(owner: String, name: String, days: Int) throws {
+        try archiveRequired().retention(owner: owner, name: name, days: days)
     }
     public func activate(_ configuration: AIConfiguration, at url: URL) throws {
         guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
@@ -67,18 +134,22 @@ public actor KilnAssistant {
         Next request: \(next)
         Idle expiry: \(expiry)
         Pending interactive approvals: \(approvals)
-        Storage: in memory; reconnect or runtime restart starts fresh.
+        Storage: \(bindings[session].map { "saved conversation " + $0.name + "; completed context is checkpointed privately" } ?? "in memory; reconnect or runtime restart starts fresh.")
         These are Kiln history limits, not the model's token window.
         """
     }
     public func reset(_ session: String) throws -> String {
         guard !busy.contains(session) else { throw AIError.message("Wait for this turn to finish") }
+        if let binding = bindings[session] { try archiveRequired().reset(owner: binding.owner, id: binding.id) }
         conversations.removeValue(forKey: session)
         proposals = proposals.filter { $0.value.session != session }
-        return "AI conversation and pending proposals cleared."
+        return "AI conversation and pending proposals cleared." + (bindings[session] == nil ? "" : " Saved transcript retained; use conversation delete to remove it.")
     }
     public func pendingProposals(session: String, now: Date = Date()) -> [AIProposalSnapshot] {
-        proposals.compactMap { id, proposal in
+        if let binding = bindings[session] {
+            guard let record = try? archive?.lookup(owner: binding.owner, name: binding.name), record.id == binding.id, record.contextEpoch == binding.epoch else { return [] }
+        }
+        return proposals.compactMap { id, proposal in
             guard proposal.session == session, proposal.expires > now else { return nil }
             return AIProposalSnapshot(id: id, operation: proposal.action.operation, module: proposal.action.module, expires: proposal.expires)
         }.sorted { $0.expires == $1.expires ? $0.id < $1.id : $0.expires < $1.expires }
@@ -89,19 +160,36 @@ public actor KilnAssistant {
     }
     public func takeApproval(_ id: String, session: String) throws -> AIAction {
         guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
+        if let binding = bindings[session] {
+            let record = try archiveRequired().lookup(owner: binding.owner, name: binding.name)
+            guard record.id == binding.id, record.contextEpoch == binding.epoch else { throw AIError.message("Saved context changed; request a fresh proposal") }
+        }
         guard let proposal = proposals[id], proposal.session == session else { throw AIError.message("Unknown proposal for this session") }
         proposals.removeValue(forKey: id)
         guard proposal.expires > Date() else { throw AIError.message("Proposal expired; ask again") }
         return proposal.action
     }
-    public func record(_ result: String, session: String) {
+    @discardableResult public func record(_ result: String, session: String) -> String? {
         conversations[session]?.history.messages.append(AIMessage(role: "user", content: "Kiln's local controller reports the explicitly approved operation result: " + result))
+        if let binding = bindings[session] {
+            do { conversations[session]?.history = try archiveRequired().recordOperation(owner: binding.owner, id: binding.id, result: result) }
+            catch { return "Conversation receipt checkpoint unconfirmed; authoritative operation receipts remain the source of truth." }
+        }
+        return nil
     }
+    public func selectedConversation(session: String) -> String? { bindings[session]?.name }
+
     public func ask(_ prompt: String, session: String, configuration: AIConfiguration, key: String,
                     modules: [ModuleSnapshot], context: String, knowledge: AIKnowledgePack?,
                     progress: @escaping @Sendable (AIProgress) -> Void = { _ in },
                     allowProposals: Bool = true,
+                    validateAccess: @escaping @Sendable () throws -> Void = {},
                     read: @escaping @Sendable (String, String?) async throws -> String) async throws -> String {
+        let visibleThinking = VisibleThinkingLog()
+        let downstream = progress
+        let progress: @Sendable (AIProgress) -> Void = { event in
+            visibleThinking.receive(event); downstream(event)
+        }
         guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
         if session.hasPrefix("task:"), busy.count >= 48 {
             progress(.status("Waiting for inference capacity"))
@@ -110,6 +198,23 @@ public actor KilnAssistant {
         guard !busy.contains(session), busy.count < 48 else { throw AIError.message("AI is busy; try again after the current turn") }
         guard !prompt.isEmpty, prompt.utf8.count <= 8192 else { throw AIError.message("Prompt must contain 1-8192 bytes") }
         try configuration.validate(); try knowledge?.validate()
+        try validateAccess()
+        var savedTurn: ConversationArchive.Turn?
+        let binding = bindings[session]
+        if let binding {
+            let (record, turn) = try archiveRequired().begin(owner: binding.owner, id: binding.id, config: configuration, prompt: prompt)
+            savedTurn = turn
+            if record.contextEpoch != binding.epoch {
+                proposals = proposals.filter { $0.value.session != session }
+                bindings[session] = Binding(owner: binding.owner, id: binding.id, name: binding.name, epoch: record.contextEpoch)
+            }
+            conversations[session] = Conversation(history: record.context, configuration: configuration)
+        }
+        var savedComplete = false
+        defer {
+            if let binding, let savedTurn, !savedComplete { archive?.interrupt(owner: binding.owner, turn: savedTurn, thinking: visibleThinking.text) }
+            savedTurn?.lease.release()
+        }
         if activeContextID == nil { activeContextID = configuration.contextID }
         if conversations[session]?.configuration != configuration {
             conversations.removeValue(forKey: session)
@@ -137,6 +242,7 @@ public actor KilnAssistant {
         Background tasks run read-only investigations, with persisted records and configurable concurrency up to 48. They cannot mutate state, delegate more agents, or change limits. Use create_task only when explicitly asked for a task/background work, and return the task ID. Interactive mutations still require approval. Streaming and interface implementation are KilnAI/KilnTerminal/KilnSSH responsibilities, not storefront modules. Never direct the user to edit an unrelated application to fix the platform.
         For an unhealthy-service recovery request, prefer create_recovery_task. Its durable approval appears in the sidebar and remains bound to the initiating identity after reconnection. The controller alone verifies recovery. Use list_tasks to report status. Never say recovered merely because a restart was requested.
         \(trimmed ? "Older conversation turns were omitted to bound context. Previous interactive proposal IDs for this session are invalid; request fresh proposals if needed. Never reconstruct missing details; ask or verify them again." : "")
+        \(binding == nil ? "" : "Saved context contains completed prompts, answers and historical controller receipts. Prior facts and approval IDs are reference only. Verify current state and request fresh proposals. Never replay a previous operation to resume a conversation.")
         BUILT-IN KNOWLEDGE VERSION 6:
         \(AIKnowledgePack.foundation)
         LIVE INITIAL CONTEXT:
@@ -149,6 +255,23 @@ public actor KilnAssistant {
         var results: [String: String] = [:]
         var receipts: [String] = trimmed ? [contextNotice] : []
         var created: [String] = []
+        func checkpoint(_ answer: String) throws -> String {
+            try Task.checkCancellation()
+            try validateAccess()
+            guard let binding, let savedTurn else { return answer }
+            do {
+                let completed = try archiveRequired().complete(owner: binding.owner, turn: savedTurn, prompt: prompt, answer: answer, thinking: visibleThinking.text)
+                savedComplete = true
+                bindings[session] = Binding(owner: binding.owner, id: binding.id, name: binding.name, epoch: completed.epoch)
+                conversations[session] = Conversation(history: completed.history, configuration: configuration)
+                if completed.trimmed { proposals = proposals.filter { $0.value.session != session || created.contains($0.key) } }
+                return answer + (completed.trimmed ? "\n\nSaved provider context trimmed to recent complete turns; transcript retained. Earlier interactive approvals cleared." : "")
+            } catch {
+                savedComplete = true // Do not overwrite a possibly committed result with an interruption.
+                proposals = proposals.filter { $0.value.session != session }
+                return answer + "\n\nConversation checkpoint unconfirmed; interactive proposals cleared. Inspect saved events and operation receipts before retrying changes."
+            }
+        }
         do {
             for round in 0..<9 {
                 try Task.checkCancellation()
@@ -170,6 +293,7 @@ public actor KilnAssistant {
                     if round == 8, !Task.isCancelled { break }
                     throw error
                 }
+                try Task.checkCancellation()
                 messages.append(message)
                 guard let calls = message.tool_calls, !calls.isEmpty else {
                     var answer = String((message.content ?? "No answer returned.").prefix(24000))
@@ -195,7 +319,7 @@ public actor KilnAssistant {
                         }
                     }
                     conversations[session] = Conversation(history: history.recording(Array(messages.dropFirst())), touched: Date(), configuration: configuration)
-                    return ([answer] + receipts).joined(separator: "\n\n")
+                    return try checkpoint(([answer] + receipts).joined(separator: "\n\n"))
                 }
                 if round == 8 { messages.removeLast(); break }
                 guard calls.count <= 6 else { throw AIError.message("Model requested too many tools") }
@@ -240,13 +364,13 @@ public actor KilnAssistant {
                 if let taskReceipt {
                     messages.append(AIMessage(role: "assistant", content: taskReceipt))
                     conversations[session] = Conversation(history: history.recording(Array(messages.dropFirst())), touched: Date(), configuration: configuration)
-                    return ([taskReceipt] + receipts).joined(separator: "\n\n")
+                    return try checkpoint(([taskReceipt] + receipts).joined(separator: "\n\n"))
                 }
             }
             let summary = "Tool budget reached. Verified results collected this turn:\n" + results.keys.sorted().map { $0 + "\n" + results[$0]! }.joined(separator: "\n\n")
             messages.append(AIMessage(role: "assistant", content: String(summary.prefix(24000))))
             conversations[session] = Conversation(history: history.recording(Array(messages.dropFirst())), touched: Date(), configuration: configuration)
-            return ([String(summary.prefix(24000))] + receipts).joined(separator: "\n\n")
+            return try checkpoint(([String(summary.prefix(24000))] + receipts).joined(separator: "\n\n"))
         } catch {
             for id in created { proposals.removeValue(forKey: id) }
             throw error

@@ -46,7 +46,6 @@ private func statusAsk(_ assistant: KilnAssistant, _ prompt: String, session: St
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
     let assistant = KilnAssistant { _, _, _, _ in AIMessage(role: "assistant", content: "answer") }
-    _ = try await statusAsk(assistant, "PRIVATE_READER_PROMPT", session: "reader:shared")
     let runtime = try KilnRuntime(stateDirectory: directory)
     let local = KilnCommands(runtime: runtime, assistant: assistant)
     let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
@@ -54,6 +53,7 @@ private func statusAsk(_ assistant: KilnAssistant, _ prompt: String, session: St
     _ = try local.identities.set(name: "reader", role: "viewer", key: key, modules: [])
     _ = try local.identities.set(name: "other", role: "viewer", key: key, modules: [])
     let reader = local.forIdentity(name: "reader", publicKey: key)
+    _ = try await statusAsk(assistant, "PRIVATE_READER_PROMPT", session: reader.aiSessionID("shared"))
     let result = await reader.execute("ai context", sessionID: "shared")
     #expect(result.status == 0 && result.text.contains("Completed turns: 1"))
     #expect(!result.text.contains("PRIVATE_READER_PROMPT"))

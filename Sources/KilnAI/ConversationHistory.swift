@@ -2,7 +2,7 @@ import Foundation
 
 /// Bound provider context at operator-turn boundaries, keeping tool calls and
 /// their results together. This is in-memory context, not a persisted transcript.
-struct AIConversationHistory {
+struct AIConversationHistory: Codable {
     static let messageLimit = 40
     static let byteLimit = 65536
     var encodedBytes: Int? { (try? JSONEncoder().encode(messages))?.count }

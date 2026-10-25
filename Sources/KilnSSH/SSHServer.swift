@@ -411,6 +411,7 @@ private final class ShellHandler: ChannelInboundHandler {
                     shell.terminal?.update(modules)
                     if let theme = result.terminalTheme { shell.terminal?.applyTheme(theme) }
                     shell.terminal?.finish(text: result.text, status: result.status)
+                    if let conversation = result.conversation { shell.terminal?.restoreConversation(conversation) }
                     if result.disconnect { shell.close(channel: channel, status: result.status) }
                     else { shell.paint(channel: channel) }
                 } else {
