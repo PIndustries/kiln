@@ -448,3 +448,21 @@ A large refactor that cannot fit must report any remaining scope.
 Command: `web refactor APP/MODULE PATH SHA256 components|functions`. This is a
 foreground administrator action requiring a registered project root and a current
 Swift file. It grants neither host filesystem access nor unrelated service tools.
+
+
+### Editor recovery after a failed build
+
+When a manual editor publish fails, its result view retains the exact draft,
+original file hash and new-file intent. Enter, D or Esc returns to editing locally;
+recovery never refreshes source, rebases an edit or repeats the publication. A new
+publish still needs explicit confirmation and the original hash must still match.
+This also keeps drafts for uncertain outcomes: inspect the receipt/release before
+requesting another write. Successful publishes and non-editor failures use the
+ordinary result flow. Discarding an edited draft remains an explicit confirmation.
+
+Compiler diagnostics wrap to the terminal width and support wheel, page, Home/End
+scrolling. Result-line positions replace the code-pane controls in this view.
+Draft recovery is connection-local editor state, rather than a saved draft on disk.
+The OpenSSH acceptance script `editor-draft-acceptance.py` exercises failed compile,
+recovery, default Cancel and an explicitly corrected healthy publish in a disposable
+project without provider access or user credentials.

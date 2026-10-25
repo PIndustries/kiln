@@ -17,6 +17,7 @@ struct WorkspaceUI {
     private var mode = "browse", pending = "browse", error = "", receipt = "", newPath = "", draft = "", isNew = false
     private var confirmation = "", accepted = false
     private var refactorChoice = 2
+    private var publishingDraft = false, recoverableDraft = false
     private var offset = 0, horizontal = 0, cursor = 0
     init(module: String, change: String? = nil) { self.module = module; self.change = change }
     private func command(_ parts: [String]) -> String { parts.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ") }
@@ -24,7 +25,13 @@ struct WorkspaceUI {
     private mutating func request(_ name: String, _ parts: [String]) -> String { waiting = true; pending = name; error = ""; return command(parts) }
     mutating func finish(text: String, status: Int) {
         waiting = false
-        if pending == "apply" || pending == "refactor" { mode = "receipt"; receipt = text; error = status == 0 ? "" : "Change failed or unconfirmed. Inspect history and release before another write."; return }
+        if pending == "apply" || pending == "refactor" {
+            recoverableDraft = pending == "apply" && publishingDraft && status != 0
+            publishingDraft = false
+            mode = "receipt"; receipt = text; offset = 0
+            error = status == 0 ? "" : "Change failed or unconfirmed. Inspect history and release before another write."
+            return
+        }
         guard status == 0, let data = text.data(using: .utf8) else { error = text; return }
         do {
             let file: File
@@ -43,6 +50,7 @@ struct WorkspaceUI {
         else if isNew { operation = ["path":path,"action":"create","content":draft] }
         else { operation = ["path":path,"action":"replace","sha256":hash,"content":draft] }
         guard let data = try? JSONEncoder().encode([operation]), let json = String(data:data,encoding:.utf8) else { return nil }
+        publishingDraft = !delete && mode == "edit"
         return request("apply",["web","apply",module,json])
     }
     private func codeWidth(_ width: Int) -> Int { let w = width-4; return w-min(32,max(18,w/4))-11 }
@@ -55,6 +63,14 @@ struct WorkspaceUI {
     private mutating func openRefactor() {
         guard editable && projectRoot && path.hasSuffix(".swift") else { error = "Refactor requires a current Swift file in a registered project root"; return }
         mode = "refactor"; refactorChoice = 2; error = ""
+    }
+    private func receiptLines(width: Int) -> [String] {
+        let room = max(1,width-8)
+        return (error.isEmpty ? receipt : error+"\n"+receipt).components(separatedBy:"\n").flatMap { line -> [String] in
+            var remaining = KilnTerminal.safe(line).replacingOccurrences(of:"\t",with:"    "), rows: [String] = []
+            repeat { rows.append(String(remaining.prefix(room))); remaining = String(remaining.dropFirst(room)) } while !remaining.isEmpty
+            return rows
+        }
     }
     private let scrollButtons = "[PgUp] [PgDn] [Top] [End]"
     mutating func handle(_ key: TerminalKey, width: Int, height: Int) -> String? {
@@ -105,10 +121,23 @@ struct WorkspaceUI {
             }
         }
         if mode == "receipt" {
+            if recoverableDraft, key == .enter || key == .escape || key == .text("d") || key == .text("D") {
+                // Keep the original path/hash/new-file intent. Recovery is local,
+                // and does not refresh source, rebase, or repeat a publish.
+                recoverableDraft = false; mode = "edit"; offset = 0; horizontal = 0; cursor = 0
+                error = "Draft recovered. Ctrl-D publish; Esc discard."
+                return nil
+            }
             if key == .enter { return request("browse", ["web","browse",module,"App.swift"] + (change.map { [$0] } ?? [])) }
             if key == .escape { active = false }
-            if key == .pageDown { offset += max(1,height-8) }
+            let last = max(0,receiptLines(width:width).count-max(1,height-8))
+            if key == .pageDown { offset = min(last,offset+max(1,height-8)) }
             if key == .pageUp { offset = max(0,offset-max(1,height-8)) }
+            if key == .home { offset = 0 }
+            if key == .end { offset = last }
+            if case let .mouse(button,column,row,released) = key, !released, button & 64 != 0, column >= 3, column < width-1, row >= 5, row < height-3 {
+                offset = min(last,max(0,offset+(button & 1 == 0 ? -3 : 3)))
+            }
             return nil
         }
         if !confirmation.isEmpty {
@@ -216,7 +245,7 @@ struct WorkspaceUI {
     func render(width: Int, height: Int, theme: TerminalTheme) -> String {
         guard width >= 50, height >= 16 else { return "" }
         let w = width-4, h = height-2, left = 3, top = 2, treeWidth = min(32,max(18,w/4)), codeWidth = w-treeWidth-5
-        let display = mode == "edit" ? draft : source
+        let display = mode == "receipt" ? "" : mode == "edit" ? draft : source
         let lines = display.components(separatedBy:"\n")
         let start = min(offset,max(0,lines.count-max(1,height-8)))
         var lexer = SourceSyntax(), syntax: [[Int?]] = []
@@ -228,31 +257,37 @@ struct WorkspaceUI {
         row(1,"| "+fit("Codebase / \(module) / \(version)\(change == nil ? "" : " / read-only")",w-4)+" |")
         let refactorButton = mode == "browse" && editable && projectRoot && path.hasSuffix(".swift") ? " [R Refactor]" : ""
         row(2,"| "+fit("FILES" + (treeFocus ? " [focus]" : ""),treeWidth)+"| "+fit(path + (mode == "edit" ? " [EDITING]" : !treeFocus ? " [focus]" : ""),codeWidth-refactorButton.count)+"\u{1b}[38;5;\(theme.accent)m"+refactorButton+"\u{1b}[38;5;\(theme.foreground)m|")
-        let nodes = treeRows
-        let selectedRow = nodes.firstIndex(where: { $0.1 == selected }) ?? 0
-        let listStart = max(0,selectedRow-max(1,h-8)+1)
-        for y in 3..<h-3 {
-            let n = y-3, index = start+n, treeIndex = listStart+n
-            var label = ""
-            if nodes.indices.contains(treeIndex) { label = (nodes[treeIndex].1 == selected ? "> " : "  ") + nodes[treeIndex].0 }
-            let treeColor = nodes.indices.contains(treeIndex) && nodes[treeIndex].1 == selected ? theme.accent : theme.foreground
-            var body = "| \u{1b}[38;5;\(treeColor)m"+fit(label,treeWidth)+"\u{1b}[38;5;\(theme.foreground)m| "
-            if index < lines.count {
-                let safe = KilnTerminal.safe(lines[index]).replacingOccurrences(of:"\t",with:"    ")
-                let content = String(safe.dropFirst(horizontal).prefix(max(1,codeWidth-6)))
-                body += "\u{1b}[38;5;244m"+String(format:"%5d ",index+1)+"\u{1b}[38;5;\(theme.foreground)m"+SourceSyntax.styled(fit(content,codeWidth-6),colors:Array(syntax[index].dropFirst(min(horizontal,syntax[index].count))),base:theme.foreground)+"|"
-            } else { body += fit("",codeWidth)+"|" }
-            row(y,body)
+        if mode != "receipt" {
+            let nodes = treeRows
+            let selectedRow = nodes.firstIndex(where: { $0.1 == selected }) ?? 0
+            let listStart = max(0,selectedRow-max(1,h-8)+1)
+            for y in 3..<h-3 {
+                let n = y-3, index = start+n, treeIndex = listStart+n
+                var label = ""
+                if nodes.indices.contains(treeIndex) { label = (nodes[treeIndex].1 == selected ? "> " : "  ") + nodes[treeIndex].0 }
+                let treeColor = nodes.indices.contains(treeIndex) && nodes[treeIndex].1 == selected ? theme.accent : theme.foreground
+                var body = "| \u{1b}[38;5;\(treeColor)m"+fit(label,treeWidth)+"\u{1b}[38;5;\(theme.foreground)m| "
+                if index < lines.count {
+                    let safe = KilnTerminal.safe(lines[index]).replacingOccurrences(of:"\t",with:"    ")
+                    let content = String(safe.dropFirst(horizontal).prefix(max(1,codeWidth-6)))
+                    body += "\u{1b}[38;5;244m"+String(format:"%5d ",index+1)+"\u{1b}[38;5;\(theme.foreground)m"+SourceSyntax.styled(fit(content,codeWidth-6),colors:Array(syntax[index].dropFirst(min(horizontal,syntax[index].count))),base:theme.foreground)+"|"
+                } else { body += fit("",codeWidth)+"|" }
+                row(y,body)
+            }
+            let footer = waiting ? "Working..." : !error.isEmpty ? error : mode == "edit" ? "Ctrl-D publish  Esc cancel  Arrows move" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
+            row(h-3,"| "+fit(footer,w-4)+" |")
+            row(h-2,"| "+fit(scrollButtons+"  Lines \(start+1)-\(min(lines.count,start+max(1,height-8)))/\(lines.count)  Col \(horizontal+1)",w-4)+" |")
         }
-        let footer = waiting ? "Working..." : !error.isEmpty ? error : mode == "edit" ? "Ctrl-D publish  Esc cancel  Arrows move" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
-        row(h-3,"| "+fit(footer,w-4)+" |")
-        row(h-2,"| "+fit(scrollButtons+"  Lines \(start+1)-\(min(lines.count,start+max(1,height-8)))/\(lines.count)  Col \(horizontal+1)",w-4)+" |")
         row(h-1,"+"+String(repeating:"-",count:w-2)+"+")
         if mode == "name" { row(4,"| "+fit("New relative path (Enter to edit, Esc cancel): "+newPath,w-4)+" |") }
         if mode == "receipt" {
-            let all = (error.isEmpty ? receipt : error+"\n"+receipt).components(separatedBy:"\n")
-            for (i,line) in all.dropFirst(min(offset,max(0,all.count-1))).prefix(h-7).enumerated() { row(3+i,"| "+fit(line,w-4)+" |") }
-            row(h-3,"| "+fit("Enter refresh files  Esc back  PgUp/PgDn scroll",w-4)+" |")
+            let all = receiptLines(width:width), visible = max(1,height-8)
+            let start = min(offset,max(0,all.count-visible))
+            for i in 0..<visible {
+                row(3+i,"| "+fit(start+i < all.count ? all[start+i] : "",w-4)+" |")
+            }
+            row(h-3,"| "+fit(waiting ? "Working..." : recoverableDraft ? "Enter/D recover draft  Esc edit  PgUp/PgDn diagnostics" : "Enter refresh files  Esc back  PgUp/PgDn scroll",w-4)+" |")
+            row(h-2,"| "+fit("Result lines \(start+1)-\(min(all.count,start+visible))/\(all.count)"+(recoverableDraft ? " | Draft retained in this connection" : ""),w-4)+" |")
         }
         if mode == "refactor" {
             row(4,"| "+fit("AI refactor "+path+" (validates, publishes, retains history)",w-4)+" |")
