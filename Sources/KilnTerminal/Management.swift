@@ -93,7 +93,8 @@ struct ManagementUI {
             guard column >= geometry.left, column < geometry.left+geometry.width else { return nil }
             let index = row - geometry.top - 2
             if kind == "message" { close(); return nil }
-            if kind != "form", options.indices.contains(index) { selected = index; return handle(.enter,width:width,height:height) }
+            let visibleIndex = index + optionStart(width: width, height: height)
+            if kind != "form", index >= 0, options.indices.contains(visibleIndex) { selected = visibleIndex; return handle(.enter,width:width,height:height) }
             if kind == "form" {
                 if fields.indices.contains(index) { selected = index; cursor = fields[index].count }
                 else if index == fields.count+1 {
@@ -105,8 +106,8 @@ struct ManagementUI {
         }
         if kind == "message" {
             if key == .enter { close() }
-            if key == .pageDown { messageOffset += 4 }
-            if key == .pageUp { messageOffset = max(0,messageOffset-4) }
+            if key == .pageDown { messageOffset += max(1, height-8) }
+            if key == .pageUp { messageOffset = max(0,messageOffset-max(1,height-8)) }
             return nil
         }
         let count = kind == "form" ? fields.count+2 : options.count
@@ -191,11 +192,15 @@ struct ManagementUI {
         menu("confirm",title:title,options:["Cancel","Confirm"]); prefix = command; help = detail
     }
     private func geometry(width:Int,height:Int) -> (left:Int,top:Int,width:Int,height:Int) {
-        let w = max(20,min(width-4,kind == "form" || kind == "message" ? 132 : max(36,title.count+6)))
+        let w = max(20,min(width-4,kind == "form" || kind == "message" || kind == "changes" ? 132 : max(36,title.count+6)))
         let desired = kind == "form" ? labels.count+9 : kind == "message" ? height-2 : options.count+(kind == "confirm" ? 8 : 6)
         let h = min(height-2,desired)
         let left = ["server","session"].contains(kind) ? min(title.count+4,width-w-1) : (width-w)/2
         return (max(1,left), max(1,min(anchor,height-h)),w,h)
+    }
+    private func optionStart(width: Int, height: Int) -> Int {
+        let visible = max(1, geometry(width: width, height: height).height-4)
+        return max(0, min(selected-visible+1, max(0,options.count-visible)))
     }
     func render(width:Int,height:Int,theme:TerminalTheme = TerminalTheme()) -> String {
         guard active, width >= 50, height >= 16 else { return "" }
@@ -226,7 +231,10 @@ struct ManagementUI {
                 repeat { wrapped.append(String(remaining.prefix(room))); remaining = String(remaining.dropFirst(room)) } while !remaining.isEmpty
             }
             rows += wrapped.dropFirst(min(messageOffset,max(0,wrapped.count-1))).prefix(g.height-5).map { ($0,false) }
-        } else { rows += options.enumerated().map { ((selected == $0.offset ? "> " : "  ") + $0.element,selected == $0.offset) } }
+        } else {
+            let start = optionStart(width: width, height: height)
+            rows += options.enumerated().dropFirst(start).prefix(max(1,g.height-4)).map { ((selected == $0.offset ? "> " : "  ") + $0.element,selected == $0.offset) }
+        }
         if kind == "confirm" {
             rows.append(("",false)); rows += wrap(help).map { ($0,false) }
         }

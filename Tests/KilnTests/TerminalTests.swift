@@ -209,3 +209,13 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     ui.finish(text: "--- Before.swift\n+++ App.swift\n-old heading\n+new heading", status: 0)
     #expect(ui.render().contains("+new heading"))
 }
+@Test func serviceHistoryScrollsToOlderRetainedChanges() throws {
+    var ui = KilnTerminal(); ui.resize(width: 100, height: 20); ui.update([sample])
+    _ = ui.handle(.enter); for _ in 0..<6 { _ = ui.handle(.down) }; _ = ui.handle(.enter)
+    let rows = (0..<32).map { ["id":"c\($0)","version":"\($0)","status":"active","created":"2026-10-25","commit":"git-\($0)"] }
+    ui.finish(text: String(decoding: try JSONEncoder().encode(rows), as: UTF8.self), status: 0)
+    for _ in 0..<31 { _ = ui.handle(.down) }
+    #expect(ui.render().contains("c31"))
+    _ = ui.handle(.enter)
+    #expect(ui.handle(.enter) == [.command("'web' 'diff' 'storefront/rest' 'c31'")])
+}
