@@ -370,7 +370,11 @@ continuation; file headers and hunk markers use a separate metadata color.
 
 Services → Codebase / files opens the current workspace. The left pane shows
 folders and files; Up/Down selects a file and Enter opens it. Tab moves focus to
-the code pane, where arrows pan and scroll. PgUp/PgDn scrolls code. Highlighting
+the code pane, where arrows pan and scroll. The mouse wheel over code scrolls
+that pane directly, without Tab; the tree scrolls independently. PgUp/PgDn and
+the clickable page/top/end controls scroll within the file. The status line shows
+visible line numbers and the horizontal column. Home/End jump to the start/end
+of a file; Shift-wheel or horizontal wheel events pan long lines. Highlighting
 covers keywords, types, strings, numbers and multiline comments/strings while
 preserving source text and terminal geometry. Diff additions/deletions retain
 their green/red semantic colors.
@@ -412,3 +416,35 @@ Full replace uses `action: replace`, the matching `sha256` and `content`.
 Legacy `{before,after}` edits still target App.swift. The existing 4096-byte AI
 argument limit and one publish attempt per turn remain in force. Tools cannot
 expand the root grant, read host filesystem files or change SDK configuration.
+
+
+### Refactor from the code browser
+
+The visible **R Refactor** button (also keyboard R) offers:
+
+- **Split into smaller components**: extract cohesive types into focused files.
+- **One function per file**: separate ordinary methods into Swift extensions of
+  the same type, such as `Models/CounterModel+snapshot.swift`. This preserves the
+  type and its existing inheritance; inheritance is not used just to split files.
+
+Cancel is selected initially. The action uses the selected provider and the
+existing development autoPublish grant. It binds the displayed file hash and
+registration, narrows the AI turn to project tools, reads the affected source,
+validates the proposed group and publishes once after compilation and health
+checks. Provider failures remain visible in the result view; no success is
+claimed and uncertain writes are not retried. Historical code is read-only;
+W opens the current workspace before refactoring.
+
+An explicit refactor turn can propose up to 32 operations with 256 KiB of tool
+arguments, still bounded by the 32-file/256-KiB project snapshot. Ordinary AI edits
+retain their 8-operation/4096-byte limits. The source/registration guards run again
+inside the build coordinator, before it snapshots files. All extracted functions
+must compile together, and the complete refactor remains one retained change
+with a diff and whole-project rollback. Initializers, stored properties, overrides
+or other declarations stay in place when Swift cannot safely move them. Necessary
+private/fileprivate access changes stay internal to the application, never public.
+A large refactor that cannot fit must report any remaining scope.
+
+Command: `web refactor APP/MODULE PATH SHA256 components|functions`. This is a
+foreground administrator action requiring a registered project root and a current
+Swift file. It grants neither host filesystem access nor unrelated service tools.

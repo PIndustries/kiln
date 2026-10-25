@@ -13,7 +13,7 @@ struct WebFiles: Equatable {
     static func validPath(_ path: String) -> Bool {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         return !path.isEmpty && path.utf8.count <= 180 && parts.count <= 8 && parts.allSatisfy {
-            !$0.isEmpty && !$0.hasPrefix(".") && $0.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45,46,95].contains($0) }
+            !$0.isEmpty && !$0.hasPrefix(".") && $0.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [43,45,46,95].contains($0) }
         } && extensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased())
     }
     func validate() throws {
@@ -108,11 +108,11 @@ struct WebFiles: Equatable {
         throw KilnError.message("Project installation requires macOS isolation")
         #endif
     }
-    func applying(_ edits: String, multiFile: Bool) throws -> WebFiles {
+    func applying(_ edits: String, multiFile: Bool, limit: Int = 8) throws -> WebFiles {
         struct Edit: Decodable { let path: String?; let action: String?; let before: String?; let after: String?; let content: String?; let sha256: String? }
         guard edits.utf8.count <= 262144 else { throw KilnError.message("Project edit limit exceeded") }
         let edits = try JSONDecoder().decode([Edit].self, from: Data(edits.utf8))
-        guard !edits.isEmpty, edits.count <= 8 else { throw KilnError.message("Use 1–8 file operations") }
+        guard !edits.isEmpty, edits.count <= min(32, max(1, limit)) else { throw KilnError.message("File operation count exceeded the granted limit") }
         var updated = self
         for edit in edits {
             let path = edit.path ?? "App.swift", action = edit.action ?? "edit"

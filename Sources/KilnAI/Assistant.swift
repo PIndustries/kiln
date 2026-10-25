@@ -197,6 +197,7 @@ public actor KilnAssistant {
                     validateAccess: @escaping @Sendable () throws -> Void = {},
                     webChange: (@Sendable (String, String) async throws -> String)? = nil,
                     webValidation: (@Sendable (String, String) async throws -> String)? = nil,
+                    webOnly: Bool = false,
                     read: @escaping @Sendable (String, String?) async throws -> String) async throws -> String {
         let visibleThinking = VisibleThinkingLog()
         let downstream = progress
@@ -291,6 +292,7 @@ public actor KilnAssistant {
                 progress(.status(round == 8 ? "Summarizing collected results" : "\(configuration.provider.rawValue) / \(configuration.profile) · turn \(round + 1)"))
                 if round == 8 { messages.append(AIMessage(role: "user", content: "Tool budget is complete. Summarize the verified results already returned. State any unknowns. Do not call more tools.")) }
                 let tools = round == 8 ? [] : Self.tools.filter {
+                    if webOnly && $0.function.name != "tool_help" && !Self.webToolNames.contains($0.function.name) { return false }
                     if Self.webToolNames.contains($0.function.name) {
                         return webChange != nil && allowProposals && ($0.function.name != "validate_web_source" || webValidation != nil)
                     }
@@ -356,13 +358,14 @@ public actor KilnAssistant {
                     }
                     progress(.status("Tool: " + call.function.name))
                     var result = "Tool rejected: unsupported name or arguments."
-                    if call.type == "function", let bytes = call.function.arguments.data(using: .utf8), bytes.count <= 4096,
+                    if call.type == "function", let bytes = call.function.arguments.data(using: .utf8), bytes.count <= (webOnly && ["validate_web_source", "update_web_source"].contains(call.function.name) ? 262144 : 4096),
+                       (!webOnly || call.function.name == "tool_help" || Self.webToolNames.contains(call.function.name)),
                        let args = try? JSONDecoder().decode([String: String].self, from: bytes) {
                         let name = call.function.name
                         let module = args["module"]
                         let validModule = module.flatMap { id in modules.first { $0.id == id } }
                         if name == "tool_help", Set(args.keys) == ["topic"], let topic = args["topic"], ["all", "web"].contains(topic) {
-                            result = Self.toolGuide(topic: topic, tools: tools)
+                            result = Self.toolGuide(topic: topic, tools: tools, refactoring: webOnly)
                         } else if name == "validate_web_source", let webValidation, webChange != nil, allowProposals,
                                   activeContextID == configuration.contextID, Set(args.keys) == ["module", "edits"],
                                   let module, validModule != nil, let edits = args["edits"] {

@@ -124,3 +124,12 @@ private func browserFixture(readOnly: Bool = false) throws -> String {
     let deleted = try JSONDecoder().decode([[String:String]].self,from:Data(deleteParts[3].utf8))[0]
     #expect(deleted["action"] == "delete"); #expect(deleted["sha256"] == "header-hash")
 }
+@Test func atomicRefactorOperationLimitDoesNotExpandOrdinaryEdits() throws {
+    let snapshot = WebFiles(files:["App.swift":Data("import Foundation".utf8)])
+    let ops = (0..<9).map { ["path":"Parts/Part\($0).swift","action":"create","content":"// part \($0)"] }
+    let edits = String(decoding:try JSONEncoder().encode(ops),as:UTF8.self)
+    #expect(throws:(any Error).self) { try snapshot.applying(edits,multiFile:true) }
+    let refactor = try snapshot.applying(edits,multiFile:true,limit:32)
+    #expect(refactor.files.count == 10)
+    #expect(WebFiles.validPath("Models/CounterModel+snapshot.swift"))
+}

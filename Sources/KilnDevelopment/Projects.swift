@@ -123,6 +123,20 @@ public actor WebDevelopment {
         let tree = try tree(module: module, change: change), file = try file(module: module, path: path, change: change)
         return "{\"tree\":" + tree + ",\"file\":" + file + "}"
     }
+    public func refactor(module: String, path: String, sha256: String, style: String) throws -> WebRefactor {
+        let registered = try project(module), config = registered.configuration
+        guard config.root != nil, config.autoPublish, registered.sdk.projectFiles == true,
+              !busy.contains(module), ["components", "functions"].contains(style), WebFiles.validPath(path), path.hasSuffix(".swift"),
+              let bytes = try WebFiles.read(config).files[path], WebIsolation.digest(bytes) == sha256 else {
+            throw KilnError.message("Refactor needs a current Swift file in an opted-in project root; reload the file if it changed")
+        }
+        return WebRefactor(module: module, path: path, sha256: sha256, style: style, registrationSHA256: WebIsolation.digest(try bounded(projectFile(module), limit: 1_048_576)))
+    }
+    public func verifyRefactor(_ request: WebRefactor, module: String) throws {
+        guard module == request.module,
+              WebIsolation.digest(try bounded(projectFile(module), limit: 1_048_576)) == request.registrationSHA256 else { throw KilnError.message("Refactor project or registration changed") }
+        _ = try refactor(module: module, path: request.path, sha256: request.sha256, style: request.style)
+    }
     public func source(module: String, offset: Int) throws -> String { try file(module: module, path: "App.swift", offset: offset) }
     public func isRegistered(_ module: String) -> Bool { FileManager.default.fileExists(atPath: projectFile(module).path) }
     private func save(_ receipt: WebChange, at job: URL) throws { try KilnStateFile.write(JSONEncoder().encode(receipt), to: job.appendingPathComponent("receipt.json")) }
@@ -220,17 +234,18 @@ public actor WebDevelopment {
         }
     }
     public func change(module: String, owner: String, edits: String, target: ApplicationManifest,
-                       publish: Bool = true, restoring: [String: Data]? = nil, progress: @escaping @Sendable (String) -> Void,
+                       publish: Bool = true, operationLimit: Int = 8, refactorScope: WebRefactor? = nil, restoring: [String: Data]? = nil, progress: @escaping @Sendable (String) -> Void,
                        validate: @escaping @Sendable () throws -> Void,
                        deploy: @escaping @Sendable (String) async throws -> String) async throws -> String {
         guard WebIsolation.supported else { throw KilnError.message("Web coding currently requires macOS isolation") }
+        if let refactorScope { try verifyRefactor(refactorScope, module: module) }
         guard !busy.contains(module), busy.count < 2 else { throw KilnError.message("A web change is already building; inspect web changes") }
         try validate(); try Task.checkCancellation()
         let registered = try project(module), config = registered.configuration
         guard config.autoPublish, target.id == module, target.ingressPort == config.ingressPort, (target.secrets ?? [:]).isEmpty else { throw KilnError.message("This module has no automatic development-publish grant") }
         let registrations = try bounded(projectFile(module), limit: 1_048_576)
         let before = try WebFiles.read(config)
-        let after = try restoring.map { WebFiles(files: $0) } ?? before.applying(edits, multiFile: config.root != nil)
+        let after = try restoring.map { WebFiles(files: $0) } ?? before.applying(edits, multiFile: config.root != nil, limit: operationLimit)
         try after.validate()
         guard after != before, config.root != nil || after.files.count == 1 else { throw KilnError.message("Changed project requires an explicit root grant") }
         let entries = try FileManager.default.contentsOfDirectory(atPath: jobs.path)

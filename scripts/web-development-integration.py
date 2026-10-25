@@ -50,7 +50,22 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         messages = body['messages']
         prompt = next(m['content'] for m in reversed(messages) if m['role'] == 'user')
         tool_results = [m for m in messages if m['role'] == 'tool']
-        if 'component' in prompt:
+        if 'KILN PROJECT REFACTOR / functions' in prompt:
+            assert 'request_operation' not in [t['function']['name'] for t in body['tools']]
+            if not tool_results: name,args='tool_help',dict(topic='web')
+            elif tool_results[-1]['tool_name']=='tool_help':
+                assert '1–32 operations' in tool_results[-1]['content'] and '262144' in tool_results[-1]['content']
+                name,args='list_web_files',dict(module='dev/site')
+            elif tool_results[-1]['tool_name']=='list_web_files': name,args='read_web_file',dict(module='dev/site',path='App.swift',offset='0')
+            elif tool_results[-1]['tool_name']=='read_web_file':
+                page=json.loads(tool_results[-1]['content'])
+                if not page['complete']: name,args='read_web_file',dict(module='dev/site',path='App.swift',offset=str(page['nextOffset']))
+                else: name,args='validate_web_source',dict(module='dev/site',edits=json.dumps(Fixture.refactor_operations))
+            elif tool_results[-1]['tool_name']=='validate_web_source':
+                assert 'Isolated compile passed' in tool_results[-1]['content'],tool_results[-1]['content']
+                name,args='update_web_source',dict(module='dev/site',edits=json.dumps(Fixture.refactor_operations))
+            else: raise AssertionError('Unexpected refactor phase')
+        elif 'component' in prompt:
             deleting = 'Delete' in prompt
             before, after = (r'\(projectHeading())', 'Built through Kiln AI.') if deleting else ('Built through Kiln AI.', r'\(projectHeading())')
             operations = [dict(path='App.swift', before=before, after=after)]
@@ -239,6 +254,28 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
         retained=json.loads(ssh('web browse dev/site Components/Heading.swift '+multi['id']))
         assert not retained['tree']['editable'] and 'Multi-file published.' in retained['file']['source']
         print('PASS: AI lists/reads files, creates and deletes nested Swift component, compiles all files, publishes live HTML, whole-project rollback both ways and retained read-only tree',flush=True)
+        # The code-view Refactor command pins the displayed source and narrows
+        # the AI turn to registered-project tools. Compile real actor extensions.
+        entry=source.read_text(); sha=hashlib.sha256(source.read_bytes()).hexdigest()
+        method='    func snapshot() -> (Int, String) { (count, note) }\n'
+        Fixture.refactor_operations=[dict(path='App.swift',before=method,after=''),
+            dict(path='App.swift',before='private var count = 0',after='var count = 0'),
+            dict(path='App.swift',before='private var note =',after='var note ='),
+            dict(path='Models/CounterModel+snapshot.swift',action='create',content='import Foundation\nextension CounterModel {\n'+method+'}\n')]
+        stale=subprocess.run(base+['web refactor dev/site App.swift '+'0'*64+' functions'],capture_output=True,text=True)
+        assert stale.returncode!=0 and source.read_text()==entry
+        css_before=get('/assets/app.css')
+        refactored=ssh('web refactor dev/site App.swift '+sha+' functions')
+        assert 'Published development change' in refactored,refactored
+        assert (workspace/'Models/CounterModel+snapshot.swift').is_file()
+        assert method not in source.read_text() and 'Built through Kiln AI.' in get('/counter')
+        assert get('/assets/app.css')==css_before
+        history=json.loads(ssh('web history dev/site')); current=next(r for r in history if r['current']=='yes')
+        assert 'CounterModel+snapshot.swift' in ssh('web diff dev/site '+current['id'])
+        ssh('app rollback dev/site')
+        assert source.read_text()==entry and not (workspace/'Models/CounterModel+snapshot.swift').exists()
+        print('PASS: displayed-hash refactor guard / restricted AI tools / method extracted into Swift actor extension / isolated validation and publish / same HTML and CSS / whole-refactor rollback',flush=True)
+
 
     finally:
         if runtime.poll() is None:runtime.terminate();runtime.wait(timeout=20)
