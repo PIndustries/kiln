@@ -35,6 +35,13 @@ for value in [str(compiler)] + arguments:
         root = value.split('/Contents/Developer/')[0] + '/Contents'
         if root not in read_roots:
             read_roots.append(root)
+# Standalone Swift toolchains need Xcode's actual linker, not the /usr/bin
+# xcrun shim (which requires developer-selection IPC inside the sandbox).
+linkers = [Path(root) / 'Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld'
+           for root in read_roots if root.endswith('/Contents')]
+linker = next((path for path in linkers if path.is_file()), None)
+assert linker is not None, 'No trusted Xcode linker found in the SDK roots'
+arguments += ['-ld-path=' + str(linker)]
 inputs = set(objects) | {str(base / 'kiln-web-builder'), str(base / 'kiln-web-runtime')}
 for object_path in objects:
     name = Path(object_path).parent.name.removesuffix('.build')
