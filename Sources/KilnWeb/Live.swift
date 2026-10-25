@@ -93,13 +93,20 @@ public final class WebApplication: Sendable {
     public let cookieName: String
     let authority: String
     let secure: Bool
+    let healthAuthority: String?
     let layout: @Sendable (LivePage) -> HTML
-    public init(router: WebRouter, origin: String, hub: LiveHub = LiveHub(), cookieName: String? = nil, layout: @escaping @Sendable (LivePage) -> HTML = WebApplication.defaultLayout) throws {
+    public init(router: WebRouter, origin: String, hub: LiveHub = LiveHub(), healthAuthority: String? = nil, cookieName: String? = nil, layout: @escaping @Sendable (LivePage) -> HTML = WebApplication.defaultLayout) throws {
         guard let url = URL(string: origin), let scheme = url.scheme, ["http", "https"].contains(scheme), let host = url.host,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, url.path.isEmpty,
               let authority = URLComponents(string: origin)?.host, authority == host else { throw WebError(400) }
         let name = cookieName ?? "kiln_web_" + SHA256.hash(data: Data(origin.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16)
         guard !name.isEmpty, name.count <= 64, name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_-".contains($0)) }) else { throw WebError(400) }
+        if let healthAuthority {
+            guard let health = URL(string: "http://" + healthAuthority), health.host == "127.0.0.1" || health.host == "[::1]",
+                  let port = health.port, (1...65535).contains(port), health.path.isEmpty, health.user == nil, health.password == nil,
+                  health.query == nil, health.fragment == nil else { throw WebError(400) }
+        }
+        self.healthAuthority = healthAuthority
         self.cookieName = String(name)
         self.origin = origin; self.authority = String(origin.dropFirst(scheme.count + 3)); self.secure = scheme == "https"
         self.router = router; self.hub = hub; self.layout = layout
@@ -146,6 +153,11 @@ public final class WebApplication: Sendable {
     private struct LiveSnapshot: Encodable { let version: Int; let sequence: Int; let html: String }
     public func respond(method: String, uri: String, headers: [String: String], body: Data = Data()) async -> WebResponse {
         do {
+            // Explicit read-only loopback worker liveness, separate from the
+            // public ingress origin. It never mounts a view or invokes an action.
+            if let healthAuthority, headers["host"] == healthAuthority, uri == "/__kiln/health", ["GET", "HEAD"].contains(method), body.isEmpty {
+                return try .json(["status": "ok", "scope": "web-worker-liveness"])
+            }
             try checkHeaders(headers)
             guard body.count <= 16384 else { throw WebError(413) }
             let (path, query) = try WebRequest.target(uri)

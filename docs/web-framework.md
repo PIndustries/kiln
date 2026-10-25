@@ -28,12 +28,36 @@ controller action also broadcasts through the same application-local hub.
 Register the compiled executable with `app install MANIFEST`, then use
 `app start APP/MODULE` and `app health APP/MODULE`, with a fixed loopback port and
 health URL. It can update independently of the supervisor and other applications.
-No bundle format is required. The preview example is `web-demo/site`.
+No bundle format is required. The preview example is `web-demo/live`.
 
-Managed `app deploy` additionally requires an ingress port. The example's current
-acceptance uses direct loopback access with matching public Origin/Host. Public
-proxy/ingress deployment needs a canonical origin and a separately verified
-internal health-check path; it is not implied by the direct-loopback example.
+Managed `app deploy` additionally requires an ingress port. The example supports
+`--origin http://127.0.0.1:18085` to declare its stable browser-facing origin, while
+Kiln supplies `KILN_PORT` from the release's health URL. For example:
+
+```json
+{
+  "application": "web-demo",
+  "name": "live",
+  "version": "0.1.0",
+  "executable": "/absolute/path/to/kiln-example-web",
+  "arguments": ["--origin", "http://127.0.0.1:18085"],
+  "healthURL": "http://127.0.0.1:18084/__kiln/health",
+  "ingressPort": 18085
+}
+```
+
+Use `app deploy MANIFEST` and open `http://127.0.0.1:18085/counter`. Subsequent
+releases use the same ingress/public origin and a different worker health port.
+`app rollback web-demo/live` uses the existing release lifecycle. Live browser
+state is not durable across release changes; reload the page after deployment.
+
+`WebApplication(..., healthAuthority: "127.0.0.1:18084")` explicitly enables the
+read-only `/__kiln/health` worker probe for that loopback Host. It never invokes a
+controller or mounts a view, and reports worker HTTP liveness, not model/database
+readiness. This exception permits no other backend route or mutation and does
+not weaken the public Origin/Host checks. The example configures it from its
+worker port. This managed loopback ingress/upgrade/rollback path is integration
+tested; public TLS/proxy termination remains separate work.
 
 ## Controllers, templates and middleware
 
@@ -155,5 +179,6 @@ never serialize application error details.
 connection fencing, duplicate mutation rejection and authorization rechecks.
 `python3 scripts/web-framework-integration.py` uses a disposable real worker and
 standard-library HTTP/WebSocket clients. It proves SSR, two-browser broadcasts,
-controller-to-live events, escaping, reconnect and rejection paths. Both hosted
+controller-to-live events, escaping, reconnect, rejection paths and real Kiln
+ingress deployment/upgrade/rollback. Both hosted
 macOS and Linux validation run this integration suite.

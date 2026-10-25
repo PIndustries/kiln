@@ -67,7 +67,8 @@ Kiln-hosted Git and an artifact registry can be optional installed services usin
 
 The first [KilnWeb framework milestone](web-framework.md) provides controller routes,
 escaped HTML composition, browser/CSRF boundaries and server-rendered live views
-with process-local broadcasts. A separate demo worker proves two-browser updates.
+with process-local broadcasts. A separate demo worker proves two-browser updates and managed loopback
+ingress deployment, upgrade and rollback.
 DOM diffing, durable application data, distributed live state and public routing
 remain outside this milestone.
 

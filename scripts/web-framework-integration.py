@@ -167,7 +167,6 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-') as td:
             code, headers, html = http('GET', '/')
             csrf = re.search(r'name="_csrf" value="([^"]+)"', html)[1]
             assert http('POST', '/greet', body=f'_csrf={csrf}&name=%3Cimg%3E', cookie=headers['set-cookie'].split(';')[0], extra={'Origin': origin, 'Content-Type': 'application/x-www-form-urlencoded'})[0] == 200
-            print('KILN_WEB_FRAMEWORK_COMPLETE', flush=True)
         except Exception:
             log.flush(); print(Path(log.name).read_text(), flush=True)
             raise
@@ -177,3 +176,67 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-') as td:
             if process.poll() is None:
                 process.terminate()
             process.wait(timeout=10)
+
+# Exercise the real supervisor's stable ingress and separate worker health path.
+def free_port():
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+with tempfile.TemporaryDirectory(prefix='kiln-web-managed-') as td:
+    root = Path(td)
+    state, key = root / 'state', root / 'admin'
+    management, port, worker_a, worker_b = free_port(), free_port(), free_port(), free_port()
+    origin = f'http://127.0.0.1:{port}'
+    subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(key)], check=True)
+    with (root / 'runtime.log').open('w+') as log:
+        runtime = subprocess.Popen([str(BIN / 'kiln'), 'up', '--state', str(state), '--authorized-keys', str(key) + '.pub', '--port', str(management)], stdout=log, stderr=log)
+        known = root / 'known'
+        base = ['ssh', '-F', '/dev/null', '-o', 'LogLevel=ERROR', '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes', '-o', 'StrictHostKeyChecking=yes', '-o', f'UserKnownHostsFile={known}', '-i', str(key), '-p', str(management), 'admin@127.0.0.1']
+        def command(text):
+            result = subprocess.run(base + [text], capture_output=True, text=True, timeout=30)
+            assert result.returncode == 0, (text, result.stdout, result.stderr)
+            return result.stdout
+        try:
+            deadline = time.monotonic() + 15
+            while not (state / 'ssh-host-ed25519.pub').exists():
+                assert time.monotonic() < deadline and runtime.poll() is None
+                time.sleep(.05)
+            known.write_text(f'[127.0.0.1]:{management} ' + (state / 'ssh-host-ed25519.pub').read_text())
+            while subprocess.run(base + ['status'], capture_output=True, timeout=3).returncode:
+                assert time.monotonic() < deadline
+                time.sleep(.05)
+            manifest = root / 'web.json'
+            for version, backend in [('1', worker_a), ('2', worker_b)]:
+                manifest.write_text(json.dumps(dict(application='web', name='site', version=version, executable=str(BIN / 'kiln-example-web'), arguments=['--origin', origin], healthURL=f'http://127.0.0.1:{backend}/__kiln/health', ingressPort=port)))
+                assert f'web/site@{version}' in command('app deploy ' + str(manifest))
+                code, headers, html = http('GET', '/counter')
+                assert code == 200 and 'data-ticket=' in html
+                assert 'HTTP 200' in command('app health web/site')
+                cookie = headers['set-cookie'].split(';')[0]
+                ticket = re.search(r'data-ticket="([^"]+)"', html)[1]
+                csrf = re.search(r'data-csrf="([^"]+)"', html)[1]
+                live = Live(cookie, ticket, request_origin=origin)
+                try:
+                    live.until_count(0)
+                    live.event(1, 'increment', csrf)
+                    live.until_count(1)
+                finally:
+                    live.close()
+                internal = HTTPConnection('127.0.0.1', backend, timeout=5)
+                internal.request('GET', '/counter')
+                response = internal.getresponse()
+                assert response.status == 403
+                response.read(); internal.close()
+            assert 'web/site@1' in command('app rollback web/site')
+            assert http('GET', '/counter')[0] == 200 and runtime.poll() is None
+            print('PASS managed Kiln worker: stable public ingress, explicit public Origin, isolated liveness probe, live WebSocket events, upgrade and rollback', flush=True)
+        except Exception:
+            log.flush(); print((root / 'runtime.log').read_text(), flush=True)
+            raise
+        finally:
+            if runtime.poll() is None:
+                runtime.terminate()
+            runtime.wait(timeout=15)
+            subprocess.run([str(BIN / 'kiln'), 'session-service-stop', '--state', str(state)], capture_output=True, timeout=8)
+print('KILN_WEB_FRAMEWORK_COMPLETE', flush=True)

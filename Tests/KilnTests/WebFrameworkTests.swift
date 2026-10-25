@@ -164,3 +164,17 @@ private actor AmbiguousWebCounter: LiveView {
         #expect(throws: WebError.self) { try WebResponse.redirect(target) }
     }
 }
+
+@Test func managedWebWorkerHealthDoesNotBypassPublicOriginOrInvokeControllers() async throws {
+    var router = WebRouter()
+    try router.on("GET", "/private") { _ in .html("private controller") }
+    let app = try WebApplication(router: router, origin: webOrigin, healthAuthority: "127.0.0.1:18084")
+    let backend = ["host": "127.0.0.1:18084"]
+    #expect(await app.respond(method: "GET", uri: "/__kiln/health", headers: backend).status == 200)
+    #expect(await app.respond(method: "HEAD", uri: "/__kiln/health", headers: backend).status == 200)
+    #expect(await app.respond(method: "POST", uri: "/__kiln/health", headers: backend).status == 403)
+    #expect(await app.respond(method: "GET", uri: "/private", headers: backend).status == 403)
+    #expect(await app.respond(method: "GET", uri: "/__kiln/health?private=1", headers: backend).status == 403)
+    #expect(await app.respond(method: "GET", uri: "/private", headers: webHeaders).status == 200)
+    #expect(throws: WebError.self) { try WebApplication(router: router, origin: webOrigin, healthAuthority: "remote.invalid:80") }
+}
