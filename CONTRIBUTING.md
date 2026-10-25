@@ -11,6 +11,7 @@ Use Swift 6.2.3, the compiler used by release validation. Preserve `Package.reso
 ```sh
 swift test --jobs 2
 python3 scripts/integration.py
+python3 scripts/web-framework-integration.py
 python3 scripts/transport-integration.py
 python3 scripts/crash-recovery-integration.py
 python3 scripts/identity-integration.py

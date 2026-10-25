@@ -54,6 +54,8 @@ jobs:
           grep -Fx KILN_REAL_EACCES_COMPLETE "$RUNNER_TEMP/kiln-real-eacces.log"
       - name: SSH, HTTP, WebSocket, crash recovery and restore
         run: python3 scripts/integration.py
+      - name: Server-rendered web framework and live-view acceptance
+        run: python3 scripts/web-framework-integration.py
       - name: Durable AI recovery through real SSH connections
         run: python3 scripts/ai-recovery-integration.py
       - name: Repeated recovery soak and interrupted deployment recovery
@@ -103,6 +105,8 @@ jobs:
         run: swift test --jobs 2 --force-resolved-versions
       - name: SSH, HTTP, WebSocket, crash recovery and restore
         run: python3 scripts/integration.py
+      - name: Server-rendered web framework and live-view acceptance
+        run: python3 scripts/web-framework-integration.py
       - name: Durable AI recovery through real SSH connections
         run: python3 scripts/ai-recovery-integration.py
       - name: Repeated recovery soak and interrupted deployment recovery

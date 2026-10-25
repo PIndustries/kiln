@@ -6,6 +6,8 @@ let package = Package(
     products: [
         .executable(name: "kiln", targets: ["Kiln"]),
         .executable(name: "kiln-example-backend", targets: ["ExampleBackend"]),
+        .executable(name: "kiln-example-web", targets: ["ExampleWeb"]),
+        .library(name: "KilnWeb", targets: ["KilnWeb"]),
         .library(name: "KilnAI", targets: ["KilnAI"]),
         .library(name: "KilnCluster", targets: ["KilnCluster"]),
         .library(name: "KilnVault", targets: ["KilnVault"]),
@@ -39,8 +41,10 @@ let package = Package(
         .target(name: "KilnSSH", dependencies: ["KilnKit", "KilnBastion", "KilnCommands", "KilnTerminal", .product(name: "NIOSSH", package: "swift-nio-ssh"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "KilnHTTP", dependencies: [.product(name: "NIOHTTP1", package: "swift-nio")]),
         .target(name: "KilnWebSocket", dependencies: [.product(name: "NIOWebSocket", package: "swift-nio")]),
+        .target(name: "KilnWeb", dependencies: [.product(name: "Crypto", package: "swift-crypto"), .product(name: "NIOPosix", package: "swift-nio"), .product(name: "NIOHTTP1", package: "swift-nio"), .product(name: "NIOWebSocket", package: "swift-nio")]),
+        .executableTarget(name: "ExampleWeb", dependencies: ["KilnWeb"]),
         .executableTarget(name: "Kiln", dependencies: ["KilnCluster", "KilnVault", "KilnKit", "KilnBastion", "KilnCommands", "KilnSSH", "KilnRuntime"]),
         .executableTarget(name: "ExampleBackend", dependencies: ["KilnKit", "KilnHTTP", "KilnWebSocket", .product(name: "NIOPosix", package: "swift-nio")]),
-        .testTarget(name: "KilnTests", dependencies: ["KilnSSH", "KilnCluster", "KilnAI", "KilnVault", "KilnKit", "KilnRuntime", "KilnCommands", "KilnTerminal", "KilnTelemetry", "KilnBastion"]),
+        .testTarget(name: "KilnTests", dependencies: ["KilnWeb","KilnSSH", "KilnCluster", "KilnAI", "KilnVault", "KilnKit", "KilnRuntime", "KilnCommands", "KilnTerminal", "KilnTelemetry", "KilnBastion"]),
     ]
 )
