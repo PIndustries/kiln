@@ -203,7 +203,7 @@ public actor WebDevelopment {
             if process.isRunning {
                 _ = kill(-process.processIdentifier, SIGKILL); _ = kill(process.processIdentifier, SIGKILL)
                 let cleanupDeadline = Date().addingTimeInterval(2)
-                while process.isRunning && Date() < cleanupDeadline { Thread.sleep(forTimeInterval: 0.01) }
+                while process.isRunning && Date() < cleanupDeadline { usleep(10000) }
             }
         }
         let deadline = Date().addingTimeInterval(120)
