@@ -178,3 +178,21 @@ private actor AmbiguousWebCounter: LiveView {
     #expect(await app.respond(method: "GET", uri: "/private", headers: webHeaders).status == 200)
     #expect(throws: WebError.self) { try WebApplication(router: router, origin: webOrigin, healthAuthority: "remote.invalid:80") }
 }
+
+@Test func developmentReloadIsOptInOriginBoundAndChangesWithWorkerInstance() async throws {
+    var router = WebRouter()
+    try router.live("/counter") { _ in WebCounter() }
+    try router.on("GET", "/") { _ in .html("<body>Home</body>") }
+    let ordinary = try WebApplication(router: router, origin: webOrigin)
+    #expect(await ordinary.respond(method: "GET", uri: "/__kiln/instance", headers: webHeaders).status == 404)
+    let first = try WebApplication(router: router, origin: webOrigin, developmentReload: true)
+    let second = try WebApplication(router: router, origin: webOrigin, developmentReload: true)
+    let a = await first.respond(method: "GET", uri: "/__kiln/instance", headers: webHeaders)
+    let b = await second.respond(method: "GET", uri: "/__kiln/instance", headers: webHeaders)
+    #expect(a.status == 200 && a.body != b.body)
+    #expect(responseText(await first.respond(method: "GET", uri: "/", headers: webHeaders)).contains("/__kiln/development.js"))
+    #expect(!responseText(await ordinary.respond(method: "GET", uri: "/", headers: webHeaders)).contains("/__kiln/development.js"))
+    #expect(await first.respond(method: "GET", uri: "/__kiln/instance", headers: ["host":"evil.test"]).status == 403)
+    #expect(await first.respond(method: "POST", uri: "/__kiln/instance", headers: webHeaders).status == 403)
+    #expect(responseText(await first.respond(method: "GET", uri: "/counter", headers: webHeaders)).contains("data-development-reload=\"true\""))
+}

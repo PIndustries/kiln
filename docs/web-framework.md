@@ -182,3 +182,92 @@ standard-library HTTP/WebSocket clients. It proves SSR, two-browser broadcasts,
 controller-to-live events, escaping, reconnect, rejection paths and real Kiln
 ingress deployment/upgrade/rollback. Both hosted
 macOS and Linux validation run this integration suite.
+
+## AI development preview
+
+On macOS, an administrator can register one Swift application source file for
+Kiln AI to edit and automatically publish to a local development ingress. This is
+a development grant for that exact app, not a production-operation approval or
+unrestricted shell/repository access. Ordinary start/stop/restart/rollback tools
+still use approvals. Background tasks and non-administrators have no coding tools.
+
+Build the example, `kiln-web-builder` and `kiln-web-runtime` first. Export an
+immutable snapshot of the trusted SDK into a new directory:
+
+```sh
+python3 scripts/export-web-sdk.py --build-dir .build/arm64-apple-macosx/debug \
+  --snapshot-dir /absolute/dev/sdk/revision-1 --output /absolute/dev/sdk.json
+```
+
+The exporter only copies already-built objects, module interfaces, C headers and
+two trusted helpers. It does not execute package code. Without `--snapshot-dir`,
+the recipe references the checkout's build directory and later rebuilds can
+invalidate it. The administrator must explicitly export/register a new SDK when
+upgrading the framework; AI cannot modify that configuration.
+
+Copy `Sources/ExampleWeb/Web.swift` into a separate development workspace. Install
+and start an ordinary web app with a stable ingress, then register a private JSON
+file using `web register /absolute/dev/project.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "module": "web-demo/live",
+  "source": "/absolute/dev/App.swift",
+  "sdk": "/absolute/dev/sdk.json",
+  "publicOrigin": "http://127.0.0.1:18085",
+  "ingressPort": 18085,
+  "workerPorts": [18084, 18086],
+  "autoPublish": true
+}
+```
+
+The installed module and ingress must match; Vault-bound apps are excluded.
+Source must be owned by the current OS user, UTF-8, at most 64 KiB and not writable
+by other users. `web projects`, `web source APP/MODULE [OFFSET]` and
+`web changes APP/MODULE` inspect the grant, paginated source and durable receipts.
+The selected AI provider receives source pages just as it receives other tool
+results. Registration explicitly grants that source access.
+
+In Kiln AI, ask “Change the heading of web-demo/live to Hello from Kiln.” The AI
+lists registered projects, reads the current source and requests 1–8 exact unique
+text replacements. Only one write attempt runs per turn. The controller compiles
+in a private job with the pinned SDK, then deploys a candidate on the alternate
+worker port. It checks generation, current identity and provider context before
+deploying and rechecks authorization after readiness, before activating ingress.
+A successful deployment atomically saves the registered source. Failed builds
+return bounded diagnostics and leave both live release and source unchanged.
+
+No edited source executes in the supervisor. The compiler has no network and can
+write only its job directory; SwiftPM, manifests, dependency downloads and package
+plugins never run. Compilation has a 120-second deadline, 64 KiB diagnostic limit
+and process-group cancellation. Each release uses a digest-checking sandbox
+launcher: edited native code gets its own data directory, assigned loopback
+listener and system runtime libraries. Outside files, subprocesses, outbound
+networking and inherited provider credentials are denied. This first isolated
+coding path requires macOS and fails closed on other operating systems.
+
+`developmentReload: true` on `WebApplication` (the example's `--development` flag)
+adds a same-origin external script to successful HTML pages. It checks the worker
+instance once per second and reloads after a healthy release switch, including
+ordinary controller pages. Failed builds leave the instance unchanged. Live event
+broadcasts remain immediate and separate from compilation/reload. A code reload
+resets in-memory demo state and unsaved browser input; it does not replay events.
+
+State retains up to 8 projects, 2 concurrent builds and 32 development jobs,
+including source before/after, compiled executable, diagnostics and receipts.
+Active and rollback releases reference these retained artifacts: do not delete
+them blindly. A crash or uncertain publish/source-write outcome is recorded for
+inspection and never automatically replayed or rolled back. `active-source-pending`
+means a release activated before the registered source commit; reconcile its
+receipt, active release and job source before making another change. Multi-file
+repositories, dependency changes, Git commits and production publishing are not
+part of this first milestone. Portable bundles remain deferred.
+
+`WebDevelopmentTests` covers source grants, invalid edits, SDK drift, failed-build
+invariance and foreground tool gating. `web-sandbox-integration.py` compiles and
+runs a real confined probe against disposable outside files, process/network
+attempts and environment markers. `web-development-integration.py` runs real
+OpenSSH, a credential-free Ollama protocol fixture, source tools, native isolated
+compilation, managed deploy and invalid-build recovery. Native browser reload is
+a separate acceptance check from the server's publish receipt.

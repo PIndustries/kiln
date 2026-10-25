@@ -60,7 +60,7 @@ struct HomeController {
         try router.on("GET", "/hello/:name", action: { request in .html("<h1>Hello, \(request.parameters["name"] ?? "friend")</h1>") })
         try router.on("GET", "/assets/app.css", action: { _ in .init(contentType: "text/css; charset=utf-8", body: Data(css.utf8)) })
         try router.live("/counter", topics: ["counter"]) { _ in CounterView(model: model, hub: hub) }
-        let application = try WebApplication(router: router, origin: origin, hub: hub, healthAuthority: "127.0.0.1:\(port)", layout: { page in
+        let application = try WebApplication(router: router, origin: origin, hub: hub, healthAuthority: "127.0.0.1:\(port)", developmentReload: args.contains("--development"), layout: { page in
             """
             <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kiln Live Web</title><link rel="stylesheet" href="/assets/app.css">\(page.client)</head><body>\(page.status)\(page.root)</body></html>
             """

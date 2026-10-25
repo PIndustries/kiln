@@ -1,6 +1,33 @@
 import Foundation
 
 extension WebApplication {
+    // Opt-in development pages poll independently of live-view leases, including
+    // controller-rendered pages and releases whose old sockets remain open.
+    var developmentClient: String {
+        """
+        (() => {
+          const instance = '\(instance)';
+          let stopped = false;
+          window.addEventListener('pagehide', () => { stopped = true; });
+          async function check() {
+            if (stopped) return;
+            const controller = new AbortController();
+            const deadline = setTimeout(() => controller.abort(), 3000);
+            try {
+              const response = await fetch('/__kiln/instance', {cache:'no-store', credentials:'same-origin', signal:controller.signal});
+              const current = response.ok ? await response.json() : null;
+              if (current && typeof current.instance === 'string' && current.instance !== instance) {
+                stopped = true; location.reload(); return;
+              }
+            } catch { /* Keep the current page during a failed build or restart. */ }
+            finally { clearTimeout(deadline); }
+            if (!stopped) setTimeout(check, 1000);
+          }
+          setTimeout(check, 1000);
+        })();
+        """
+    }
+
     static let browserClient = #"""
     (() => {
       const root = document.getElementById('kiln-live');
@@ -32,7 +59,7 @@ extension WebApplication {
           if (restored) { restored.focus(); if (start != null && restored.setSelectionRange && !['number','email','checkbox','radio'].includes(restored.type)) restored.setSelectionRange(start, end); }
           ready = true; retries = 0; status.textContent = 'Live · connected';
         };
-        socket.onclose = () => {
+        socket.onclose = async () => {
           ready = false;
           if (stopped) return;
           status.textContent = 'Disconnected · refreshing server state; unsent actions are not replayed';

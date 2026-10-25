@@ -81,8 +81,8 @@ public struct LivePage: Sendable {
     public let root: HTML
     public let client: HTML = "<script src=\"/__kiln/live.js\" defer></script>"
     public let status: HTML = "<p id=\"kiln-live-status\" role=\"status\">Connecting live view…</p>"
-    init(content: HTML, ticket: String, csrf: String) {
-        root = "<main id=\"kiln-live\" data-ticket=\"\(ticket)\" data-csrf=\"\(csrf)\">\(content)</main>"
+    init(content: HTML, ticket: String, csrf: String, instance: String, developmentReload: Bool) {
+        root = "<main id=\"kiln-live\" data-ticket=\"\(ticket)\" data-csrf=\"\(csrf)\" data-instance=\"\(instance)\" data-development-reload=\"\(developmentReload ? "true" : "false")\">\(content)</main>"
     }
 }
 public final class WebApplication: Sendable {
@@ -94,8 +94,10 @@ public final class WebApplication: Sendable {
     let authority: String
     let secure: Bool
     let healthAuthority: String?
+    let developmentReload: Bool
+    let instance = UUID().uuidString.lowercased()
     let layout: @Sendable (LivePage) -> HTML
-    public init(router: WebRouter, origin: String, hub: LiveHub = LiveHub(), healthAuthority: String? = nil, cookieName: String? = nil, layout: @escaping @Sendable (LivePage) -> HTML = WebApplication.defaultLayout) throws {
+    public init(router: WebRouter, origin: String, hub: LiveHub = LiveHub(), healthAuthority: String? = nil, developmentReload: Bool = false, cookieName: String? = nil, layout: @escaping @Sendable (LivePage) -> HTML = WebApplication.defaultLayout) throws {
         guard let url = URL(string: origin), let scheme = url.scheme, ["http", "https"].contains(scheme), let host = url.host,
               url.user == nil, url.password == nil, url.query == nil, url.fragment == nil, url.path.isEmpty,
               let authority = URLComponents(string: origin)?.host, authority == host else { throw WebError(400) }
@@ -106,7 +108,7 @@ public final class WebApplication: Sendable {
                   let port = health.port, (1...65535).contains(port), health.path.isEmpty, health.user == nil, health.password == nil,
                   health.query == nil, health.fragment == nil else { throw WebError(400) }
         }
-        self.healthAuthority = healthAuthority
+        self.healthAuthority = healthAuthority; self.developmentReload = developmentReload
         self.cookieName = String(name)
         self.origin = origin; self.authority = String(origin.dropFirst(scheme.count + 3)); self.secure = scheme == "https"
         self.router = router; self.hub = hub; self.layout = layout
@@ -161,6 +163,12 @@ public final class WebApplication: Sendable {
             try checkHeaders(headers)
             guard body.count <= 16384 else { throw WebError(413) }
             let (path, query) = try WebRequest.target(uri)
+            if developmentReload, path == "/__kiln/instance", ["GET", "HEAD"].contains(method), query.isEmpty {
+                return try .json(["instance": instance])
+            }
+            if developmentReload, path == "/__kiln/development.js", ["GET", "HEAD"].contains(method), query.isEmpty {
+                return WebResponse(contentType: "text/javascript; charset=utf-8", body: Data(developmentClient.utf8))
+            }
             if path == "/__kiln/live.js", ["GET", "HEAD"].contains(method) {
                 return WebResponse(contentType: "text/javascript; charset=utf-8", body: Data(Self.browserClient.utf8))
             }
@@ -183,9 +191,18 @@ public final class WebApplication: Sendable {
                 let initial = try await view.render()
                 guard initial.rendered.utf8.count <= 524288 else { throw WebError(500) }
                 let ticket = try await state.mount(request: matched, view: view, topics: route.topics)
-                let html = layout(LivePage(content: initial, ticket: ticket, csrf: browser.csrfToken))
+                let html = layout(LivePage(content: initial, ticket: ticket, csrf: browser.csrfToken, instance: instance, developmentReload: developmentReload))
                 response = .html(html)
             } else { throw WebError(404) }
+            if developmentReload, ["GET", "HEAD"].contains(method), (200..<300).contains(response.status), response.contentType.lowercased().hasPrefix("text/html") {
+                let script = "<script src=\"/__kiln/development.js\" defer></script>"
+                let html = String(decoding: response.body, as: UTF8.self)
+                let injected: String
+                if let end = html.range(of: "</body>", options: .caseInsensitive) {
+                    injected = String(html[..<end.lowerBound]) + script + String(html[end.lowerBound...])
+                } else { injected = html + script }
+                response = WebResponse(status: response.status, contentType: response.contentType, body: Data(injected.utf8), headers: response.headers)
+            }
             if created { response.headers["set-cookie"] = "\(cookieName)=\(browser.id); Path=/; HttpOnly; SameSite=Strict; Max-Age=900" + (secure ? "; Secure" : "") }
             return response
         } catch let error as WebError { return WebResponse(status: error.status, contentType: "text/plain; charset=utf-8", body: Data("HTTP \(error.status)".utf8)) }

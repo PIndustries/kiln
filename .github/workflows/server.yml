@@ -56,6 +56,10 @@ jobs:
         run: python3 scripts/integration.py
       - name: Server-rendered web framework and live-view acceptance
         run: python3 scripts/web-framework-integration.py
+      - name: Isolated AI source editing and automatic development preview
+        run: |
+          python3 scripts/web-sandbox-integration.py
+          python3 scripts/web-development-integration.py
       - name: Durable AI recovery through real SSH connections
         run: python3 scripts/ai-recovery-integration.py
       - name: Repeated recovery soak and interrupted deployment recovery
