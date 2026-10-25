@@ -199,7 +199,13 @@ public actor WebDevelopment {
         let output = try FileHandle(forWritingTo: log); defer { try? output.close() }
         process.standardInput = FileHandle.nullDevice; process.standardOutput = output; process.standardError = output
         try process.run()
-        defer { if process.isRunning { _ = kill(-process.processIdentifier, SIGKILL); _ = kill(process.processIdentifier, SIGKILL); process.waitUntilExit() } }
+        defer {
+            if process.isRunning {
+                _ = kill(-process.processIdentifier, SIGKILL); _ = kill(process.processIdentifier, SIGKILL)
+                let cleanupDeadline = Date().addingTimeInterval(2)
+                while process.isRunning && Date() < cleanupDeadline { Thread.sleep(forTimeInterval: 0.01) }
+            }
+        }
         let deadline = Date().addingTimeInterval(120)
         while process.isRunning {
             try Task.checkCancellation()
@@ -207,7 +213,8 @@ public actor WebDevelopment {
             guard Date() < deadline, size <= 65536 else { throw KilnError.message("Build exceeded its time or diagnostic limit") }
             try await Task.sleep(for: .milliseconds(50))
         }
-        process.waitUntilExit()
+        // isRunning has already observed termination. waitUntilExit may wait
+        // on the launch thread's run loop after an async executor hop on macOS.
         guard process.terminationStatus == 0 else { throw KilnError.message("Isolated compiler failed") }
     }
 }
