@@ -203,8 +203,6 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     #expect(ui.handle(.enter) == [.command("'web' 'history' 'storefront/rest'")])
     ui.finish(text: "[{\"id\":\"change-one\",\"version\":\"1\",\"status\":\"active\",\"created\":\"2026-10-25T12:00:00Z\",\"commit\":\"abcdef012345\"}]", status: 0)
     #expect(ui.render().contains("Changes / storefront/rest"))
-    _ = ui.handle(.enter)
-    #expect(ui.render().contains("View diff"))
     #expect(ui.handle(.enter) == [.command("'web' 'diff' 'storefront/rest' 'change-one'")])
     ui.finish(text: "--- Before.swift\n+++ App.swift\n-old heading\n+new heading", status: 0)
     #expect(ui.render().contains("+new heading"))
@@ -216,6 +214,5 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     ui.finish(text: String(decoding: try JSONEncoder().encode(rows), as: UTF8.self), status: 0)
     for _ in 0..<31 { _ = ui.handle(.down) }
     #expect(ui.render().contains("c31"))
-    _ = ui.handle(.enter)
     #expect(ui.handle(.enter) == [.command("'web' 'diff' 'storefront/rest' 'c31'")])
 }

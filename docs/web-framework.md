@@ -346,3 +346,10 @@ AI chat folds provider thinking by default while retaining the complete bounded
 transcript. Ctrl-T or `/thinking` expands/collapses it, including during streaming
 with Ctrl-T. Final publish results are concise, and detailed source diffs/history
 live in the service views. Ctrl-S still freezes the screen for native copying.
+
+The change browser opens the selected diff directly with Enter. Left/Right moves
+between newer/older retained changes within the same viewer. Esc returns to the
+history list with the selection preserved. R opens restore confirmation from the
+diff; Cancel returns to that diff. Completing restore refreshes history before
+returning. Added source lines are green and removed lines red across every wrapped
+continuation; file headers and hunk markers use a separate metadata color.

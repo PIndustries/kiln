@@ -23,7 +23,7 @@ struct ManagementUI {
     private var pending = ""
     private var anchor = 9
     private var messageOffset = 0
-    mutating func close() { active = false; waiting = false }
+    mutating func close() { active = false; waiting = false; diffMode = false }
     mutating func menu(_ kind: String, title: String, options: [String], row: Int = 9) {
         self.kind = kind; self.title = title; self.options = options; anchor = row
         labels = []; fields = []; selected = 0; error = ""; message = ""; help = "Up/Down select | Enter choose | Esc back"
@@ -57,12 +57,29 @@ struct ManagementUI {
     private var changes: [Change] = []
     private var changeModule = ""
     private var changeID = ""
+    private var changeIndex = 0
+    private var diffMode = false
+    private let diffHelp = "←/→ change  PgUp/Dn  R restore  Esc list"
+    private mutating func historyMenu() {
+        menu("changes", title: "Changes / " + changeModule, options: changes.map { String($0.created.prefix(16)) + " " + ($0.current == "yes" ? "CURRENT" : $0.status == "active" ? "published" : $0.status) + " " + String($0.id.prefix(8)) + " git:" + String($0.commit.prefix(8)) } + ["Back"])
+        selected = min(changeIndex, max(0,changes.count-1))
+        diffMode = false
+        if changes.isEmpty { kind = "message"; message = "No retained development changes for this service." }
+    }
+    private mutating func showDiff(_ index: Int) -> String? {
+        guard changes.indices.contains(index) else { return nil }
+        changeIndex = index; changeID = changes[index].id
+        let command = result(title: "Source diff \(index+1)/\(changes.count) / " + String(changeID.prefix(8)), command: ["web", "diff", changeModule, changeID])
+        diffMode = true; help = diffHelp
+        return command
+    }
     mutating func result(title: String, command: [String]) -> String {
+        diffMode = false
         menu("message", title: title, options: ["Back"])
         return run(command)
     }
     mutating func changeHistory(_ module: String) -> String {
-        changeModule = module
+        changeModule = module; changeIndex = 0
         return result(title: "Changes / " + module, command: ["web", "history", module])
     }
     mutating func finish(text: String, status: Int) {
@@ -77,22 +94,30 @@ struct ManagementUI {
         if ["session open","session attach","session rename","session close","server add","server edit","server key","server remove","server trust"].contains(pending) { close(); return }
         if pending == "web history", let data = text.data(using: .utf8), let records = try? JSONDecoder().decode([Change].self, from: data) {
             changes = records
-            menu("changes", title: "Changes / " + changeModule, options: records.map { String($0.created.prefix(16)) + " " + ($0.current == "yes" ? "CURRENT" : $0.status == "active" ? "published" : $0.status) + " " + String($0.id.prefix(8)) + " git:" + String($0.commit.prefix(8)) } + ["Back"])
-            if records.isEmpty { kind = "message"; message = "No retained development changes for this service." }
+            historyMenu()
             return
         }
         kind = "message"; if pending == "server scan" { title = "Unverified host identity" }
-        message = text; messageOffset = 0; labels = []; options = ["Back"]; selected = 0; help = "PgUp/PgDn scroll | Enter / Esc close"
+        message = text; messageOffset = 0; labels = []; options = ["Back"]; selected = 0
+        help = diffMode && pending == "web diff" ? diffHelp : "PgUp/PgDn scroll | Enter / Esc close"
     }
     mutating func handle(_ key: TerminalKey, width: Int, height: Int) -> String? {
-        if key == .escape || key == .interrupt { if !waiting { close() }; return nil }
+        if key == .escape || key == .interrupt {
+            guard !waiting else { return nil }
+            if diffMode {
+                if kind == "confirm" { return showDiff(changeIndex) }
+                if pending == "web restore" { return changeHistory(changeModule) }
+                historyMenu(); return nil
+            }
+            close(); return nil
+        }
         guard !waiting else { return nil }
         if case let .mouse(button,column,row,released) = key {
             guard !released, button == 0 else { return nil }
             let geometry = geometry(width:width,height:height)
             guard column >= geometry.left, column < geometry.left+geometry.width else { return nil }
             let index = row - geometry.top - 2
-            if kind == "message" { close(); return nil }
+            if kind == "message" { if !diffMode { close() }; return nil }
             let visibleIndex = index + optionStart(width: width, height: height)
             if kind != "form", index >= 0, options.indices.contains(visibleIndex) { selected = visibleIndex; return handle(.enter,width:width,height:height) }
             if kind == "form" {
@@ -105,7 +130,20 @@ struct ManagementUI {
             return nil
         }
         if kind == "message" {
-            if key == .enter { close() }
+            if diffMode, pending == "web diff" {
+                if key == .left { return showDiff(changeIndex-1) }
+                if key == .right { return showDiff(changeIndex+1) }
+                if key == .text("r") || key == .text("R"), changes[changeIndex].status == "active" {
+                    confirm("Restore source " + String(changeID.prefix(8)) + "?", command: ["web", "restore", changeModule, changeID], detail: "Builds and publishes this retained source as a new healthy release. History is preserved.")
+                    return nil
+                }
+            }
+            if key == .enter {
+                if diffMode {
+                    if pending == "web restore" { return changeHistory(changeModule) }
+                    historyMenu()
+                } else { close() }
+            }
             if key == .pageDown { messageOffset += max(1, height-8) }
             if key == .pageUp { messageOffset = max(0,messageOffset-max(1,height-8)) }
             return nil
@@ -147,16 +185,12 @@ struct ManagementUI {
     private mutating func choose() -> String? {
         guard options.indices.contains(selected) else { return nil }
         let choice = options[selected]
-        if choice == "Back" || choice == "Cancel" { close(); return nil }
+        if choice == "Back" || choice == "Cancel" {
+            if choice == "Cancel" && diffMode { return showDiff(changeIndex) }
+            close(); return nil
+        }
         switch kind {
-        case "changes":
-            guard changes.indices.contains(selected) else { return nil }
-            changeID = changes[selected].id
-            let restorable = changes[selected].status == "active"
-            menu("change", title: "Change " + String(changeID.prefix(8)), options: restorable ? ["View diff", "Restore this version", "Back"] : ["View diff", "Back"])
-        case "change":
-            if choice == "View diff" { return result(title: "Source diff / " + String(changeID.prefix(8)), command: ["web", "diff", changeModule, changeID]) }
-            if choice == "Restore this version" { confirm("Restore source " + String(changeID.prefix(8)) + "?", command: ["web", "restore", changeModule, changeID], detail: "Builds and publishes this retained source as a new healthy release. Existing change history is preserved.") }
+        case "changes": return showDiff(selected)
         case "server":
             guard let server else { return nil }
             switch choice {
@@ -216,6 +250,7 @@ struct ManagementUI {
             return lines
         }
         var rows = [(title,true)]
+        var diffColors: [Int:Int] = [:]
         if kind == "form" {
             for i in labels.indices {
                 let available = max(1,room-labels[i].count-2)
@@ -225,12 +260,22 @@ struct ManagementUI {
             rows.append(("",false)); rows.append(((selected == fields.count ? "> " : "  ") + "[Save]" + "        " + (selected == fields.count+1 ? "> " : "  ") + "[Cancel]", selected >= fields.count))
             rows += wrap(help).map { ($0,false) }
         } else if kind == "message" {
-            var wrapped: [String] = []
+            var wrapped: [(String,Int?)] = []
             for line in message.components(separatedBy:"\n") {
                 var remaining = KilnTerminal.safe(line)
-                repeat { wrapped.append(String(remaining.prefix(room))); remaining = String(remaining.dropFirst(room)) } while !remaining.isEmpty
+                let color: Int?
+                if diffMode && pending == "web diff" {
+                    if remaining.hasPrefix("+++") || remaining.hasPrefix("---") || remaining.hasPrefix("@@") { color = 81 }
+                    else if remaining.hasPrefix("+") { color = 114 }
+                    else if remaining.hasPrefix("-") { color = 203 }
+                    else { color = nil }
+                } else { color = nil }
+                repeat { wrapped.append((String(remaining.prefix(room)),color)); remaining = String(remaining.dropFirst(room)) } while !remaining.isEmpty
             }
-            rows += wrapped.dropFirst(min(messageOffset,max(0,wrapped.count-1))).prefix(g.height-5).map { ($0,false) }
+            for line in wrapped.dropFirst(min(messageOffset,max(0,wrapped.count-1))).prefix(g.height-5) {
+                if let color = line.1 { diffColors[rows.count] = color }
+                rows.append((line.0,false))
+            }
         } else {
             let start = optionStart(width: width, height: height)
             rows += options.enumerated().dropFirst(start).prefix(max(1,g.height-4)).map { ((selected == $0.offset ? "> " : "  ") + $0.element,selected == $0.offset) }
@@ -246,7 +291,8 @@ struct ManagementUI {
             else if index == g.height-2 { text = "| " + fit(waiting ? "Working..." : error.isEmpty ? (kind == "confirm" ? "Enter choose | Esc cancel" : help) : error) + " |"; highlighted = false }
             else if index-1 < rows.count { text = "| " + fit(rows[index-1].0) + " |"; highlighted = rows[index-1].1 }
             else { text = "| " + fit("") + " |"; highlighted = false }
-            output += "\u{1b}[\(g.top+index);\(g.left)H\u{1b}[0;48;5;\(highlighted ? 238 : theme.background);38;5;\(highlighted ? theme.accent : theme.foreground)m" + text + "\u{1b}[0m"
+            let foreground = highlighted ? theme.accent : diffColors[index-1] ?? theme.foreground
+            output += "\u{1b}[\(g.top+index);\(g.left)H\u{1b}[0;48;5;\(highlighted ? 238 : theme.background);38;5;\(foreground)m" + text + "\u{1b}[0m"
         }
         if kind == "form", fields.indices.contains(selected), !waiting {
             let offset = max(0,cursor-max(1,room-labels[selected].count-2)+1)
