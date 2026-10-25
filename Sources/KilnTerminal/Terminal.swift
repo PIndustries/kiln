@@ -94,6 +94,7 @@ public struct KilnTerminal {
     private var responseProvider: AIProviderSnapshot?
     private var chatColumns: Int { max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3) }
     private var thinkingTruncated = false
+    private var showThinking = false
     public mutating func progress(_ event: AIProgress) {
         let previousLines = scroll > 0 ? chatBody(columns: chatColumns).count : 0
         defer { if scroll > 0 { scroll = max(0, scroll + chatBody(columns: chatColumns).count - previousLines) } }
@@ -144,7 +145,7 @@ public struct KilnTerminal {
     private var menu: Int? = nil
     private var confirmation: String? = nil
     private var notice = "Select a service and press Enter to manage it."
-    private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Releases", "Rollback", "Back"]
+    private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Releases", "Changes / diffs", "Rollback", "Back"]
     public init() {}
     public mutating func resize(width: Int, height: Int) {
         // SSH sends zero when a dimension is unknown: retain the last known value.
@@ -196,6 +197,7 @@ public struct KilnTerminal {
         return [.command(command)]
     }
     public mutating func handle(_ key: TerminalKey) -> [TerminalEffect] {
+        if key == .toggleThinking, chatVisible, !selectingText { showThinking.toggle(); scroll = 0; return [] }
         if key == .selectText {
             selectingText.toggle()
             return [.selectText(selectingText)]
@@ -264,7 +266,7 @@ public struct KilnTerminal {
         if key == .eof || key == .text("q") { return [.disconnect] }
         if key == .escape || key == .interrupt { menu = nil; confirmation = nil; return [] }
         if let command = confirmation {
-            if key == .enter { confirmation = nil; menu = nil; return execute(command) }
+            if key == .enter { confirmation = nil; menu = nil; return execute(management.result(title: "Operation result", command: command.split(separator: " ").map(String.init))) }
             return []
         }
         if let action = menu {
@@ -280,8 +282,9 @@ public struct KilnTerminal {
                 case 2: confirmation = "app restart " + id
                 case 3: menu = nil; return execute("app health " + id)
                 case 4: menu = nil; drawer = true; return execute("app logs " + id)
-                case 5: menu = nil; drawer = true; return execute("app releases " + id)
-                case 6: confirmation = "app rollback " + id
+                case 5: menu = nil; return execute(management.result(title: "Releases / " + id, command: ["app", "releases", id]))
+                case 6: menu = nil; return execute(management.changeHistory(id))
+                case 7: confirmation = "app rollback " + id
                 default: menu = nil
                 }
             default: break
@@ -356,7 +359,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .selectText: break
+        case .selectText, .toggleThinking: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }
@@ -432,6 +435,7 @@ public struct KilnTerminal {
                 openAIChat(); return []
             }
             if aiMode {
+                if command == "/thinking" { showThinking.toggle(); scroll = 0; return [] }
                 if command == "/help" { return execute("ai chat-help") }
                 if command == "/conversations" { return execute("ai conversation list") }
                 if command.split(whereSeparator: { $0.isWhitespace }).first == "/conversation" {
@@ -513,15 +517,21 @@ public struct KilnTerminal {
     private func chatBody(columns: Int) -> [String] {
         var body: [String] = []
         for message in messages {
-            body += [chatHeading(message.role, provider: message.provider)] + chatText(message.text, columns: columns) + [""]
+            if message.role == "Provider thinking" && !showThinking {
+                body += ["Provider thinking saved · Ctrl-T to expand (" + String(message.text.count) + " characters)", ""]
+            } else {
+                body += [chatHeading(message.role, provider: message.provider)] + chatText(message.text, columns: columns) + [""]
+            }
         }
         if busy {
             body += [chatHeading("Kiln", provider: responseProvider)]
-            if !liveReasoning.isEmpty { body += ["Provider thinking"] + chatText(liveReasoning, columns: columns) + [""] }
+            if !liveReasoning.isEmpty {
+                body += showThinking ? ["Provider thinking"] + chatText(liveReasoning, columns: columns) + [""] : ["Provider thinking… Ctrl-T to expand; full output retained.", ""]
+            }
             if !liveAnswer.isEmpty { body += ["Answer"] + chatText(liveAnswer, columns: columns) }
             else if liveReasoning.isEmpty { body += ["Waiting for provider..."] }
         }
-        if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools run automatically. Changes require your approval.", "Prompts and tool results go to the selected provider; keep credentials in Vault."] }
+        if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools and registered dev publishing run automatically; production operations need approval.", "Prompts and tool results go to the selected provider; keep credentials in Vault."] }
         return body
     }
     private func chatLayout() -> (String, [Hit]) {
@@ -598,7 +608,7 @@ public struct KilnTerminal {
         lines += [row(selectingText ? "SELECT TEXT: drag to copy; Ctrl-S resumes" : activity, muted), row(String(repeating: "-", count: columns), accent)]
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
-        lines.append(row("Enter send   Ctrl-C stop   Ctrl-S select/copy   PgUp/PgDn", muted))
+        lines.append(row("Enter send  Ctrl-C stop  Ctrl-S copy  Ctrl-T thinking", muted))
         lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /help", muted))
         return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", hits + [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
     }

@@ -69,6 +69,11 @@ The first [KilnWeb framework milestone](web-framework.md) provides controller ro
 escaped HTML composition, browser/CSRF boundaries and server-rendered live views
 with process-local broadcasts. A separate demo worker proves two-browser updates and managed loopback
 ingress deployment, upgrade and rollback.
+Foreground administrator AI can discover its current tools, learn the built-in
+KilnWeb API guide, inspect registered source, compile-check and correct proposed
+edits, publish a healthy isolated development worker and inspect the app's HTTP
+response. Source scope is one explicitly registered file per app; arbitrary
+repositories, dependencies and production publishing remain separate capabilities.
 DOM diffing, durable application data, distributed live state and public routing
 remain outside this milestone.
 

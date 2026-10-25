@@ -75,3 +75,24 @@ private func webDevFixture(_ root: URL, auto: Bool = true) throws -> (Data, Appl
     let receipt = try await writer.ask("edit", session: "x", configuration: config, key: "", modules: [module], context: "", knowledge: nil, webChange: { _, _ in "controller receipt" }) { _, _ in "" }
     #expect(receipt == "controller receipt")
 }
+@Test func retainedCodeIsCompleteScopedAndIntegrityCheckedWithoutReadingWorkspace() async throws {
+    guard WebIsolation.supported else { return }
+    let root = try webDevRoot(); defer { try? FileManager.default.removeItem(at: root) }
+    let (config, target) = try webDevFixture(root), dev = WebDevelopment(directory: root)
+    _ = try await dev.register(data: config, target: target)
+    let id = UUID().uuidString, source = Data("import Foundation\n// unchanged line\nlet heading = \"published\"\n".utf8)
+    let job = root.appendingPathComponent("web-development/jobs/" + id)
+    try FileManager.default.createDirectory(at: job, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    let file = job.appendingPathComponent("App.swift")
+    try KilnStateFile.write(source, to: file)
+    let receipt: [String:Any] = ["id":id, "module":"demo/web", "owner":"admin", "before":"unused", "after":WebIsolation.digest(source), "version":"dev-test", "status":"active", "result":"Published", "created":Date().timeIntervalSinceReferenceDate]
+    try KilnStateFile.write(JSONSerialization.data(withJSONObject: receipt), to: job.appendingPathComponent("receipt.json"))
+    let text = try await dev.code(module: "demo/web", id: id)
+    #expect(text.contains("Release dev-test"))
+    #expect(text.contains("    1 | import Foundation\n    2 | // unchanged line\n    3 | let heading = \"published\"\n    4 | "))
+    #expect(try String(contentsOf: root.appendingPathComponent("App.swift"), encoding: .utf8) == "original heading")
+    await #expect(throws: (any Error).self) { _ = try await dev.code(module: "elsewhere/web", id: id) }
+    await #expect(throws: (any Error).self) { _ = try await dev.code(module: "demo/web", id: "../../App.swift") }
+    try KilnStateFile.write(Data("tampered".utf8), to: file)
+    await #expect(throws: (any Error).self) { _ = try await dev.code(module: "demo/web", id: id) }
+}

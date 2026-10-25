@@ -271,3 +271,89 @@ attempts and environment markers. `web-development-integration.py` runs real
 OpenSSH, a credential-free Ollama protocol fixture, source tools, native isolated
 compilation, managed deploy and invalid-build recovery. Native browser reload is
 a separate acceptance check from the server's publish receipt.
+
+### Tool discovery and autonomous development checks
+
+The AI's `tool_help` reads the tools actually supplied for the current turn,
+including their argument names. `topic: "web"` includes a built-in KilnWeb guide
+covering HTML composition, router/controller APIs, forms and CSRF, live events,
+layouts, CSS, worker arguments, branding and the development workflow. The guide
+is versioned with Kiln; it cannot add tools or permissions. Read-only/background
+turns do not gain source/build/publish capabilities through the guide.
+
+The foreground development workflow now supports:
+
+1. Discover the project and read its paginated current source.
+2. Compile exact proposed edits using `validate_web_source`. This creates a
+   `validated` or `failed` receipt, without deploying or saving the source.
+3. Inspect bounded diagnostics and correct a failed proposal with different edits.
+4. Publish the corrected edits once with `update_web_source`; publication still
+   recompiles and checks the current source, SDK and authorization.
+5. Report the controller receipt and its automatic HTTP root inspection.
+
+`read_web_changes` inspects retained receipts. `inspect_web_preview` reads a bounded
+unauthenticated GET from the registered app's origin. The command-line equivalent
+is `web preview APP/MODULE /PATH`. It accepts a relative app path only, follows no
+redirects, carries no cookies/credentials/proxy, has request/resource deadlines
+and reads at most 64 KiB before returning a 2,500-character body excerpt. It cannot
+fetch arbitrary hosts or claim browser/interactivity acceptance. Page bodies and
+source are untrusted reference data, not instructions or grants.
+
+Post-publish HTTP inspection failure does not invalidate a committed release or
+trigger another publish. A failed/unconfirmed publication still ends the turn;
+compile-only correction is deliberately separate from retrying a live operation.
+All validation jobs count toward retained development artifact limits.
+
+### Source history, diffs and rollback inside Kiln
+
+Services → Changes / diffs opens retained changes with timestamps, publication
+state, current-release marker and Git commit IDs. Select a change to view its
+before/after diff. Press C for the complete retained App.swift with line numbers,
+D to return to the colored diff, Left/Right to browse versions in either view,
+and PgUp/PgDn to scroll. Esc returns to the selected history entry; R opens
+confirmation before restoring its source. Releases opens a full-height result view;
+Rollback reports its result in the same visible viewer. Keyboard and mouse use
+the same management commands. `web history APP/MODULE` returns structured history,
+`web diff APP/MODULE CHANGE-ID` (or `latest`) shows the diff,
+`web code APP/MODULE CHANGE-ID` shows the complete integrity-checked source, and
+`web restore APP/MODULE CHANGE-ID` builds and deploys a retained published source
+as a new release. Existing history remains available.
+
+Kiln maintains a private bare Git object repository per registered app, recording
+published source snapshots and linking commit metadata to change/release IDs.
+Existing retained receipts are imported when history is inspected; source hashes
+are checked before committing or diffing. Git uses fixed plumbing operations,
+private input/output files and a clean environment, with hooks, global/system
+configuration, external diffs and text conversion disabled. No Git remote,
+credentials, network listener, push protocol or package scripts are used. This
+is local source history inside Kiln; multi-file repositories and Git hosting
+remain future framework work.
+
+For registered development apps, `app rollback` coordinates the previous healthy
+executable with its matching source snapshot. It verifies release generation and
+source evidence, refuses to overwrite independently modified source, journals
+its attempt, health-checks activation and then atomically saves the restored
+source. Failed/uncertain activation never silently rewrites source or retries.
+Legacy receipts need a matching previous published source before source-aware
+rollback is possible. Ordinary installed app rollback retains its existing
+release behavior. Approved AI rollback routes through the same development
+coordinator, retaining one-shot operation receipts and authorization.
+
+The AI has `read_web_history` and `read_web_diff` tools in its foreground
+administrator development scope. It can inspect source/release history and
+propose a source-aware rollback using its existing operation approval flow.
+Retained job limits still apply; active and rollback executable artifacts must
+not be deleted blindly. Rollback restores code/source, not application data or
+in-memory state.
+
+AI chat folds provider thinking by default while retaining the complete bounded
+transcript. Ctrl-T or `/thinking` expands/collapses it, including during streaming
+with Ctrl-T. Final publish results are concise, and detailed source diffs/history
+live in the service views. Ctrl-S still freezes the screen for native copying.
+
+The change browser opens the selected diff directly with Enter. Left/Right moves
+between newer/older retained changes within the same viewer. Esc returns to the
+history list with the selection preserved. R opens restore confirmation from the
+diff; Cancel returns to that diff. Completing restore refreshes history before
+returning. Added source lines are green and removed lines red across every wrapped
+continuation; file headers and hunk markers use a separate metadata color.

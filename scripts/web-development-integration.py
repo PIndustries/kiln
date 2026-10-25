@@ -38,6 +38,10 @@ def wait(check, seconds=20):
     raise AssertionError('Timed out waiting for acceptance state')
 
 class Fixture(http.server.BaseHTTPRequestHandler):
+    redirect_requests = 0
+    def do_GET(self):
+        Fixture.redirect_requests += 1
+        self.send_response(500); self.end_headers()
     def log_message(self, *_): pass
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
@@ -47,19 +51,37 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         prompt = next(m['content'] for m in reversed(messages) if m['role'] == 'user')
         tool_results = [m for m in messages if m['role'] == 'tool']
         if not tool_results:
+            name, args = 'tool_help', dict(topic='web')
+        elif tool_results[-1]['tool_name'] == 'tool_help':
+            assert 'KILNWEB GUIDE' in tool_results[-1]['content'] and 'validate_web_source' in tool_results[-1]['content']
             name, args = 'list_web_projects', {}
         elif tool_results[-1]['tool_name'] == 'list_web_projects':
             assert 'dev/site' in tool_results[-1]['content']
             name, args = 'read_web_source', dict(module='dev/site', offset='0')
-        else:
+        elif tool_results[-1]['tool_name'] == 'read_web_source':
             source = json.loads(tool_results[-1]['content'])
             assert source['file'] == 'App.swift' and source['sha256']
-            name = 'update_web_source'
-            if 'broken' in prompt:
-                edit = dict(before='import Foundation', after='THIS IS NOT SWIFT')
+            if not source['complete']:
+                name, args = 'read_web_source', dict(module='dev/site', offset=str(source['nextOffset']))
+            elif 'broken' in prompt:
+                name, args = 'update_web_source', dict(module='dev/site', edits=json.dumps([dict(before='import Foundation', after='THIS IS NOT SWIFT')]))
             else:
-                edit = dict(before='Server-rendered.<br>Live by default.', after='Built through Kiln AI.')
-            args = dict(module='dev/site', edits=json.dumps([edit]))
+                # First try a broken proposal in the build-only lane. The AI
+                # fixture must receive diagnostics and repair it before publish.
+                name, args = 'validate_web_source', dict(module='dev/site', edits=json.dumps([dict(before='import Foundation', after='THIS IS NOT SWIFT')]))
+        elif tool_results[-1]['tool_name'] == 'validate_web_source':
+            content = tool_results[-1]['content']
+            assert Fixture.source_path.read_bytes() == Fixture.original_source
+            before, after = ('Built through Kiln AI.', 'Second retained version.') if 'second' in prompt else ('Server-rendered.<br>Live by default.', 'Built through Kiln AI.')
+            good = dict(module='dev/site', edits=json.dumps([dict(before=before, after=after)]))
+            if 'Validation failed' in content:
+                assert 'Compiler diagnostics' in content
+                name, args = 'validate_web_source', good
+            else:
+                assert 'Isolated compile passed' in content and 'not changed' in content
+                name, args = 'update_web_source', good
+        else:
+            raise AssertionError('Unexpected fixture tool phase')
         data = (json.dumps(dict(message=dict(role='assistant', content='', tool_calls=[dict(function=dict(name=name, arguments=args))]), done=True, done_reason='stop'))+'\n').encode()
         self.send_response(200); self.send_header('Content-Type', 'application/x-ndjson'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
 
@@ -68,9 +90,18 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
     source = root/'App.swift'; source.write_text((ROOT/'Sources/ExampleWeb/Web.swift').read_text()); source.chmod(0o600)
     sdk = root/'sdk.json'
     subprocess.run(['python3', str(ROOT/'scripts/export-web-sdk.py'), '--build-dir',str(BIN),'--output',str(sdk),'--snapshot-dir',str(root/'sdk-inputs')],check=True)
+    Fixture.source_path = source
+    Fixture.original_source = source.read_bytes()
     sshport, ingress, worker, alternate = [freeport() for _ in range(4)]
     fixture = http.server.ThreadingHTTPServer(('127.0.0.1',0),Fixture)
     threading.Thread(target=fixture.serve_forever,daemon=True).start()
+    routes = '\n'.join([
+        '        try router.on("GET", "/inspection-redirect") { _ in WebResponse(status: 302, body: Data(), headers: ["location": "http://127.0.0.1:' + str(fixture.server_port) + '/unexpected"]) }',
+        '        try router.on("GET", "/inspection-large") { _ in WebResponse(contentType: "text/plain", body: Data(repeating: 65, count: 100000)) }',
+    ])
+    source.write_text(source.read_text().replace('        var router = WebRouter()', '        var router = WebRouter()\n' + routes))
+    Fixture.original_source = source.read_bytes()
+
     (state/'ai.json').write_text(json.dumps(dict(baseURL=f'http://127.0.0.1:{fixture.server_port}',model='fixture',provider='ollama',profile='local',contextID='fixture')))
     key=root/'admin'; subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(key)],check=True)
     log=(root/'runtime.log').open('w')
@@ -95,12 +126,57 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
         config=root/'project.json'; config.write_text(json.dumps(dict(schemaVersion=1,module='dev/site',source=str(source),sdk=str(sdk),publicOrigin=origin,ingressPort=ingress,workerPorts=[worker,alternate],autoPublish=True)))
         ssh('web register '+str(config))
         result=ssh('ai ask Change the heading for the dev/site development app')
-        assert 'Published development change' in result,result
+        assert 'Published development change' in result and 'HTTP root inspection' in result,result
         assert 'Built through Kiln AI.' in source.read_text()
         assert 'Built through Kiln AI.' in get('/counter')
         assert json.loads(get('/__kiln/instance'))['instance'] != initial
         assert 'active' in ssh('web changes dev/site')
-        print('PASS: real SSH / AI inventory + source tools / isolated compile / healthy managed deploy / source saved / worker changed',flush=True)
+        print('PASS: real SSH / tool discovery / framework guide / paginated source / failed validation + repaired compile / healthy deploy / HTTP inspection / source saved / worker changed',flush=True)
+        assert 'validated' in ssh('web changes dev/site')
+        preview=json.loads(ssh('web preview dev/site /counter'))
+        assert preview['status']==200 and 'Built through Kiln AI.' in preview['bodyPreview']
+        redirect=json.loads(ssh('web preview dev/site /inspection-redirect'))
+        assert redirect['status']==302 and Fixture.redirect_requests==0
+        oversized=json.loads(ssh('web preview dev/site /inspection-large'))
+        assert oversized['status']==200 and oversized['truncated'] and len(oversized['bodyPreview'])==2500
+        print('PASS: preview inspection bounds output, blocks redirects and rejects host/path escape',flush=True)
+        for unsafe in ['//example.invalid/' , '/%2e%2e/private', '/x?token=y', '/x#fragment', 'http://127.0.0.1/']:
+            denied=subprocess.run(base+['web preview dev/site '+unsafe],capture_output=True,text=True)
+            assert denied.returncode!=0,unsafe
+        history=json.loads(ssh('web history dev/site'))
+        first=next(row for row in history if row['status']=='active')
+        assert len(first['commit'])==40
+        diff=ssh('web diff dev/site '+first['id'])
+        assert '+        <h1>Built through Kiln AI.' in diff or ('+<h1>' in diff or 'Built through Kiln AI.' in diff)
+        retained_code=ssh('web code dev/site '+first['id'])
+        assert 'complete retained source' in retained_code
+        code_lines=retained_code.split('File App.swift / complete retained source\n',1)[1].removesuffix('\n').split('\n')
+        assert all(line[8:]==original for line,original in zip(code_lines,source.read_text().split('\n')))
+        assert len(code_lines)==len(source.read_text().split('\n'))
+        Fixture.original_source=source.read_bytes()
+        second=ssh('ai ask Make a second development version')
+        assert 'Published development change' in second and 'Second retained version.' in source.read_text(),second
+        previous=source.read_bytes()
+        assert ssh('web code dev/site '+first['id'])==retained_code
+        assert source.read_bytes()==previous
+        print('PASS: full line-numbered retained code includes unchanged lines and remains stable after a new release',flush=True)
+        rollback=ssh('app rollback dev/site')
+        assert 'Source-aware rollback' in rollback and 'Built through Kiln AI.' in get('/counter')
+        assert source.read_bytes()==Fixture.original_source
+        ssh('app rollback dev/site')
+        assert source.read_bytes()==previous and 'Second retained version.' in get('/counter')
+        restored=ssh('web restore dev/site '+first['id'])
+        assert 'Published development change' in restored and source.read_bytes()==Fixture.original_source
+        assert 'Built through Kiln AI.' in get('/counter')
+        source.write_bytes(Fixture.original_source+b'\n// uncommitted local change\n')
+        denied=subprocess.run(base+['app rollback dev/site'],capture_output=True,text=True)
+        assert denied.returncode!=0 and 'Source changed independently' in denied.stdout
+        assert source.read_bytes().endswith(b'// uncommitted local change\n')
+        source.write_bytes(Fixture.original_source)
+        history=json.loads(ssh('web history dev/site'))
+        assert len([row for row in history if row['status']=='active'])==5
+        assert next(row for row in history if row['id']==first['id'])['commit']==first['commit']
+        print('PASS: Git-linked history + source diff / source-and-release rollback both ways / older version restored as a new release / local edits protected',flush=True)
         before=source.read_bytes(); release=ssh('app list'); instance=json.loads(get('/__kiln/instance'))['instance']
         broken=ssh('ai ask Make a broken development edit')
         assert 'before deployment' in broken and 'Compiler diagnostics' in broken,broken

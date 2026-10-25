@@ -134,7 +134,7 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
 
 @Test func thinkingUsesFullTranscriptAndSurvivesAnswerAndSnapshot() {
     var ui = KilnTerminal(); ui.resize(width: 100, height: 32)
-    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    _ = ui.handle(.text("7")); _ = ui.handle(.toggleThinking); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
     ui.progress(.reasoning((1...12).map { "Thinking row \($0)" }.joined(separator: "\n")))
     let running = ui.render()
     #expect(running.contains("Thinking row 1"))
@@ -150,7 +150,7 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
 
 @Test func scrolledThinkingStaysAnchoredAsDeltasArriveAndTurnEnds() {
     var ui = KilnTerminal(); ui.resize(width: 90, height: 24)
-    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    _ = ui.handle(.text("7")); _ = ui.handle(.toggleThinking); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
     ui.progress(.reasoning((1...35).map { "Anchor row \($0)" }.joined(separator: "\n")))
     _ = ui.handle(.pageUp); _ = ui.handle(.pageUp)
     let before = ui.render()
@@ -167,7 +167,7 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
 @Test func thinkingLimitsAreExplicitAndScopeChangesRemovePrivateTranscript() {
     var ui = KilnTerminal(); ui.resize(width: 90, height: 24)
     ui.updateAIWorkspace(AIWorkspaceSnapshot(contextScope: "first"))
-    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    _ = ui.handle(.text("7")); _ = ui.handle(.toggleThinking); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
     ui.progress(.reasoning(String(repeating: "a", count: 131073)))
     #expect(ui.render().contains("Visible thinking limit reached"))
     ui.finish(text: "PRIVATE ANSWER", status: 0)
@@ -175,4 +175,44 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
     ui.updateAIWorkspace(AIWorkspaceSnapshot(contextScope: "second"))
     #expect(!ui.render().contains("PRIVATE ANSWER"))
     #expect(!ui.render().contains("Visible thinking limit reached"))
+}
+
+@Test func answersAreReadableByDefaultWhileThinkingRemainsExpandable() {
+    var ui = KilnTerminal(); ui.resize(width: 120, height: 32)
+    _ = ui.handle(.text("7")); _ = ui.handle(.text("Investigate")); _ = ui.handle(.enter)
+    ui.progress(.reasoning("A long technical investigation with CSS details."))
+    #expect(!ui.render().contains("CSS details"))
+    #expect(ui.render().contains("Ctrl-T"))
+    ui.finish(text: "Published successfully. Open the preview.", status: 0)
+    #expect(ui.render().contains("Published successfully"))
+    #expect(!ui.render().contains("CSS details"))
+    _ = ui.handle(.toggleThinking)
+    #expect(ui.render().contains("CSS details"))
+    _ = ui.handle(.toggleThinking)
+    #expect(!ui.render().contains("CSS details"))
+}
+@Test func serviceReleasesAndChangesOpenVisibleScrollableViews() {
+    var ui = KilnTerminal(); ui.resize(width: 140, height: 35); ui.update([sample])
+    _ = ui.handle(.enter)
+    for _ in 0..<5 { _ = ui.handle(.down) }
+    #expect(ui.handle(.enter) == [.command("'app' 'releases' 'storefront/rest'")])
+    ui.finish(text: "Active: current\nPrevious: before\nIngress: 127.0.0.1:18085", status: 0)
+    #expect(ui.render().contains("Active: current"))
+    _ = ui.handle(.escape); _ = ui.handle(.enter)
+    for _ in 0..<6 { _ = ui.handle(.down) }
+    #expect(ui.handle(.enter) == [.command("'web' 'history' 'storefront/rest'")])
+    ui.finish(text: "[{\"id\":\"change-one\",\"version\":\"1\",\"status\":\"active\",\"created\":\"2026-10-25T12:00:00Z\",\"commit\":\"abcdef012345\"}]", status: 0)
+    #expect(ui.render().contains("Changes / storefront/rest"))
+    #expect(ui.handle(.enter) == [.command("'web' 'diff' 'storefront/rest' 'change-one'")])
+    ui.finish(text: "--- Before.swift\n+++ App.swift\n-old heading\n+new heading", status: 0)
+    #expect(ui.render().contains("+new heading"))
+}
+@Test func serviceHistoryScrollsToOlderRetainedChanges() throws {
+    var ui = KilnTerminal(); ui.resize(width: 100, height: 20); ui.update([sample])
+    _ = ui.handle(.enter); for _ in 0..<6 { _ = ui.handle(.down) }; _ = ui.handle(.enter)
+    let rows = (0..<32).map { ["id":"c\($0)","version":"\($0)","status":"active","created":"2026-10-25","commit":"git-\($0)"] }
+    ui.finish(text: String(decoding: try JSONEncoder().encode(rows), as: UTF8.self), status: 0)
+    for _ in 0..<31 { _ = ui.handle(.down) }
+    #expect(ui.render().contains("c31"))
+    #expect(ui.handle(.enter) == [.command("'web' 'diff' 'storefront/rest' 'c31'")])
 }

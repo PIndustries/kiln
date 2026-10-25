@@ -376,6 +376,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         send(b"/conversation new durable-acceptance\r")
         expect("Saved: durable-acceptance")
         expect("[ready]")
+        send(b"\x14")  # Expand retained thinking for this explicit transcript test.
         send(b"fixture saved remember\r")
         expect("Visible investigation row 00")
         expect("Visible investigation row 11")
@@ -392,6 +393,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             count = Fixture.request_count
         connect()
         assert "Saved: durable-acceptance" not in frame()
+        send(b"\x14")
         send(b"/conversation use durable-acceptance\r")
         expect("Saved: durable-acceptance")
         expect("Visible investigation row 00")
