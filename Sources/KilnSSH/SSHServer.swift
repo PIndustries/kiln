@@ -298,7 +298,7 @@ private final class ShellHandler: ChannelInboundHandler {
             case .selectText(let enabled):
                 selectingText = false; lastFrame = ""; paint(channel: channel)
                 selectingText = enabled
-                output(enabled ? "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l" : "\u{1b}[?1000h\u{1b}[?1006h", channel: channel)
+                output(enabled ? "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l" : "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h", channel: channel)
             }
         }
     }

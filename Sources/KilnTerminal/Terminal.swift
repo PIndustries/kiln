@@ -5,8 +5,8 @@ public enum TerminalEffect: Equatable { case command(String), workspaceRead(Stri
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
-    public static let enterScreen = "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?2004h\u{1b}[?25l\u{1b}[2J"
-    public static let leaveScreen = "\u{1b}[0m\u{1b}[?1000l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[?25h\u{1b}[?1049l"
+    public static let enterScreen = "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h\u{1b}[?2004h\u{1b}[?25l\u{1b}[2J"
+    public static let leaveScreen = "\u{1b}[0m\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[?25h\u{1b}[?1049l"
     public private(set) var modules: [ModuleSnapshot] = []
     public private(set) var drawer = false
     public private(set) var input = ""
@@ -16,7 +16,13 @@ public struct KilnTerminal {
     private var codeWorkspace: WorkspaceUI?
     private var codeFocus = true
     private var codeCommand = false
-    private var splitWidth: Int { max(50, width * 3 / 5) }
+    private var codeShare = 6000
+    private var draggingDivider = false
+    private var splitWidth: Int { min(max(50, width * codeShare / 10000), max(50, width-40)) }
+    private mutating func moveDivider(to column: Int) {
+        let bounded = min(width-40, max(50,column))
+        codeShare = (bounded * 10000 + width-1) / width
+    }
     private var workspaceVisible: Bool { codeWorkspace != nil && chatVisible }
     public mutating func finishWorkspace(text: String, status: Int) {
         codeWorkspace?.finish(text: text, status: status)
@@ -25,7 +31,7 @@ public struct KilnTerminal {
         codeWorkspace?.refresh().map { .workspaceRead($0) }
     }
     private mutating func openCodeWorkspace(_ module: String) -> [TerminalEffect] {
-        openAIChat(); management.close()
+        openAIChat(); management.close(); draggingDivider = false
         codeWorkspace = WorkspaceUI(module: module); codeFocus = true
         return [.workspaceRead(codeWorkspace!.load())]
     }
@@ -59,11 +65,15 @@ public struct KilnTerminal {
         chat.width = width-splitWidth
         let code = workspace.render(width: splitWidth, height: height, theme: theme)
         let right = Self.positionPane(chat.chatLayout(embedded: true).0, column: splitWidth)
-        let label = "\u{1b}[1;3H" + theme.accentCode + "CODE " + (codeFocus ? "[focus]" : "") + " | Ctrl-W: code/chat"
+        let label = "\u{1b}[1;3H" + theme.accentCode + "CODE " + (codeFocus ? "[focus]" : "") + " | Ctrl-W: code/chat | Drag |"
         let cursorPattern = try! NSRegularExpression(pattern: "\\u001B\\[\\d+;\\d+H\\u001B\\[\\?25h$")
         let cursorRange = cursorPattern.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)).flatMap { Range($0.range, in: code) }
         let codeCursor = cursorRange.map { String(code[$0]) } ?? "\u{1b}[?25l"
-        return "\u{1b}[?25l\u{1b}[H\u{1b}[2J" + code + label + right + (codeFocus ? codeCursor : "")
+        let chatCursorRange = cursorPattern.firstMatch(in: right, range: NSRange(right.startIndex..., in: right)).flatMap { Range($0.range, in: right) }
+        let chatCursor = chatCursorRange.map { String(right[$0]) } ?? "\u{1b}[?25l"
+        let divider = (1...height).map { "\u{1b}[\($0);\(splitWidth)H" + theme.accentCode + ($0 == height/2 ? "+" : "|") }.joined()
+        return "\u{1b}[?25l\u{1b}[H\u{1b}[2J" + code + label + right + divider
+            + (codeFocus ? codeCursor : chatCursor)
     }
     public private(set) var theme = TerminalTheme()
     public mutating func applyTheme(_ theme: TerminalTheme) { self.theme = theme }
@@ -210,6 +220,7 @@ public struct KilnTerminal {
         let rows = height > 0 ? height : self.height
         // Bound total work for untrusted SSH requests, not ordinary viewport dimensions.
         guard columns <= 1_000_000 / rows else { return }
+        draggingDivider = false
         self.width = columns
         self.height = rows
     }
@@ -258,14 +269,27 @@ public struct KilnTerminal {
     public mutating func handle(_ key: TerminalKey) -> [TerminalEffect] {
         if key == .toggleThinking, chatVisible, !selectingText { showThinking.toggle(); scroll = 0; return [] }
         if key == .selectText {
-            selectingText.toggle()
+            selectingText.toggle(); draggingDivider = false
             return [.selectText(selectingText)]
         }
         if selectingText { return [] }
         if workspaceVisible {
             if key == .focusWorkspace { codeFocus.toggle(); return [] }
             if key == .interrupt, busy { return [] } // SSH owns cancellation.
-            if case let .mouse(button,column,_,released) = key {
+            if case let .mouse(button,column,row,released) = key {
+                if width >= 110 {
+                    if draggingDivider {
+                        if released || (button & 32 != 0 && button & 3 == 0) { moveDivider(to: column) }
+                        if released { draggingDivider = false }
+                        return []
+                    }
+                    if !released, button == 0, abs(column-splitWidth) <= 1, (1...height).contains(row) {
+                        draggingDivider = true
+                        return []
+                    }
+                }
+                // Motion/release outside the handle must never activate code controls.
+                if released || button & 32 != 0 { return [] }
                 if width < 110 { if codeFocus { return handleCode(key) } }
                 else if column <= splitWidth { codeFocus = true; return handleCode(key) }
                 else {

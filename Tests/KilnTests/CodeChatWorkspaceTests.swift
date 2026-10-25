@@ -96,3 +96,71 @@ private func sentContext(_ effects: [TerminalEffect]) throws -> [String:String] 
     ui.finishWorkspace(text:try codeFixture(),status:0)
     #expect(ui.render() == before)
 }
+
+private func dividerColumn(_ ui: KilnTerminal, height: Int = 35) throws -> Int {
+    // The explicit center grip is unique; source/chat text is sanitized separately.
+    let regex = try NSRegularExpression(pattern: "\\u001B\\[" + String(height/2) + ";(\\d+)H\\u001B\\[38;5;\\d+m\\+")
+    let frame = ui.render()
+    let match = try #require(regex.firstMatch(in:frame,range:NSRange(frame.startIndex...,in:frame)))
+    return try #require(Range(match.range(at:1),in:frame).flatMap { Int(frame[$0]) })
+}
+private func dragDivider(_ ui: inout KilnTerminal, from: Int, to: Int, row: Int = 15) {
+    #expect(ui.handle(.mouse(button:0,column:from,row:row,released:false)).isEmpty)
+    #expect(ui.handle(.mouse(button:32,column:to,row:row,released:false)).isEmpty)
+    #expect(ui.handle(.mouse(button:0,column:to,row:row,released:true)).isEmpty)
+}
+@Test func dividerDragResizesBothPanesAndKeepsItsProportionAcrossTerminalSizes() throws {
+    var ui = try codeUI()
+    #expect(try dividerColumn(ui) == 96)
+    dragDivider(&ui,from:96,to:110)
+    #expect(try dividerColumn(ui) == 110)
+    #expect(ui.render().contains("Codebase / demo/web")); #expect(ui.render().contains("KILN AI CHAT"))
+    ui.resize(width:240,height:35)
+    #expect(try dividerColumn(ui) == 165)
+    ui.resize(width:80,height:35)
+    #expect(ui.render().contains("Codebase / demo/web"))
+    ui.resize(width:160,height:35)
+    #expect(try dividerColumn(ui) == 110)
+    // A motion after release does not continue resizing.
+    _ = ui.handle(.mouse(button:32,column:60,row:15,released:false))
+    #expect(try dividerColumn(ui) == 110)
+}
+@Test func dividerClampsWidthsAndPreservesDraftComposerAndCopySelection() throws {
+    var ui = try codeUI()
+    _ = ui.handle(.text("e")); _ = ui.handle(.text("// preserved draft\n"))
+    _ = ui.handle(.focusWorkspace); _ = ui.handle(.text("unfinished message"))
+    dragDivider(&ui,from:96,to:159)
+    #expect(try dividerColumn(ui) == 120) // chat keeps 40 columns
+    #expect(ui.input == "unfinished message")
+    dragDivider(&ui,from:120,to:1)
+    #expect(try dividerColumn(ui) == 50)
+    #expect(ui.render().contains("preserved"))
+    _ = ui.handle(.selectText)
+    dragDivider(&ui,from:50,to:100)
+    #expect(try dividerColumn(ui) == 50)
+    _ = ui.handle(.selectText)
+    dragDivider(&ui,from:50,to:90)
+    #expect(try dividerColumn(ui) == 90)
+    #expect(ui.input == "unfinished message")
+    #expect(ui.render().contains("preserved"))
+    #expect(ui.refreshCodeWorkspace() == nil)
+}
+@Test func dividerRemainsUsableDuringInferenceWithoutChangingTurnContext() throws {
+    var ui = try codeUI()
+    _ = ui.handle(.focusWorkspace); _ = ui.handle(.text("Explain"))
+    let context = try sentContext(ui.handle(.enter))
+    ui.progress(.answer("Still responding"))
+    dragDivider(&ui,from:96,to:75)
+    #expect(ui.busy && ui.render().contains("Still responding"))
+    #expect(try dividerColumn(ui) == 75)
+    #expect(context["path"] == "App.swift")
+    ui.finish(text:"Completed",status:0)
+    #expect(try dividerColumn(ui) == 75)
+}
+@Test func dragTrackingModesAreReleasedWithTheTerminal() {
+    #expect(KilnTerminal.enterScreen.contains("\u{1b}[?1002h"))
+    #expect(KilnTerminal.leaveScreen.contains("\u{1b}[?1002l"))
+    var keys = TerminalKeys()
+    #expect(keys.feed(Array("\u{1b}[<32;110;15M\u{1b}[<0;110;15m".utf8)) == [
+        .mouse(button:32,column:110,row:15,released:false), .mouse(button:0,column:110,row:15,released:true)])
+}

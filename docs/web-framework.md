@@ -472,7 +472,9 @@ project without provider access or user credentials.
 Services → Codebase / files opens the registered file tree, syntax-highlighted
 source and AI chat together. `/code` in chat opens the selected service. At 110
 columns or wider both panes remain visible; smaller terminals show the focused
-pane. Ctrl-W switches between code and chat. Click either pane to focus it;
+pane. Drag the green center divider to change code/chat widths; the chosen
+proportion adapts to terminal resizing and stays for this connection. Code keeps
+at least 50 columns and chat 40. Ctrl-W switches between code and chat. Click either pane to focus it;
 Tab switches the file tree and source within the code pane. Wheel and page keys
 scroll the focused pane independently. Ctrl-S freezes painting and releases mouse
 capture for native terminal selection/copy; Ctrl-S resumes.
@@ -490,3 +492,24 @@ for another edit. AI changes remain limited to the active registered application
 with the existing build validation, auto-publish grant and retained history.
 This workspace does not upload arbitrary filesystem content or provide code-range
 selection to the model. Manual editor publishes still require confirmation.
+
+Erebine reasoning and completed tool arguments share a 16,384-token output
+budget. The documented output-token clamp is enabled to fit the endpoint's
+remaining context window. Response messages remain bounded to 256 KiB; existing
+conversation-history limits and per-tool argument limits still apply. Reasoning
+remains visible/retained under the existing transcript limits. A token-limited
+response gives a specific error and never executes an incomplete tool call;
+Kiln does not automatically replay a failed turn.
+
+### Next Swift IDE milestone (planned)
+
+The workspace currently provides registered-project browsing/editing, syntax
+colors, AI context, isolated compilation, preview publishing and retained changes.
+It is not yet a Swift language-service IDE. The next milestone should connect
+SourceKit-LSP to the actual application build configuration, then provide code
+completion, go-to-definition, hover information and compiler diagnostics that
+navigate to file/line positions. Project build/run/test controls and multi-file
+editing should use the same registered application scope and preserve unsaved
+buffers. Debugging, rename/find-references and formatting follow once the language
+service and build/diagnostic path are verified. These are planned capabilities,
+not features delivered by the draggable-divider preview.

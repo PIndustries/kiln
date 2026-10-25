@@ -222,25 +222,15 @@ public struct ErebineClient: Sendable {
     public let metrics: AIProviderMetrics
     public init(metrics: AIProviderMetrics = AIProviderMetrics()) { self.metrics = metrics }
     public func complete(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool]) async throws -> AIMessage {
-        try configuration.validate()
-        struct Request: Encodable {
-            let model: String; let messages: [ErebineWireMessage]; let tools: [AITool]
-            let stream = false; let store = false; let max_completion_tokens = 4096
-            let parallel_tool_calls = false
-        }
-        struct Response: Decodable { struct Choice: Decodable { let message: AIMessage }; let choices: [Choice] }
-        var request = URLRequest(url: URL(string: configuration.baseURL)!.appendingPathComponent("chat/completions"))
-        request.httpMethod = "POST"; request.timeoutInterval = 90
-        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("KilnAI/1", forHTTPHeaderField: "User-Agent")
-        request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages.map(ErebineWireMessage.init), tools: tools))
+        struct Response: Decodable { struct Choice: Decodable { let message: AIMessage; let finish_reason: String? }; let choices: [Choice] }
+        let request = try Self.request(configuration: configuration, key: key, messages: messages, tools: tools, streaming: false)
         let options = URLSessionConfiguration.ephemeral
         options.httpCookieStorage = nil; options.urlCache = nil; options.timeoutIntervalForResource = 120
         let data = try await BoundedCompletionHTTP.data(for: request, configuration: options)
         guard data.count <= 4_194_304, let decoded = try? JSONDecoder().decode(Response.self, from: data),
               let message = decoded.choices.first?.message, message.role == "assistant" else { throw AIError.message("Invalid or oversized Erebine response") }
-        guard (try? JSONEncoder().encode(message).count) ?? Int.max <= 65536 else { throw AIError.message("Erebine message exceeded the conversation limit") }
+        if decoded.choices.first?.finish_reason == "length" { throw AIError.message("Provider reached its response token limit; no partial tool call executed. Ask for a smaller change.") }
+        guard (try? JSONEncoder().encode(message).count) ?? Int.max <= Self.messageByteLimit else { throw AIError.message("Erebine message exceeded the conversation limit") }
         return message
     }
 }
