@@ -493,13 +493,19 @@ with the existing build validation, auto-publish grant and retained history.
 This workspace does not upload arbitrary filesystem content or provide code-range
 selection to the model. Manual editor publishes still require confirmation.
 
-Erebine reasoning and completed tool arguments share a 16,384-token output
-budget. The documented output-token clamp is enabled to fit the endpoint's
-remaining context window. Response messages remain bounded to 256 KiB; existing
-conversation-history limits and per-tool argument limits still apply. Reasoning
-remains visible/retained under the existing transcript limits. A token-limited
-response gives a specific error and never executes an incomplete tool call;
-Kiln does not automatically replay a failed turn.
+Erebine requests omit both `max_tokens` and `max_completion_tokens`, allowing the
+actual served model and its remaining context window to determine generation
+capacity. Kiln does not impose a fixed generation budget or override reasoning
+effort. This follows the [Erebine API contract](https://erebine.ai/docs/api-reference#max_tokens-and-the-context-window),
+including routed endpoints where the served model can differ from the model name
+in the request. No token-clamp augmentation is needed without a client ceiling.
+
+Separate local resource guards remain: response messages are bounded to 256 KiB,
+transport buffering/timeouts are bounded, conversation history has its existing
+limits, and tool arguments are validated. Those protect Kiln's memory, connection
+lifecycle and write integrity; they are not advertised as Erebine model limits.
+Incomplete tool calls never execute, and a failed turn is never automatically
+replayed. Reasoning remains visible/retained under the existing transcript limits.
 
 ### Next Swift IDE milestone (planned)
 

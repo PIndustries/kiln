@@ -171,18 +171,20 @@ private actor WorkerGate {
     #expect(ui.render().contains("[ready]"))
 }
 
-@Test func erebineSharesABoundedReasoningAndToolBudgetAndOptsIntoContextClamping() throws {
+@Test func erebineLetsTheServedModelDetermineItsAvailableResponseBudget() throws {
     let config = AIConfiguration(baseURL:"https://example.com/v1",model:"fixture",secret:"reference")
     for streaming in [true,false] {
         let request = try ErebineClient.request(configuration:config,key:"fixture",messages:[AIMessage(role:"user",content:"Explain")],tools:[],streaming:streaming)
         let bytes = try #require(request.httpBody)
         let object = try JSONSerialization.jsonObject(with:bytes)
         let body = try #require(object as? [String:Any])
-        #expect(body["max_completion_tokens"] as? Int == 16384)
+        #expect(body["max_completion_tokens"] == nil)
+        #expect(body["max_tokens"] == nil)
+        #expect(body["reasoning"] == nil)
         #expect(body["store"] as? Bool == false)
         #expect(body["stream"] as? Bool == streaming)
         #expect(body["parallel_tool_calls"] as? Bool == streaming)
-        #expect(request.value(forHTTPHeaderField:"X-Erebine-Augment-Max-Output-Tokens-Clamp") == "on")
+        #expect(request.value(forHTTPHeaderField:"X-Erebine-Augment-Max-Output-Tokens-Clamp") == nil)
         #expect(body["reasoning_effort"] == nil) // preserve provider/model reasoning defaults
     }
 }
