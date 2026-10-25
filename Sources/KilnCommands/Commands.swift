@@ -242,7 +242,7 @@ public struct KilnCommands: Sendable {
                 let name = parts[2]
                 switch parts[1] {
                 case "deploy": return CommandResult(try await runtime.deploy(path: name))
-                case "rollback": return CommandResult(try await runtime.rollback(name))
+                case "rollback": return CommandResult(try await rollbackService(name))
                 case "resources": return CommandResult(try await runtime.resourceStatus(name))
                 case "releases": return CommandResult(try await runtime.releases(name))
                 case "install": return CommandResult(try await runtime.install(path: name))
@@ -682,6 +682,7 @@ extension KilnCommands {
             return CommandResult("""
             Chat commands / local reference
             /help                 Show this reference
+            /thinking             Expand/collapse retained thinking (Ctrl-T)
             /context              Inspect this connection's history limits
             /conversations        List your saved conversations
             /conversation new/use NAME   Save or resume on this connection
@@ -706,7 +707,7 @@ extension KilnCommands {
             Help makes no provider request.
             """)
         case ["ai"], ["ai", "help"]:
-            return CommandResult("Open the drawer and type ai to chat. /help lists chat commands; /exit leaves chat; /context shows history limits; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai context                    Current connection history counts and limits\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
+            return CommandResult("Open the drawer and type ai to chat. /help lists chat commands; /exit leaves chat; /context shows history limits; /reset clears context; /approve ID executes a proposal; /deny ID declines.\nai ask <question>             Ask using this SSH session's conversation\nai task new/list/show/watch/cancel/remove\nai recovery new <app/module>  Inspect and propose a durable recovery\nai recovery list | reconcile <task-id> | close <task-id>\nai concurrency [1-48]        Background worker limit (default 4)\nai usage                      Manage ChatGPT plan usage\nai metrics                    Redacted provider transport and token counters\nai operations                 Recent approved operation outcomes\nai status                     Provider and knowledge version\nai providers                  Available native providers and CLI worker\nai login chatgpt [port]       Continue with ChatGPT\nai login grok EXECUTABLE      Grok CLI device sign-in\nai headless account ID MODEL <prompt>\nai accounts | ai models ID | ai logout ID\nai use chatgpt ID MODEL --new-context\nai configure <baseURL> <model> <vault-name>\nai profile list | add NAME erebine|ollama|openai|anthropic|grok|deepseek URL MODEL [VAULT-SECRET]\nai profile use NAME --new-context\nai knowledge install <path>   Load a versioned JSON knowledge pack\nai context                    Current connection history counts and limits\nai reset                      Clear conversation and proposals\nRead tools: status, modules, host metrics, module health, releases, tool discovery. Foreground administrators can use registered development source, framework guidance, isolated validation, automatic preview publishing and HTTP inspection. Ask what tools are available or request a site change; web help explains registration. Proposed operations: start/stop/restart/rollback. No shell, logs or Vault-value tools. Prompts and tool results are sent to the selected provider endpoint.")
         case ["ai", "metrics"]:
             try authorizeAdmin()
             let metrics = await assistant.providerMetrics.snapshot()
@@ -738,7 +739,11 @@ extension KilnCommands {
             let action = try await assistant.takeApproval(parts[2], session: sessionID)
             try identities.require(principal, mutation: true, module: action.module)
             do {
-                let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint, requestID: parts[2]) {
+                let executor: (@Sendable () async throws -> String)?
+                if action.operation == "rollback", await webDevelopment.isRegistered(action.module) {
+                    executor = { try await rollbackService(action.module, expectedGeneration: action.fingerprint) }
+                } else { executor = nil }
+                let result = try await runtime.performApprovedOperation(action.operation, name: action.module, fingerprint: action.fingerprint, requestID: parts[2], execute: executor) {
                     try identities.require(principal, mutation: true, module: action.module)
                 }
                 let warning = await assistant.record(result, session: sessionID)
@@ -778,13 +783,19 @@ extension KilnCommands {
                 try await publishWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, progress: progress)
             }
         } else { webChange = nil }
+        let webValidation: (@Sendable (String, String) async throws -> String)?
+        if webChange != nil {
+            webValidation = { module, edits in
+                try await validateWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, progress: progress)
+            }
+        } else { webValidation = nil }
         let text = try await assistant.ask(parts.dropFirst(2).joined(separator: " "), session: sessionID, configuration: configuration, key: key,
             modules: modules, context: context, knowledge: knowledge, progress: { event in
                 guard (try? aiOwnerFingerprint()) == expectedOwner else { return }
                 progress(event)
             }, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer"), validateAccess: {
                 guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Identity or authorization scope changed during this turn") }
-            }, webChange: webChange) { name, module in
+            }, webChange: webChange, webValidation: webValidation) { name, module in
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {
                 case "list_web_projects": try authorizeAdmin(); return try await webDevelopment.inventory()
@@ -793,6 +804,19 @@ extension KilnCommands {
                     let args = try JSONDecoder().decode([String: String].self, from: Data(module!.utf8))
                     guard let name = args["module"], let offset = args["offset"].flatMap(Int.init) else { throw AIError.message("Invalid source arguments") }
                     return try await webDevelopment.source(module: name, offset: offset)
+                case "read_web_changes", "inspect_web_preview", "read_web_history", "read_web_diff":
+                    try authorizeAdmin()
+                    let args = try JSONDecoder().decode([String: String].self, from: Data((module ?? "").utf8))
+                    guard let target = args["module"] else { throw AIError.message("Missing web project") }
+                    let result: String
+                    if name == "read_web_changes" { result = try await webDevelopment.changes(module: target) }
+                    else if name == "read_web_history" {
+                        let raw = try await webDevelopment.history(module: target, currentVersion: await runtime.developmentTarget(target).version)
+                        let rows = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [[String:String]] ?? []
+                        result = String(decoding: try JSONSerialization.data(withJSONObject: Array(rows.prefix(12))), as: UTF8.self)
+                    } else if name == "read_web_diff" { result = try await webDevelopment.diff(module: target, id: args["change"] ?? "") }
+                    else { result = try await webDevelopment.preview(module: target, path: args["path"] ?? "") }
+                    try authorizeAdmin(); return result
                 case "create_task": try authorizeAdmin(); return try await createAITask(module!, configuration: configuration)
                 case "list_tasks": try authorizeAdmin(); return try await aiTasks.list() + "\n" + recoveryList()
                 case "create_recovery_task":
@@ -822,7 +846,7 @@ private extension KilnCommands {
         case "key": return ["create", "delete"].contains(p[1])
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
-        case "web": return p[1] == "register"
+        case "web": return ["register", "restore"].contains(p[1])
         case "ai": return ["configure", "knowledge", "approve", "deny", "headless", "login", "logout", "use"].contains(p[1]) || (p[1] == "recovery" && p.count > 2 && p[2] != "list") || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
@@ -830,7 +854,7 @@ private extension KilnCommands {
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["web", "app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["projects", "register", "source", "changes", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["projects", "register", "source", "changes", "history", "diff", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)

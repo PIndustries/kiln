@@ -29,6 +29,7 @@ private struct WebChange: Codable {
     let after: String
     let version: String
     var status: String
+    var previousVersion: String? = nil
     var result = ""
     var created = Date()
 }
@@ -83,6 +84,7 @@ public actor WebDevelopment {
         try KilnStateFile.write(JSONEncoder().encode(RegisteredProject(configuration: config, sdk: sdk)), to: projectFile(config.module))
         return "Registered web source for \(config.module). Auto-publish: \(config.autoPublish). Source content can be sent to the selected AI provider. Only this source and local development release may change."
     }
+    func previewOrigin(module: String) throws -> String { try project(module).configuration.publicOrigin }
     public func inventory() throws -> String {
         try setup()
         let names = try FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
@@ -105,6 +107,7 @@ public actor WebDevelopment {
             content = String(content.prefix(content.count / 2))
         }
     }
+    public func isRegistered(_ module: String) -> Bool { FileManager.default.fileExists(atPath: projectFile(module).path) }
     private func save(_ receipt: WebChange, at job: URL) throws { try KilnStateFile.write(JSONEncoder().encode(receipt), to: job.appendingPathComponent("receipt.json")) }
     public func changes(module: String) throws -> String {
         _ = try project(module)
@@ -116,8 +119,83 @@ public actor WebDevelopment {
             return "\(value.id) / \(status) / \(value.version) / source \(value.after)\n\(value.result)"
         }.joined(separator: "\n")
     }
+    private func records(_ module: String) throws -> [(URL, WebChange)] {
+        _ = try project(module)
+        return try FileManager.default.contentsOfDirectory(at: jobs, includingPropertiesForKeys: nil).prefix(32).compactMap { folder in
+            let record = try JSONDecoder().decode(WebChange.self, from: bounded(folder.appendingPathComponent("receipt.json"), limit: 16384))
+            return record.module == module ? (folder, record) : nil
+        }.sorted { $0.1.created < $1.1.created }
+    }
+    public func history(module: String, currentVersion: String? = nil) throws -> String {
+        let git = DevelopmentGit(directory: directory.appendingPathComponent("history/" + WebIsolation.digest(Data(module.utf8))))
+        var rows: [[String:String]] = []
+        let entries = try records(module)
+        let currentID = entries.last(where: { $0.1.version == currentVersion && $0.1.status == "active" })?.1.id
+        for (folder, record) in entries {
+            var commit = ""
+            if record.status == "active" {
+                let source = try bounded(folder.appendingPathComponent("App.swift"), limit: 65536)
+                guard WebIsolation.digest(source) == record.after else { throw KilnError.message("Retained source integrity failed") }
+                commit = try git.commit(id: record.id, version: record.version, source: source)
+            }
+            rows.append(["id":record.id,"current":record.id == currentID ? "yes" : "no","version":record.version,"status":record.status,"created":record.created.ISO8601Format(),"commit":commit,"summary":String(record.result.split(separator: "\n").first ?? "Source change")])
+        }
+        return String(decoding: try JSONSerialization.data(withJSONObject: Array(rows.reversed()), options: [.sortedKeys]), as: UTF8.self)
+    }
+    private func retained(_ module: String, id: String) throws -> (URL, WebChange) {
+        let all = try records(module)
+        guard let item = id == "latest" ? all.last(where: { $0.1.status == "active" }) : all.first(where: { $0.1.id == id }), UUID(uuidString: item.1.id) != nil else { throw KilnError.message("Unknown retained source change") }
+        return item
+    }
+    public func diff(module: String, id: String) throws -> String {
+        let (folder, receipt) = try retained(module, id: id)
+        let before = try bounded(folder.appendingPathComponent("Before.swift"), limit: 65536), after = try bounded(folder.appendingPathComponent("App.swift"), limit: 65536)
+        guard WebIsolation.digest(before) == receipt.before, WebIsolation.digest(after) == receipt.after else { throw KilnError.message("Retained source integrity failed") }
+        let git = DevelopmentGit(directory: directory.appendingPathComponent("history/" + WebIsolation.digest(Data(module.utf8))))
+        return "Change \(receipt.id) / \(receipt.status)\nRelease \(receipt.version)\n--- Before.swift\n+++ App.swift\n" + (try git.diff(before: before, after: after))
+    }
+    public func restore(module: String, id: String, owner: String, target: ApplicationManifest,
+                        validate: @escaping @Sendable () throws -> Void, deploy: @escaping @Sendable (String) async throws -> String) async throws -> String {
+        let (folder, receipt) = try retained(module, id: id)
+        guard receipt.status == "active" else { throw KilnError.message("Only a published source version can be restored") }
+        let source = try bounded(folder.appendingPathComponent("App.swift"), limit: 65536)
+        guard WebIsolation.digest(source) == receipt.after else { throw KilnError.message("Retained source integrity failed") }
+        return try await change(module: module, owner: owner, edits: "[]", target: target, restoring: source, progress: { _ in }, validate: validate, deploy: deploy)
+    }
+    public func rollback(module: String, currentVersion: String, previousVersion: String, owner: String,
+                         validate: @escaping @Sendable () throws -> Void, perform: @escaping @Sendable () async throws -> String) async throws -> String {
+        guard !busy.contains(module) else { throw KilnError.message("Development app has an unfinished change") }
+        try validate()
+        let config = try project(module).configuration
+        guard let (folder, current) = try records(module).last(where: { $0.1.version == currentVersion && $0.1.status == "active" }) else { throw KilnError.message("No source receipt matches this running release; source-aware rollback cannot be verified") }
+        let previousMatches = try current.previousVersion == previousVersion || (records(module).contains { $0.1.version == previousVersion && $0.1.after == current.before && $0.1.status == "active" })
+        guard previousMatches else { throw KilnError.message("Previous release has no matching source evidence; inspect history before rollback") }
+        let sourceURL = URL(fileURLWithPath: config.source), before = try bounded(sourceURL, limit: 65536)
+        let after = try bounded(folder.appendingPathComponent("Before.swift"), limit: 65536)
+        guard WebIsolation.digest(before) == current.after, WebIsolation.digest(after) == current.before else { throw KilnError.message("Source changed independently; rollback will not overwrite uncommitted source") }
+        let id = UUID().uuidString.lowercased(), job = jobs.appendingPathComponent(id)
+        guard try FileManager.default.contentsOfDirectory(atPath: jobs.path).count < 32 else { throw KilnError.message("Development history limit reached") }
+        try FileManager.default.createDirectory(at: job, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        var receipt = WebChange(id: id, module: module, owner: owner, before: current.after, after: current.before, version: previousVersion, status: "publishing")
+        receipt.previousVersion = currentVersion
+        try KilnStateFile.write(before, to: job.appendingPathComponent("Before.swift")); try KilnStateFile.write(after, to: job.appendingPathComponent("App.swift")); try save(receipt, at: job)
+        busy.insert(module); activeJobs.insert(id)
+        defer { busy.remove(module); activeJobs.remove(id) }
+        do {
+            let result = try await perform()
+            receipt.status = "active-source-pending"; receipt.result = result; try save(receipt, at: job)
+            try validate()
+            guard WebIsolation.digest(try bounded(sourceURL, limit: 65536)) == current.after else { throw KilnError.message("Source changed while rolling back") }
+            try KilnStateFile.write(after, to: sourceURL)
+            receipt.status = "active"; receipt.result = "Source-aware rollback. " + result; try save(receipt, at: job)
+            return receipt.result + "\nRestored source SHA256 \(receipt.after). Change \(id)."
+        } catch {
+            receipt.status = "outcome-unconfirmed"; receipt.result = "Inspect release and source before retrying rollback. " + String(describing: error); try? save(receipt, at: job)
+            throw KilnError.message(receipt.result)
+        }
+    }
     public func change(module: String, owner: String, edits: String, target: ApplicationManifest,
-                       progress: @escaping @Sendable (String) -> Void,
+                       publish: Bool = true, restoring: Data? = nil, progress: @escaping @Sendable (String) -> Void,
                        validate: @escaping @Sendable () throws -> Void,
                        deploy: @escaping @Sendable (String) async throws -> String) async throws -> String {
         guard WebIsolation.supported else { throw KilnError.message("Web coding currently requires macOS isolation") }
@@ -129,14 +207,18 @@ public actor WebDevelopment {
         let sourceURL = URL(fileURLWithPath: config.source)
         let before = try bounded(sourceURL, limit: 65536)
         guard let text = String(data: before, encoding: .utf8), edits.utf8.count <= 4096 else { throw KilnError.message("Invalid source or edit size") }
-        let replacements = try JSONDecoder().decode([WebEdit].self, from: Data(edits.utf8))
-        guard !replacements.isEmpty, replacements.count <= 8 else { throw KilnError.message("Use 1–8 exact text replacements") }
-        var updated = text
-        for edit in replacements {
-            guard !edit.before.isEmpty, edit.before != edit.after, updated.components(separatedBy: edit.before).count == 2 else { throw KilnError.message("Each before text must match exactly once in current source") }
-            updated = updated.replacingOccurrences(of: edit.before, with: edit.after)
+        let after: Data
+        if let restoring { after = restoring }
+        else {
+            let replacements = try JSONDecoder().decode([WebEdit].self, from: Data(edits.utf8))
+            guard !replacements.isEmpty, replacements.count <= 8 else { throw KilnError.message("Use 1–8 exact text replacements") }
+            var updated = text
+            for edit in replacements {
+                guard !edit.before.isEmpty, edit.before != edit.after, updated.components(separatedBy: edit.before).count == 2 else { throw KilnError.message("Each before text must match exactly once in current source") }
+                updated = updated.replacingOccurrences(of: edit.before, with: edit.after)
+            }
+            after = Data(updated.utf8)
         }
-        let after = Data(updated.utf8)
         guard after.count <= 65536, after != before else { throw KilnError.message("Updated source must fit 64 KiB and contain a change") }
         let entries = try FileManager.default.contentsOfDirectory(atPath: jobs.path)
         guard entries.count < 32 else { throw KilnError.message("Development artifact limit reached (32); retained active/rollback artifacts must not be removed blindly") }
@@ -145,6 +227,7 @@ public actor WebDevelopment {
         let job = jobs.appendingPathComponent(id)
         try FileManager.default.createDirectory(at: job, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         var receipt = WebChange(id: id, module: module, owner: owner, before: WebIsolation.digest(before), after: WebIsolation.digest(after), version: version, status: "building")
+        receipt.previousVersion = target.version
         try save(receipt, at: job)
         try KilnStateFile.write(after, to: job.appendingPathComponent("App.swift"))
         try KilnStateFile.write(before, to: job.appendingPathComponent("Before.swift"))
@@ -159,6 +242,12 @@ public actor WebDevelopment {
                   WebIsolation.digest(try bounded(sourceURL, limit: 65536)) == receipt.before else { throw KilnError.message("Source or registration changed during the build; prepare a fresh change") }
             let binary = job.appendingPathComponent("app")
             let binaryData = try bounded(binary, limit: 134_217_728)
+            if !publish {
+                receipt.status = "validated"
+                receipt.result = "Isolated compile passed. Source and live release were not changed."
+                try save(receipt, at: job)
+                return "Validation \(id): \(receipt.result) Proposed source SHA256 \(receipt.after). Publishing recompiles against current source; validation is not a deployment receipt."
+            }
             let oldPort = target.healthURL.flatMap(URL.init(string:))?.port
             guard let port = config.workerPorts.first(where: { $0 != oldPort }) else { throw KilnError.message("No alternate development worker port") }
             let libraries = String(decoding: try JSONEncoder().encode(registered.sdk.runtimeLibraries), as: UTF8.self)
@@ -177,7 +266,7 @@ public actor WebDevelopment {
             guard WebIsolation.digest(try bounded(sourceURL, limit: 65536)) == receipt.before else { throw KilnError.message("Release is active but source changed independently; source was not overwritten") }
             try KilnStateFile.write(after, to: sourceURL)
             receipt.status = "active"; try save(receipt, at: job)
-            return "Published development change \(id).\n\(result)\nSource saved: \(URL(fileURLWithPath: config.source).lastPathComponent) / SHA256 \(receipt.after)\nPreview: \(config.publicOrigin)\nDevelopment pages detect the new worker and reload. Browser delivery is separate from this server receipt."
+            return "Published development change \(id.prefix(8)).\nService: \(module) · healthy\nBuild: isolated Swift compilation passed\nSource: \(URL(fileURLWithPath: config.source).lastPathComponent) saved · SHA256 \(receipt.after.prefix(12))\nPreview: \(config.publicOrigin)\nHistory and diff: Services → Changes / diffs\nDevelopment browser reload is automatic; browser delivery is checked separately."
         } catch {
             let interrupted = ["publishing", "active-source-pending"].contains(receipt.status)
             receipt.status = interrupted ? "outcome-unconfirmed" : "failed"

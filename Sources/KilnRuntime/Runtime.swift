@@ -616,12 +616,17 @@ extension KilnRuntime {
         }
     }
 
-    public func rollback(_ name: String) async throws -> String {
+    public func developmentPreviousVersion(_ name: String) throws -> String {
+        guard let version = installed[name]?.previous?.version else { throw KilnError.message("No previous release") }; return version
+    }
+    public func rollback(_ name: String, expectedGeneration: String? = nil, validateAccess: @escaping @Sendable () throws -> Void = {}) async throws -> String {
         guard !shuttingDown, !persistenceFault, !deploying.contains(name), !stopping.contains(name) else { throw KilnError.message("Application is busy or shutting down") }
         guard let previous = installed[name]?.previous else { throw KilnError.message("No previous release") }
+        try validateAccess()
+        if let expectedGeneration, snapshot().first(where: { $0.id == name })?.generationFingerprint != expectedGeneration { throw KilnError.message("Release changed before rollback") }
         deploying.insert(name)
         defer { deploying.remove(name) }
-        return try await activate(previous)
+        return try await activate(previous, validateAccess: validateAccess)
     }
 
     private func activate(_ manifest: ApplicationManifest, validateAccess: @Sendable () throws -> Void = {}) async throws -> String {
@@ -704,7 +709,12 @@ extension KilnRuntime {
     }
 
     public func performApprovedOperation(_ operation: String, name: String, fingerprint: String,
+                                         requestID: String? = nil, authorize: @Sendable () throws -> Void = {}) async throws -> String {
+        try await performApprovedOperation(operation, name: name, fingerprint: fingerprint, requestID: requestID, execute: nil, authorize: authorize)
+    }
+    public func performApprovedOperation(_ operation: String, name: String, fingerprint: String,
                                          requestID: String? = nil,
+                                         execute: (@Sendable () async throws -> String)?,
                                          authorize: @Sendable () throws -> Void = {}) async throws -> String {
         try authorize()
         guard ["start", "stop", "restart", "rollback"].contains(operation) else {
@@ -739,13 +749,14 @@ extension KilnRuntime {
         try persist(record)
         let result: String
         do {
-            switch operation {
+            if let execute { result = try await execute() }
+            else { switch operation {
             case "start": result = try await start(name)
             case "stop": result = try await stop(name)
             case "rollback": result = try await rollback(name)
             default:
                 result = try await restart(name)
-            }
+            } }
         } catch {
             record["state"] = "failed"
             record["finishedAt"] = Date().ISO8601Format()

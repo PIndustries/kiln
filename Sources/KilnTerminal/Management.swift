@@ -53,11 +53,35 @@ struct ManagementUI {
         waiting = true; pending = parts.prefix(2).joined(separator:" ")
         return parts.map(Self.quote).joined(separator:" ")
     }
+    private struct Change: Decodable { let id: String; let version: String; let status: String; let created: String; let commit: String; let current: String? }
+    private var changes: [Change] = []
+    private var changeModule = ""
+    private var changeID = ""
+    mutating func result(title: String, command: [String]) -> String {
+        menu("message", title: title, options: ["Back"])
+        return run(command)
+    }
+    mutating func changeHistory(_ module: String) -> String {
+        changeModule = module
+        return result(title: "Changes / " + module, command: ["web", "history", module])
+    }
     mutating func finish(text: String, status: Int) {
         guard waiting else { return }; waiting = false
-        if status != 0 { error = text; return }
+        if status != 0 {
+            if ["message", "confirm", "change"].contains(kind) {
+                kind = "message"; title += " / failed"; message = text; messageOffset = 0
+                options = ["Back"]; labels = []; error = ""; help = "PgUp/PgDn scroll | Enter / Esc close"
+            } else { error = text }
+            return
+        }
         if ["session open","session attach","session rename","session close","server add","server edit","server key","server remove","server trust"].contains(pending) { close(); return }
-        kind = "message"; title = pending == "server scan" ? "Unverified host identity" : "Public key / result"
+        if pending == "web history", let data = text.data(using: .utf8), let records = try? JSONDecoder().decode([Change].self, from: data) {
+            changes = records
+            menu("changes", title: "Changes / " + changeModule, options: records.map { String($0.created.prefix(16)) + " " + ($0.current == "yes" ? "CURRENT" : $0.status == "active" ? "published" : $0.status) + " " + String($0.id.prefix(8)) + " git:" + String($0.commit.prefix(8)) } + ["Back"])
+            if records.isEmpty { kind = "message"; message = "No retained development changes for this service." }
+            return
+        }
+        kind = "message"; if pending == "server scan" { title = "Unverified host identity" }
         message = text; messageOffset = 0; labels = []; options = ["Back"]; selected = 0; help = "PgUp/PgDn scroll | Enter / Esc close"
     }
     mutating func handle(_ key: TerminalKey, width: Int, height: Int) -> String? {
@@ -124,6 +148,14 @@ struct ManagementUI {
         let choice = options[selected]
         if choice == "Back" || choice == "Cancel" { close(); return nil }
         switch kind {
+        case "changes":
+            guard changes.indices.contains(selected) else { return nil }
+            changeID = changes[selected].id
+            let restorable = changes[selected].status == "active"
+            menu("change", title: "Change " + String(changeID.prefix(8)), options: restorable ? ["View diff", "Restore this version", "Back"] : ["View diff", "Back"])
+        case "change":
+            if choice == "View diff" { return result(title: "Source diff / " + String(changeID.prefix(8)), command: ["web", "diff", changeModule, changeID]) }
+            if choice == "Restore this version" { confirm("Restore source " + String(changeID.prefix(8)) + "?", command: ["web", "restore", changeModule, changeID], detail: "Builds and publishes this retained source as a new healthy release. Existing change history is preserved.") }
         case "server":
             guard let server else { return nil }
             switch choice {
@@ -159,8 +191,8 @@ struct ManagementUI {
         menu("confirm",title:title,options:["Cancel","Confirm"]); prefix = command; help = detail
     }
     private func geometry(width:Int,height:Int) -> (left:Int,top:Int,width:Int,height:Int) {
-        let w = max(20,min(width-4,kind == "form" || kind == "message" ? 84 : max(36,title.count+6)))
-        let desired = kind == "form" ? labels.count+9 : kind == "message" ? min(20,height-2) : options.count+(kind == "confirm" ? 8 : 6)
+        let w = max(20,min(width-4,kind == "form" || kind == "message" ? 132 : max(36,title.count+6)))
+        let desired = kind == "form" ? labels.count+9 : kind == "message" ? height-2 : options.count+(kind == "confirm" ? 8 : 6)
         let h = min(height-2,desired)
         let left = ["server","session"].contains(kind) ? min(title.count+4,width-w-1) : (width-w)/2
         return (max(1,left), max(1,min(anchor,height-h)),w,h)
