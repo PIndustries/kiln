@@ -205,6 +205,8 @@ Approved operations now persist private outcome receipts before execution; use `
 
 ## Background tasks
 
+Live task progress retains the latest 24,000 characters in a single pending snapshot. Answer deltas are accumulated before snapshots are coalesced, so a slow consumer may skip intermediate frames without losing the retained answer text. Activity messages stop replacing output once an answer begins. Completed results and terminal task states still use the existing persistence path; this does not add resumable inference or event replay.
+
 Ask the chat to create a background investigation, or use:
 
 ```text

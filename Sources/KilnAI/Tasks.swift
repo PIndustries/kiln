@@ -116,15 +116,9 @@ public actor AITasks {
         }
         if finish { watchers.removeValue(forKey: id) }
     }
-    private func update(_ id: String, _ event: AIProgress) {
+    private func update(_ id: String, _ snapshot: String) {
         guard let i = index.records.firstIndex(where: { $0.id == id }), index.records[i].state == "running" else { return }
-        switch event {
-        case .provider: return // Task records already retain their pinned configuration.
-        case .answer(let text): index.records[i].output = String((index.records[i].output + text).suffix(24000))
-        case .snapshot(let text): index.records[i].output = String(text.suffix(24000))
-        case .reasoning: break // Live provider reasoning is transient, not stored in task history.
-        case .status(let text): if index.records[i].output.isEmpty || index.records[i].output.hasPrefix("Activity: ") { index.records[i].output = "Activity: " + text + "\n" }
-        }
+        index.records[i].output = snapshot
         notify(id)
     }
     private func schedule() {
@@ -134,15 +128,15 @@ public actor AITasks {
             do { try save() } catch { index.records[i].state = "queued"; runners[record.id] = runner; return }
             let id = record.id
             running[id] = Task {
-                let pair = AsyncStream<AIProgress>.makeStream()
-                let relay = Task { for await event in pair.stream { self.update(id, event) } }
+                let progress = TaskProgressRelay()
+                let relay = Task { for await snapshot in progress.stream { self.update(id, snapshot) } }
                 do {
                     try Task.checkCancellation()
-                    let output = try await runner(id, record.prompt) { pair.continuation.yield($0) }
-                    pair.continuation.finish(); await relay.value
+                    let output = try await runner(id, record.prompt) { progress.send($0) }
+                    progress.finish(); await relay.value
                     self.finish(id, output: output, failed: false)
                 } catch {
-                    pair.continuation.finish(); await relay.value
+                    progress.finish(); await relay.value
                     self.finish(id, output: "Task failed or cancelled; inspect current state. No system changes executed.", failed: true)
                 }
             }
