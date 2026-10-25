@@ -799,6 +799,13 @@ extension KilnCommands {
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {
                 case "list_web_projects": try authorizeAdmin(); return try await webDevelopment.inventory()
+                case "list_web_files", "read_web_file":
+                    try authorizeAdmin()
+                    let args = try JSONDecoder().decode([String:String].self, from: Data((module ?? "").utf8))
+                    guard let target = args["module"] else { throw AIError.message("Missing web project") }
+                    if name == "list_web_files" { return try await webDevelopment.tree(module: target) }
+                    guard let path = args["path"], let offset = args["offset"].flatMap(Int.init) else { throw AIError.message("Invalid file arguments") }
+                    return try await webDevelopment.file(module: target, path: path, offset: offset)
                 case "read_web_source":
                     try authorizeAdmin()
                     let args = try JSONDecoder().decode([String: String].self, from: Data(module!.utf8))
@@ -854,7 +861,7 @@ private extension KilnCommands {
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["web", "app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["projects", "register", "source", "changes", "history", "diff", "code", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["projects", "register", "source", "changes", "history", "diff", "code", "tree", "file", "apply", "browse", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)

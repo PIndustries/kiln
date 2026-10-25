@@ -145,7 +145,7 @@ public struct KilnTerminal {
     private var menu: Int? = nil
     private var confirmation: String? = nil
     private var notice = "Select a service and press Enter to manage it."
-    private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Releases", "Changes / diffs", "Rollback", "Back"]
+    private let actions = ["Start", "Stop", "Restart", "Check health", "View logs", "Releases", "Changes / diffs", "Rollback", "Codebase / files", "Back"]
     public init() {}
     public mutating func resize(width: Int, height: Int) {
         // SSH sends zero when a dimension is unknown: retain the last known value.
@@ -284,6 +284,7 @@ public struct KilnTerminal {
                 case 4: menu = nil; drawer = true; return execute("app logs " + id)
                 case 5: menu = nil; return execute(management.result(title: "Releases / " + id, command: ["app", "releases", id]))
                 case 6: menu = nil; return execute(management.changeHistory(id))
+                case 8: menu = nil; return execute(management.codebase(id))
                 case 7: confirmation = "app rollback " + id
                 default: menu = nil
                 }

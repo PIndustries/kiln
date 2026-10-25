@@ -22,6 +22,18 @@ extension KilnCommands {
             try authorizeAdmin(); return CommandResult(text)
         case let p where p.count == 3 && p[1] == "history":
             return CommandResult(try await webDevelopment.history(module: p[2], currentVersion: await runtime.developmentTarget(p[2]).version))
+        case let p where (p.count == 4 || p.count == 5) && p[1] == "browse":
+            return CommandResult(try await webDevelopment.browse(module: p[2], path: p[3], change: p.count == 5 ? p[4] : nil))
+        case let p where (p.count == 3 || p.count == 4) && p[1] == "tree":
+            return CommandResult(try await webDevelopment.tree(module: p[2], change: p.count == 4 ? p[3] : nil))
+        case let p where (p.count == 4 || p.count == 5) && p[1] == "file":
+            return CommandResult(try await webDevelopment.file(module: p[2], path: p[3], change: p.count == 5 ? p[4] : nil))
+        case let p where p.count == 4 && p[1] == "apply":
+            let target = try await runtime.developmentTarget(p[2]), owner = try aiOwnerFingerprint()
+            let generation = await runtime.snapshot().first(where: { $0.id == p[2] })?.generationFingerprint
+            return CommandResult(try await webDevelopment.change(module: p[2], owner: owner, edits: p[3], target: target, progress: { progress(.status($0)) }, validate: { try authorizeAdmin() }, deploy: { path in
+                try await runtime.deploy(path: path, expectedGeneration: generation, validateAccess: { try authorizeAdmin() })
+            }))
         case let p where p.count == 4 && p[1] == "code":
             return CommandResult(try await webDevelopment.code(module: p[2], id: p[3]))
         case let p where p.count == 4 && p[1] == "diff":
@@ -38,7 +50,7 @@ extension KilnCommands {
         case let p where p.count == 3 && p[1] == "changes":
             let text = try await webDevelopment.changes(module: p[2])
             try authorizeAdmin(); return CommandResult(text)
-        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
+        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
         }
     }
     func rollbackService(_ module: String, expectedGeneration: String? = nil) async throws -> String {
