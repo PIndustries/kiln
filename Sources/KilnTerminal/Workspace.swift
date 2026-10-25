@@ -21,6 +21,21 @@ struct WorkspaceUI {
     private var offset = 0, horizontal = 0, cursor = 0
     init(module: String, change: String? = nil) { self.module = module; self.change = change }
     private func command(_ parts: [String]) -> String { parts.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ") }
+    var canBrowseDuringTurn: Bool { mode == "browse" && confirmation.isEmpty }
+    var filePath: String { path }
+    var hasUnsavedEdits: Bool { mode == "edit" || recoverableDraft || publishingDraft }
+    var contextJSON: String? {
+        guard !hash.isEmpty, !waiting, mode != "receipt", mode != "name" else { return nil }
+        let context: [String: String] = ["module": module, "path": path, "sha256": hash,
+            "revision": change ?? "workspace", "unsaved": hasUnsavedEdits ? "true" : "false",
+            "firstVisibleLine": String(offset+1)]
+        guard let data = try? JSONEncoder().encode(context) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    mutating func refresh() -> String? {
+        guard !waiting, !hasUnsavedEdits, mode == "browse" else { return nil }
+        return request("refresh", ["web", "browse", module, path] + (change.map { [$0] } ?? []))
+    }
     func load() -> String { command(["web", "browse", module, "App.swift"] + (change.map { [$0] } ?? [])) }
     private mutating func request(_ name: String, _ parts: [String]) -> String { waiting = true; pending = name; error = ""; return command(parts) }
     mutating func finish(text: String, status: Int) {
@@ -35,13 +50,15 @@ struct WorkspaceUI {
         guard status == 0, let data = text.data(using: .utf8) else { error = text; return }
         do {
             let file: File
-            if pending == "browse" {
+            if pending == "browse" || pending == "refresh" {
                 let view = try JSONDecoder().decode(Browse.self, from: data)
                 entries = view.tree.files; editable = view.tree.editable; projectRoot = view.tree.projectRoot; file = view.file
             } else { file = try JSONDecoder().decode(File.self, from: data) }
+            let keepPosition = pending == "refresh" && path == file.file
             path = file.file; hash = file.sha256; source = file.source; version = file.version
             selected = entries.firstIndex(where: { $0.path == path }) ?? 0
-            mode = "browse"; offset = 0; horizontal = 0
+            mode = "browse"
+            if !keepPosition { offset = 0; horizontal = 0 }
         } catch { self.error = "Invalid project browser response" }
     }
     private mutating func publish(delete: Bool = false) -> String? {

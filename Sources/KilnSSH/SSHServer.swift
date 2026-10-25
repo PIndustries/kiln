@@ -97,6 +97,7 @@ private final class ShellHandler: ChannelInboundHandler {
     var pty = false
     var busy = false
     var commandTask: Task<Void, Never>?
+    var workspaceTask: Task<Void, Never>?
     var pending: [String] = []
     var lastCR = false
     var terminal: KilnTerminal?
@@ -128,7 +129,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
-        commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
+        workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
         releasePanes()
@@ -292,6 +293,7 @@ private final class ShellHandler: ChannelInboundHandler {
         for effect in terminal?.handle(key) ?? [] {
             switch effect {
             case .command(let command): submit(command, channel: channel)
+            case .workspaceRead(let command): readWorkspace(command, channel: channel)
             case .disconnect: close(channel: channel, status: 0)
             case .selectText(let enabled):
                 selectingText = false; lastFrame = ""; paint(channel: channel)
@@ -301,7 +303,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func close(channel: Channel, status: Int) {
-        commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
+        workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
@@ -346,6 +348,28 @@ private final class ShellHandler: ChannelInboundHandler {
                 input.append(byte)
                 if pty { output(String(decoding: [byte], as: UTF8.self), channel: context.channel) }
             default: break
+            }
+        }
+    }
+    func readWorkspace(_ line: String, channel: Channel) {
+        guard workspaceTask == nil else { return }
+        // A separate lane is deliberately restricted to registered source reads.
+        guard let parts = try? KilnCommands.tokenize(line), parts.count >= 4,
+              parts[0] == "web", ["browse", "file"].contains(parts[1]) else { return }
+        let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+        let commands = self.commands, sessionID = owner.uuidString
+        workspaceTask = Task {
+            let result = await commands.execute(line, sessionID: sessionID)
+            channel.eventLoop.execute {
+                let shell = bound.value
+                shell.workspaceTask = nil
+                guard channel.isActive else { return }
+                if (try? commands.authorizeAdmin()) != nil {
+                    shell.terminal?.finishWorkspace(text: result.text, status: result.status)
+                } else {
+                    shell.terminal?.updateAIWorkspace(AIWorkspaceSnapshot(error: "Identity revoked or unauthorized"))
+                }
+                shell.paint(channel: channel)
             }
         }
     }
@@ -411,6 +435,7 @@ private final class ShellHandler: ChannelInboundHandler {
                     shell.terminal?.update(modules)
                     if let theme = result.terminalTheme { shell.terminal?.applyTheme(theme) }
                     shell.terminal?.finish(text: result.text, status: result.status)
+                    if case .workspaceRead(let read) = shell.terminal?.refreshCodeWorkspace() { shell.readWorkspace(read, channel: channel) }
                     if let conversation = result.conversation { shell.terminal?.restoreConversation(conversation) }
                     if result.disconnect { shell.close(channel: channel, status: result.status) }
                     else { shell.paint(channel: channel) }

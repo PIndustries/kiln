@@ -80,6 +80,8 @@ jobs:
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/offline-ai-terminal-integration.py'
       - name: Editor draft recovery after failed compilation
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/editor-draft-acceptance.py'
+      - name: Side-by-side code and AI context through OpenSSH
+        run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/code-chat-acceptance.py'
       - name: Task sidebar refresh during Erebine retry through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/ssh-retry-acceptance.py'
       - name: Explicit node adoption and durable peer operations

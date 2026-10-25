@@ -466,3 +466,27 @@ Draft recovery is connection-local editor state, rather than a saved draft on di
 The OpenSSH acceptance script `editor-draft-acceptance.py` exercises failed compile,
 recovery, default Cancel and an explicitly corrected healthy publish in a disposable
 project without provider access or user credentials.
+
+### Code and AI workspace
+
+Services → Codebase / files opens the registered file tree, syntax-highlighted
+source and AI chat together. `/code` in chat opens the selected service. At 110
+columns or wider both panes remain visible; smaller terminals show the focused
+pane. Ctrl-W switches between code and chat. Click either pane to focus it;
+Tab switches the file tree and source within the code pane. Wheel and page keys
+scroll the focused pane independently. Ctrl-S freezes painting and releases mouse
+capture for native terminal selection/copy; Ctrl-S resumes.
+
+Each ordinary chat message carries the displayed application, file, source hash,
+revision, first visible line and unsaved-buffer flag. The chat header shows its
+app/file context. Context is captured when sending; browsing another file while
+inference runs does not retarget that turn. Registered file reads run separately
+from inference, so navigating and scrolling remain available while it responds.
+After a turn, clean code views refresh without moving the scroll position.
+Unsaved local buffers remain in the connection and are not sent to the provider;
+AI publishing is rejected while that turn's context contains unsaved edits, a
+retained revision or a stale displayed hash. Save/discard and reload before asking
+for another edit. AI changes remain limited to the active registered application,
+with the existing build validation, auto-publish grant and retained history.
+This workspace does not upload arbitrary filesystem content or provide code-range
+selection to the model. Manual editor publishes still require confirmation.

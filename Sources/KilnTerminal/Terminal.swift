@@ -1,7 +1,7 @@
 import Foundation
 import KilnKit
 
-public enum TerminalEffect: Equatable { case command(String), disconnect, selectText(Bool) }
+public enum TerminalEffect: Equatable { case command(String), workspaceRead(String), disconnect, selectText(Bool) }
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
@@ -13,6 +13,58 @@ public struct KilnTerminal {
     public private(set) var selected = 0
     public private(set) var busy = false
     private var management = ManagementUI()
+    private var codeWorkspace: WorkspaceUI?
+    private var codeFocus = true
+    private var codeCommand = false
+    private var splitWidth: Int { max(50, width * 3 / 5) }
+    private var workspaceVisible: Bool { codeWorkspace != nil && chatVisible }
+    public mutating func finishWorkspace(text: String, status: Int) {
+        codeWorkspace?.finish(text: text, status: status)
+    }
+    public mutating func refreshCodeWorkspace() -> TerminalEffect? {
+        codeWorkspace?.refresh().map { .workspaceRead($0) }
+    }
+    private mutating func openCodeWorkspace(_ module: String) -> [TerminalEffect] {
+        openAIChat(); management.close()
+        codeWorkspace = WorkspaceUI(module: module); codeFocus = true
+        return [.workspaceRead(codeWorkspace!.load())]
+    }
+    private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
+        // A single foreground write/inference can run; read-only browsing is independent.
+        if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
+        if busy, ![.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape].contains(key) {
+            if case .mouse = key {} else { return [] }
+        }
+        let paneWidth = width >= 110 ? splitWidth : width
+        guard let command = codeWorkspace?.handle(key, width: paneWidth, height: height) else {
+            if codeWorkspace?.active == false { codeWorkspace = nil }
+            return []
+        }
+        if command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") {
+            return [.workspaceRead(command)]
+        }
+        guard !busy else { return [] }
+        codeCommand = true
+        let effects = execute(command)
+        commandInChat = false
+        return effects
+    }
+    private func codeWorkspaceLayout() -> String {
+        guard let workspace = codeWorkspace else { return "" }
+        var chat = self
+        if width < 110 {
+            if codeFocus { return "\u{1b}[?25l\u{1b}[H\u{1b}[2J\u{1b}[1;3H" + theme.accentCode + "Ctrl-W: chat | " + Self.safe(workspace.module) + workspace.render(width: width, height: height, theme: theme) }
+            return chat.chatLayout(embedded: true).0
+        }
+        chat.width = width-splitWidth
+        let code = workspace.render(width: splitWidth, height: height, theme: theme)
+        let right = Self.positionPane(chat.chatLayout(embedded: true).0, column: splitWidth)
+        let label = "\u{1b}[1;3H" + theme.accentCode + "CODE " + (codeFocus ? "[focus]" : "") + " | Ctrl-W: code/chat"
+        let cursorPattern = try! NSRegularExpression(pattern: "\\u001B\\[\\d+;\\d+H\\u001B\\[\\?25h$")
+        let cursorRange = cursorPattern.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)).flatMap { Range($0.range, in: code) }
+        let codeCursor = cursorRange.map { String(code[$0]) } ?? "\u{1b}[?25l"
+        return "\u{1b}[?25l\u{1b}[H\u{1b}[2J" + code + label + right + (codeFocus ? codeCursor : "")
+    }
     public private(set) var theme = TerminalTheme()
     public mutating func applyTheme(_ theme: TerminalTheme) { self.theme = theme }
     private var accessLabel: String?
@@ -24,6 +76,7 @@ public struct KilnTerminal {
     public mutating func updateAIWorkspace(_ snapshot: AIWorkspaceSnapshot) {
         let selectedID = workspaceItems.indices.contains(sidebarSelected) ? workspaceItems[sidebarSelected].id : nil
         let scopeChanged = aiWorkspace.contextScope != nil && snapshot.contextScope != nil && aiWorkspace.contextScope != snapshot.contextScope
+        if snapshot.error == "Identity revoked or unauthorized" { codeWorkspace = nil }
         if scopeChanged || snapshot.error == "Identity revoked or unauthorized" || (conversationName != nil && snapshot.conversation == nil) {
             messages = []; liveReasoning = ""; liveAnswer = ""; liveStatus = ""; reviewID = nil; input = ""; cursor = 0; scroll = 0
         }
@@ -61,6 +114,7 @@ public struct KilnTerminal {
     public mutating func updateManagement(_ snapshot: ManagementSnapshot) {
         accessLabel = snapshot.access
         if let error = snapshot.error {
+            if error == "Identity revoked or unauthorized" || error.hasSuffix("requires administrator access.") { codeWorkspace = nil }
             // Permission revocation must also remove stale management inventory.
             updateSessions([]); updateServers([], keys: [])
             if page == 4 || page == 5 { notice = error }
@@ -92,7 +146,10 @@ public struct KilnTerminal {
     private var liveReasoning = ""
     private var liveStatus = ""
     private var responseProvider: AIProviderSnapshot?
-    private var chatColumns: Int { max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3) }
+    private var chatColumns: Int {
+        if workspaceVisible { return max(1, (width >= 110 ? width-splitWidth : width)-5) }
+        return max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3)
+    }
     private var thinkingTruncated = false
     private var showThinking = false
     public mutating func progress(_ event: AIProgress) {
@@ -179,7 +236,9 @@ public struct KilnTerminal {
         }
         commandInChat = false; responseProvider = nil
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
-        busy = false; management.finish(text:text,status:status)
+        busy = false
+        if codeCommand { codeWorkspace?.finish(text:text,status:status); codeCommand = false }
+        else { management.finish(text:text,status:status) }
         let lines = text.components(separatedBy: "\n")
         transcript += lines
         transcript = Array(transcript.suffix(300))
@@ -188,7 +247,7 @@ public struct KilnTerminal {
     }
     private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
         guard !busy else { return [] }
-        commandInChat = chatVisible; responseProvider = nil
+        commandInChat = chatVisible && !codeCommand; responseProvider = nil
         busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
         started = Date(); animation = 0; toolCount = 0
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
@@ -203,6 +262,23 @@ public struct KilnTerminal {
             return [.selectText(selectingText)]
         }
         if selectingText { return [] }
+        if workspaceVisible {
+            if key == .focusWorkspace { codeFocus.toggle(); return [] }
+            if key == .interrupt, busy { return [] } // SSH owns cancellation.
+            if case let .mouse(button,column,_,released) = key {
+                if width < 110 { if codeFocus { return handleCode(key) } }
+                else if column <= splitWidth { codeFocus = true; return handleCode(key) }
+                else {
+                    if !released, button == 0 { codeFocus = false }
+                    if button == 64 || button == 65 { return edit(button == 64 ? .pageUp : .pageDown) }
+                    return []
+                }
+            }
+            if codeFocus { return handleCode(key) }
+            if key == .escape { codeFocus = true; return [] }
+            if key == .tab { return [] }
+            return edit(key)
+        }
         if management.active {
             if let command = management.handle(key,width:width,height:height) { return execute(command) }
             return []
@@ -284,7 +360,7 @@ public struct KilnTerminal {
                 case 4: menu = nil; drawer = true; return execute("app logs " + id)
                 case 5: menu = nil; return execute(management.result(title: "Releases / " + id, command: ["app", "releases", id]))
                 case 6: menu = nil; return execute(management.changeHistory(id))
-                case 8: menu = nil; return execute(management.codebase(id))
+                case 8: menu = nil; return openCodeWorkspace(id)
                 case 7: confirmation = "app rollback " + id
                 default: menu = nil
                 }
@@ -360,7 +436,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .selectText, .toggleThinking: break
+        case .selectText, .toggleThinking, .focusWorkspace: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }
@@ -411,7 +487,7 @@ public struct KilnTerminal {
                 if common.count > input.count { input = common; cursor = input.count }
                 else { transcript += matches; transcript = Array(transcript.suffix(300)) }
             }
-        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3)).count : transcript.count) - 1), scroll + 5)
+        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: chatColumns).count : transcript.count) - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
@@ -437,6 +513,11 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/thinking" { showThinking.toggle(); scroll = 0; return [] }
+                if command == "/code" {
+                    if codeWorkspace != nil { codeFocus = true; return [] }
+                    guard modules.indices.contains(selected) else { return [] }
+                    return openCodeWorkspace(modules[selected].id)
+                }
                 if command == "/help" { return execute("ai chat-help") }
                 if command == "/conversations" { return execute("ai conversation list") }
                 if command.split(whereSeparator: { $0.isWhitespace }).first == "/conversation" {
@@ -472,6 +553,14 @@ public struct KilnTerminal {
                 if command == "/reset" { messages = []; transcript = []; return execute("ai reset") }
                 if command.hasPrefix("/approve ") || command.hasPrefix("/deny ") { return execute("ai " + command.dropFirst()) }
                 let quoted = "\"" + command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+                if let workspace = codeWorkspace {
+                    guard let context = workspace.contextJSON else {
+                        messages.append(ChatMessage(role: "Kiln", text: "Wait for the file to load, or return from the result view before sending a contextual message."))
+                        input = command; cursor = command.count
+                        return []
+                    }
+                    return execute("ai ask --workspace " + Self.quote(context) + " " + quoted, display: "You: " + command)
+                }
                 return execute("ai ask " + quoted, display: "You: " + command)
             }
             return execute(command)
@@ -535,8 +624,8 @@ public struct KilnTerminal {
         if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools and registered dev publishing run automatically; production operations need approval.", "Prompts and tool results go to the selected provider; keep credentials in Vault."] }
         return body
     }
-    private func chatLayout() -> (String, [Hit]) {
-        let panelWidth = width >= 110 ? min(42, width / 3) : 0
+    private func chatLayout(embedded: Bool = false) -> (String, [Hit]) {
+        let panelWidth = !embedded && width >= 110 ? min(42, width / 3) : 0
         let panelOnly = panelWidth == 0 && sidebarFocus && reviewID == nil
         let left = panelWidth > 0 ? panelWidth + 3 : 2
         let columns = width - left - 3
@@ -571,11 +660,11 @@ public struct KilnTerminal {
         func row(_ value: String = "", _ color: String = "") -> String {
             let sidebar = panelWidth > 0 ? " " + String(Self.safe(panel[min(rowIndex, height - 1)]).prefix(panelWidth - 2)).padding(toLength: panelWidth - 1, withPad: " ", startingAt: 0) + " | " : "  "
             rowIndex += 1
-            let text = String((sidebar + Self.safe(value)).prefix(width - 1))
+            let text = String((sidebar + Self.safe(value).prefix(max(0,columns))).prefix(width - 1))
             return "\u{1b}[0m" + theme.backgroundCode + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row((conversationName.map { "Saved: " + $0 + " / " } ?? "") + (aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured"), muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
+        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row(embedded ? (codeWorkspace.map { "App: " + $0.module + " | " + $0.filePath + ($0.hasUnsavedEdits ? " [unsaved]" : "") } ?? "No file context") : (conversationName.map { "Saved: " + $0 + " / " } ?? "") + (aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured"), muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
         if let id = reviewID {
             let proposal = aiWorkspace.proposals.first { $0.id == id }
             let valid = proposal.map { $0.expires > Date() } ?? false
@@ -610,12 +699,13 @@ public struct KilnTerminal {
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
         lines.append(row("Enter send  Ctrl-C stop  Ctrl-S copy  Ctrl-T thinking", muted))
-        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /help", muted))
+        lines.append(row(embedded ? "Ctrl-W code/chat | Ctrl-S copy | /help" : scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /code | /help", muted))
         return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", hits + [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
     }
 
     public func render() -> String { layout().0 }
     private func layout() -> (String, [Hit]) {
+        if workspaceVisible, width >= 50, height >= 16 { return (codeWorkspaceLayout(), []) }
         if chatVisible && width >= 50 && height >= 16 { return chatLayout() }
         var hits: [Hit] = []
         let w = width - 1
