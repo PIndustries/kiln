@@ -52,7 +52,7 @@ import KilnKit
     #expect(frames == [String(repeating: "x", count: 1000)])
 }
 
-@Test func burstTaskPersistsItsFinalResultAndDoesNotStoreReasoning() async throws {
+@Test(.timeLimit(.minutes(1))) func burstTaskPersistsItsFinalResultAndDoesNotStoreReasoning() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
     let tasks = AITasks(directory: directory)
@@ -61,11 +61,13 @@ import KilnKit
         return "Verified final result."
     }
     let id = String(receipt.split(separator: "\n")[0].dropFirst("Task created: ".count))
-    let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-    while !(try await tasks.show(id)).contains("[completed]"), ContinuousClock.now < deadline {
-        try await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(try await tasks.show(id).contains("[completed]"))
+    // Watch completion itself: hosted concurrent tests can legitimately spend
+    // more than five seconds scheduling the burst. The stream ends only after
+    // the task's terminal result is persisted; the test time limit bounds hangs.
+    let stream = try await tasks.watch(id)
+    var final = ""
+    for await snapshot in stream { final = snapshot }
+    #expect(final.contains("[completed]"))
     let restored = AITasks(directory: directory)
     let saved = try await restored.show(id)
     #expect(saved.contains("Verified final result.") && !saved.contains("PRIVATE_REASONING"))
