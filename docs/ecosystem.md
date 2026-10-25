@@ -65,6 +65,12 @@ Kiln-hosted Git and an artifact registry can be optional installed services usin
 
 ## Web applications
 
+The first [KilnWeb framework milestone](web-framework.md) provides controller routes,
+escaped HTML composition, browser/CSRF boundaries and server-rendered live views
+with process-local broadcasts. A separate demo worker proves two-browser updates.
+DOM diffing, durable application data, distributed live state and public routing
+remain outside this milestone.
+
 Provide optional REST, WebSocket, static-site and server-rendered HTML modules. A web page renderer calls application services and receives scoped access to state; it does not query another process's memory. Static files and templates are versioned release assets. Host/path routes target logical services. Browser sessions, CSRF protection, output escaping and authorization require explicit framework contracts.
 
 ## Shared state

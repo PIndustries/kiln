@@ -95,6 +95,8 @@ app start storefront/websocket
 app list
 ```
 
+KilnWeb adds [server-rendered pages, controller routes and live views](docs/web-framework.md), with a separate `kiln-example-web` worker. Run it on port 18082 and open `/counter` in two tabs for real-time server-rendered updates.
+
 The REST example serves `http://127.0.0.1:18080/api/hello`. The WebSocket example echoes text and binary messages at `ws://127.0.0.1:18081/ws`; fragmented frames are not supported. Both expose `/health` and use local, unencrypted connections.
 
 The examples run the same executable with different arguments in separate processes. Your modules can use different executables and dependencies. Installation currently copies the executable only; packaging assets, app bundles, and shared libraries is not implemented.
