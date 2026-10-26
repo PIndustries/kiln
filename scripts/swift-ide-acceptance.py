@@ -165,7 +165,10 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\x1b'); drain()
         assert (project/'Tests/ProbeTests.swift').read_text()==test_source
         assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
-        print('PASS Swift test navigator over SSH: discovery, live progress, failure mouse navigation, retained results, source/release unchanged',flush=True)
+        send(b'a'); expect('Tests:'); send(b'\x03'); expect('Swift request cancelled.')
+        send(b'\x1bOP'); expect('last snapshot'); send(b'a'); expect('Tests finished:')
+        assert source.read_bytes()==original and (project/'Tests/ProbeTests.swift').read_text()==test_source
+        print('PASS Swift test navigator over SSH: discovery, live progress, failure mouse navigation, retained results, Ctrl-C cancellation and fresh run, source/release unchanged',flush=True)
         # Run restarts the deployed release, not a discarded draft.
         send(b'\x1b[15~'); expect('Started draft/site'); send(b'\r'); expect('Codebase / draft/site')
         assert source.read_bytes()==original and get('/assets/app.css')==css

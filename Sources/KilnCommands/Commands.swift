@@ -260,7 +260,12 @@ public struct KilnCommands: Sendable {
                 }
             }
         } catch is CommandSyntaxError { return CommandResult("Unknown command. Run help.", status: 2) }
-        catch is CancellationError { return CommandResult("Stopped waiting. Background tasks continue unless explicitly cancelled.", status: 1) }
+        catch is CancellationError {
+            if parts.count >= 2, parts[0] == "web", parts[1] == "ide" {
+                return CommandResult("Swift request cancelled. Drafts and running release preserved.",status:1)
+            }
+            return CommandResult("Stopped waiting. Background tasks continue unless explicitly cancelled.", status: 1)
+        }
         catch { if !authorized { try? identities.audit(principal, verb: verb, outcome: "denied", target: target, requestID: auditID) }; return CommandResult("Error: \(error)", status: 1) }
     }
 }
