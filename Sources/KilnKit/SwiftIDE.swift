@@ -45,6 +45,7 @@ public struct SwiftIDEResult: Codable, Sendable {
     public var renameFiles: [String:SwiftIDERenameFile]?
     public var sessionID: String?
     public var documentVersion: Int?
+    public var coverage: String?
     public init(action: String, message: String) { self.action = action; self.message = message }
 }
 public struct SwiftIDERenameFile: Codable, Sendable {

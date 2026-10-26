@@ -31,6 +31,8 @@ actor SwiftLanguage {
     private var capabilities: [String:Any] = [:]
     private var busy = false
     private var sessionID = UUID().uuidString.lowercased()
+    private var indexFingerprint: String?
+    private var indexRows: [SwiftIndexOccurrence] = []
     init(sdk: WebBuildSDK, root: URL) { self.sdk = sdk; self.root = root }
     deinit {
         if let process, process.isRunning { process.terminate(); _ = kill(process.processIdentifier,SIGKILL) }
@@ -160,6 +162,17 @@ actor SwiftLanguage {
             }
             let prefix = String(source.prefix(cursor)), line = prefix.filter { $0 == "\n" }.count
             let column = prefix.components(separatedBy:"\n").last!.utf16.count
+            if action == "references" || action == "rename" {
+                let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+                let fingerprint = WebIsolation.digest(try encoder.encode(files))
+                if indexFingerprint != fingerprint {
+                    let rows = try await SwiftProjectIndex.build(sdk:sdk,root:root,files:files)
+                    indexRows = rows; indexFingerprint = fingerprint
+                }
+                if let response = try SwiftProjectIndex.response(rows:indexRows,files:files,root:root,selected:selected,cursor:cursor,action:action,newName:newName) {
+                    return SwiftLanguageReply(data:try JSONSerialization.data(withJSONObject:response),sessionID:sessionID,version:versions[selected]!)
+                }
+            }
             var params: [String:Any] = ["textDocument":["uri":uri(selected)],"position":["line":line,"character":column]]
             let method: String
             switch action {
@@ -172,7 +185,7 @@ actor SwiftLanguage {
             default: throw KilnError.message("Unsupported Swift language request")
             }
             var result = try await request("textDocument/"+method,params)
-            var coverage: String?
+            var coverage: String? = action == "rename" ? "document" : nil
             if action == "references", (result as? [Any])?.isEmpty != false {
                 // Older SourceKit versions require an index for references, but
                 // still provide semantic highlights for the current document.

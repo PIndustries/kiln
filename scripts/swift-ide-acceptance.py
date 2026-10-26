@@ -115,6 +115,12 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         assert len(references['locations'])>=2,references
         proposal=json.loads(ssh('web ide draft/site rename App.swift '+str(local)+' renamedLocal'))
         assert 'renamedLocal' in proposal['renameFiles']['App.swift']['text']
+        project_references=json.loads(ssh('web ide draft/site references App.swift '+str(cursor)))
+        assert project_references.get('coverage')=='project'
+        assert {item['path'] for item in project_references['locations']}=={'App.swift','Models/Jump.swift'}
+        project_rename=json.loads(ssh('web ide draft/site rename App.swift '+str(cursor)+' JumpDevice'))
+        assert set(project_rename['renameFiles'])=={'App.swift','Models/Jump.swift'}
+        assert 'struct JumpDevice' in project_rename['renameFiles']['Models/Jump.swift']['text']
         assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
         print('CLI semantic references and rename proposal verified; source/release unchanged',flush=True)
         click_word('JumpTarget'); send(b'\x1b[24~'); expect('Swift definitions'); expect('Models/Jump.swift')

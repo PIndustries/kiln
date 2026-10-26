@@ -92,6 +92,7 @@ extension WebDevelopment {
         let raw = response?["value"]
         var result = SwiftIDEResult(action:request.action,message:"SourceKit-LSP")
         result.sessionID = reply.sessionID; result.documentVersion = reply.version
+        result.coverage = response?["coverage"] as? String
         if request.action == "diagnostics" {
             guard let report = raw as? [String:Any], report["kind"] as? String == "full",
                   let items = report["items"] as? [[String:Any]] else { throw KilnError.message("SourceKit did not return a complete diagnostic report") }
@@ -149,6 +150,7 @@ extension WebDevelopment {
                 result.locations.append(SwiftIDELocation(path:path,line:line+1,column:column+1))
             }
             result.message = result.locations.isEmpty ? "No project definition at this position (SDK definitions are outside this project's file grant)" : request.action == "references" ? "Swift references (Enter or click to open)" : "Swift definitions (Enter or click to open)"
+            if request.action == "references", result.coverage == "project" { result.message = "Project references (Enter or click to open)" }
             if request.action == "references", response?["coverage"] as? String == "document" {
                 result.message = result.locations.isEmpty ? "No document references here; project-wide index unavailable" : "Document references only; project-wide index unavailable"
             }
@@ -196,7 +198,7 @@ extension WebDevelopment {
         try updated.validate()
         guard !proposals.isEmpty else { throw KilnError.message("No editable project references found for rename") }
         result.edits = allEdits; result.renameFiles = proposals
-        result.message = "Rename proposal: \(allEdits.count) edits in \(proposals.count) files. Enter applies to drafts; publish separately."
+        result.message = "Rename proposal [\(result.coverage ?? "toolchain")]: \(allEdits.count) edits in \(proposals.count) files. Enter applies to drafts; publish separately."
         return result
     }
 

@@ -11,7 +11,7 @@ language service or package dependency is required.
 | --- | --- |
 | Type / Ctrl-Space | Automatic / explicit completion; arrows select, Tab or Enter inserts |
 | F12 / Def | Resolve a definition in registered project files |
-| F9 / Refs | Semantic references; document-only fallback is explicitly labelled |
+| F9 / Refs | Compiler-indexed project references; any document-only fallback is labelled |
 | F10 / Rename | Request a rename proposal, then Enter applies it to local drafts |
 | F4 / Issues | Open clickable diagnostics for the current document |
 | F11 / Build | Compile all current buffers in isolation |
@@ -57,12 +57,29 @@ publish a source change or restart a service.
 ## Current boundaries
 
 This is the registered-project IDE, not unrestricted SwiftPM/Xcode project
-execution. The current compilation-database path has no maintained project-wide
-index. If SourceKit returns no indexed references, Kiln uses its semantic document
-highlights and labels the narrower coverage. It does not use textual matching as
-symbol identity. Review rename proposals; compile validation remains mandatory
-before publication. Native project indexing, test navigation, formatting/code
-actions and LLDB/DAP are still separate work.
+execution. Kiln builds a project index on demand with the registered compiler,
+then reads its public IndexStore API through Kiln's own C adapter. The installed
+`libIndexStore` is a Swift toolchain primitive; no IndexStoreDB package or hosted
+index service is added. Index compilation has unique outputs per source file,
+ignores system/Clang module indexing, includes local symbols, and never runs the
+compiled application. Its entire process group is stopped on cancellation or
+timeout. Temporary objects/index files are discarded after reading.
+
+Cached records match an exact source-content fingerprint within the authenticated
+language session. Compiler symbol identities resolve cross-file references and
+rename targets, preserving unrelated shadowed names, strings and comments.
+Compiler failures and reader/record limits fail explicitly instead of serving
+partial or older project results. The control result's `coverage` field says
+`project` or `document`. If a symbol has no supported indexed identifier, SourceKit
+can still provide a labelled document-only result. Project rename cannot alter
+SDK/generated definitions or known override relationships. It is an editable
+proposal, not proof of behavior equivalence; review it before publishing.
+
+The current index resource guards are 30 seconds of compilation, 64 KiB compiler
+diagnostics, 4,096 units/record dependencies, 200,000 raw occurrences, and 100,000
+deduplicated occurrences/16 MiB retained metadata per session. IndexStore UTF-8
+columns are converted to editor UTF-16 positions. Test navigation, formatting/code
+actions, deeper override/protocol refactoring and LLDB/DAP remain separate work.
 
 The real SourceKit test in `SwiftIDETests` is enabled with
 `KILN_SWIFT_IDE_SDK=/path/to/pinned-sdk.json`. It checks session reuse, document
