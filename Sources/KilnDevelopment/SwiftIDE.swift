@@ -54,7 +54,17 @@ extension WebDevelopment {
         var result = SwiftIDEResult(action:request.action,message:"SourceKit-LSP")
         if request.action == "complete" {
             let items = (raw as? [String:Any])?["items"] as? [[String:Any]] ?? raw as? [[String:Any]] ?? []
-            for item in items.prefix(100) {
+            // SourceKit may return an unfiltered list. Filter before limiting it,
+            // otherwise common matches can fall beyond the first page of symbols.
+            let prefix = String(request.text.prefix(request.cursor).reversed().prefix {
+                $0.isLetter || $0.isNumber || $0 == "_"
+            }.reversed()).lowercased()
+            let matches = items.filter { item in
+                guard !prefix.isEmpty else { return true }
+                let name = item["filterText"] as? String ?? item["label"] as? String ?? ""
+                return name.lowercased().hasPrefix(prefix)
+            }
+            for item in matches.prefix(100) {
                 guard let label = item["label"] as? String else { continue }
                 let edit = item["textEdit"] as? [String:Any], range = edit?["range"] as? [String:Any]
                 let start = (range?["start"] as? [String:Any]).flatMap { SwiftLanguage.offset($0,in:request.text) } ?? request.cursor
