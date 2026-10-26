@@ -115,12 +115,12 @@ private func languageReply(_ result: SwiftIDEResult) throws -> String { String(d
     }
 }
 
-@Test(arguments:["complete","build","definition","references"]) func explicitSwiftRequestsWaitForBackgroundDiagnostics(action: String) throws {
+@Test(arguments:["complete","build","definition","references","format","codeActions"]) func explicitSwiftRequestsWaitForBackgroundDiagnostics(action: String) throws {
     var ui = try languageEditor()
     _ = ui.handle(.text("e"),width:120,height:35)
     _ = ui.handle(.text("// queued draft\n"),width:120,height:35)
     #expect(ui.diagnoseAfterTyping() != nil)
-    let keys: [String:TerminalKey] = ["complete":.complete,"build":.build,"definition":.definition,"references":.references,"diagnostics":.diagnostics]
+    let keys: [String:TerminalKey] = ["complete":.complete,"build":.build,"definition":.definition,"references":.references,"diagnostics":.diagnostics,"format":.format,"codeActions":.codeActions]
     #expect(ui.handle(try #require(keys[action]),width:120,height:35) == nil)
     #expect(ui.takeDeferredLanguageRead() == nil)
     ui.finish(text:try languageReply(SwiftIDEResult(action:"diagnostics",message:"No diagnostics")),status:0)

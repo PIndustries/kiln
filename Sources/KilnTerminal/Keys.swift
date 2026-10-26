@@ -122,6 +122,8 @@ extension TerminalKey {
         switch self {
         case .build: "build"
         case .diagnostics: "diagnostics"
+        case .format: "format"
+        case .codeActions: "codeActions"
         case .definition: "definition"
         case .references: "references"
         case .complete: "complete"
