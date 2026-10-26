@@ -35,6 +35,7 @@ struct WorkspaceUI {
     private var offset = 0, horizontal = 0, cursor = 0
     private var wrapping = false
     private var vim = VimEditor()
+    private var publishAfterLanguageRead = false
     private var idePending: SwiftIDERequest?
     private var ideResult: SwiftIDEResult?
     private var autoCompletionReady = false
@@ -199,6 +200,12 @@ struct WorkspaceUI {
         let previousSource = source, previousPath = path
         defer { if source != previousSource || path != previousPath { diagnostics = []; diagnosticsReady = true } }
         if let query = idePending {
+            defer {
+                if publishAfterLanguageRead {
+                    publishAfterLanguageRead = false
+                    if mode == "edit", editable { ideResult = nil; openPublicationReview() }
+                }
+            }
             let automatic = automaticCompletion
             let backgroundDiagnostics = automaticDiagnostics
             automaticCompletion = false
@@ -256,6 +263,10 @@ struct WorkspaceUI {
             if vim.enabled, editable, mode == "browse" { draft = source; mode = "edit"; isNew = false; treeFocus = false }
             if let location = jump { jump = nil; position(at:location) }
         } catch { self.error = "Invalid project browser response" }
+    }
+    private mutating func openPublicationReview() {
+        guard isNew || draft != source || !buffers.isEmpty else { error = "No changes to publish"; return }
+        confirmation = "publish"; accepted = false
     }
     private mutating func publish(delete: Bool = false) -> String? {
         let operation: [String:String]
@@ -425,6 +436,10 @@ struct WorkspaceUI {
             return nil
         }
         if idePending != nil {
+            if key == .escape, publishAfterLanguageRead { publishAfterLanguageRead = false; error = ""; return nil }
+            if key == .eof, mode == "edit", editable {
+                publishAfterLanguageRead = true; error = "Waiting for Swift tools before publication review; Esc cancels"; return nil
+            }
             switch key {
             case .up, .down, .left, .right, .home, .end, .pageUp, .pageDown: break
             case let .mouse(button,_,_,_): if button & 64 == 0 { return nil }
@@ -591,7 +606,7 @@ struct WorkspaceUI {
             }
             if key == .pageUp || key == .pageDown { scroll(key == .pageUp ? -max(1,height-8) : max(1,height-8),width:width,height:height); return nil }
             if key == .escape { confirmation = "discard"; accepted = false; return nil }
-            if key == .eof { guard isNew || draft != source || !buffers.isEmpty else { error = "No changes to publish"; return nil }; confirmation = "publish"; accepted = false; return nil }
+            if key == .eof { openPublicationReview(); return nil }
             let previousDraft = draft, previousCursor = cursor
             var chars = Array(draft); cursor = min(cursor,chars.count)
             let lineStart = chars[..<cursor].lastIndex(of:"\n").map { $0+1 } ?? 0

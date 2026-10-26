@@ -96,3 +96,21 @@ private func languageReply(_ result: SwiftIDEResult) throws -> String { String(d
     _ = ui.handle(.mouse(button:64,column:80,row:10,released:false),width:120,height:35)
     #expect(ui.render(width:120,height:35,theme:TerminalTheme()) != end)
 }
+
+@Test(arguments:[false,true]) func publicationDuringBackgroundDiagnosticsRetainsExplicitReviewAndCancellation(cancel: Bool) throws {
+    var ui = try languageEditor()
+    _ = ui.handle(.text("e"),width:120,height:35); _ = ui.handle(.text("// queued draft\n"),width:120,height:35)
+    let request = ui.diagnoseAfterTyping(); #expect(request != nil)
+    #expect(ui.handle(.eof,width:120,height:35) == nil)
+    #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("Waiting for Swift tools"))
+    if cancel { _ = ui.handle(.escape,width:120,height:35) }
+    ui.finish(text:try languageReply(SwiftIDEResult(action:"diagnostics",message:"No diagnostics")),status:0)
+    let frame = ui.render(width:120,height:35,theme:TerminalTheme())
+    #expect(frame.contains("Compile and publish") == !cancel)
+    #expect(ui.hasUnsavedEdits)
+    if !cancel {
+        #expect(ui.handle(.enter,width:120,height:35) == nil)
+        #expect(!ui.render(width:120,height:35,theme:TerminalTheme()).contains("Compile and publish"))
+        #expect(ui.hasUnsavedEdits)
+    }
+}
