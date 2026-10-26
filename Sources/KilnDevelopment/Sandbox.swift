@@ -8,12 +8,14 @@ import Glibc
 #endif
 
 public struct WebBuildSDK: Codable, Sendable {
+    public var testArguments: [String]? = nil
+    public var testReadRoots: [String]? = nil
     public var projectFiles: Bool? = nil
     public var nativeViews: Bool? = nil
     public var htmlTemplates: Bool? = nil
     public let schemaVersion: Int
     public let compiler: String
-    public let arguments: [String]
+    public var arguments: [String]
     public let objects: [String]
     public let readRoots: [String]
     public let runtimeLibraries: [String]
@@ -21,6 +23,9 @@ public struct WebBuildSDK: Codable, Sendable {
     public let launcher: String
     public let inputDigests: [String: String]
     public func validate() throws {
+        guard (testArguments?.count ?? 0) <= 256, (testReadRoots?.count ?? 0) <= 8,
+              (testArguments ?? []).allSatisfy({ !$0.contains("\0") && $0.utf8.count <= 4096 }),
+              (testReadRoots ?? []).allSatisfy({ $0.hasPrefix("/") && !$0.contains("\0") && !$0.contains("\n") }) else { throw KilnError.message("Invalid trusted testing SDK") }
         guard inputDigests.count <= 4096, !inputDigests.isEmpty, schemaVersion == 1, arguments.count <= 256, !objects.isEmpty, objects.count <= 2048,
               readRoots.count <= 16, runtimeLibraries.count <= 4,
               [compiler, builder, launcher].allSatisfy({ $0.hasPrefix("/") && FileManager.default.isExecutableFile(atPath: $0) }),
@@ -87,7 +92,7 @@ public enum WebIsolation {
         (allow network-inbound (local ip "localhost:\(port)"))
         """
     }
-    private static func replace(arguments: [String]) throws -> Never {
+    static func replace(arguments: [String]) throws -> Never {
         var pointers = arguments.map { strdup($0) }; pointers.append(nil)
         defer { for pointer in pointers { free(pointer) } }
         execv(arguments[0], &pointers)
@@ -106,10 +111,13 @@ public enum WebIsolation {
         for key in ProcessInfo.processInfo.environment.keys { unsetenv(key) }
         for (key, value) in environment { setenv(key, value, 1) }
         let snapshot = try WebFiles.retained(at: root)
-        let sources = snapshot.files.keys.filter { $0.hasSuffix(".swift") }.sorted()
+        let sources = snapshot.files.keys.filter { $0.hasSuffix(".swift") && !$0.hasPrefix("Tests/") }.sorted()
         let sourceRoot = root.appendingPathComponent("Sources")
         var paths = FileManager.default.fileExists(atPath: sourceRoot.path) ? sources.map { sourceRoot.appendingPathComponent($0).path } : [root.appendingPathComponent("App.swift").path]
         if let generated = try WebTemplateCompiler.write(snapshot.files,at:root) { paths.append(generated.path) }
+        if FileManager.default.fileExists(atPath:root.appendingPathComponent("TestPlan.json").path) {
+            try buildTests(sdk:sdk,root:root,snapshot:snapshot,applicationSources:paths)
+        }
         let args = ["/usr/bin/sandbox-exec", "-p", buildProfile(sdk: sdk, job: root.path), sdk.compiler] + sdk.arguments +
             ["-module-cache-path", root.appendingPathComponent("cache").path] + paths + sdk.objects +
             ["-o", root.appendingPathComponent("app").path]

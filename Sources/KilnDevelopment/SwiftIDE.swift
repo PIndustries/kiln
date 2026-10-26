@@ -2,9 +2,10 @@ import Foundation
 import KilnKit
 
 extension WebDevelopment {
-    public func ide(module: String, request: SwiftIDERequest, scope: String = "local-console") async throws -> SwiftIDEResult {
-        guard WebIsolation.supported, ideRequests < 4, ["complete","definition","references","diagnostics","rename","format","codeActions","build"].contains(request.action),
-              WebFiles.validPath(request.path), (request.path.hasSuffix(".swift") || request.action == "build"), request.text.utf8.count <= 65536,
+    public func ide(module: String, request: SwiftIDERequest, scope: String = "local-console", progress: @escaping @Sendable (String) -> Void = { _ in }) async throws -> SwiftIDEResult {
+        try Task.checkCancellation()
+        guard WebIsolation.supported, ideRequests < 4, ["complete","definition","references","diagnostics","rename","format","codeActions","build","testList","test"].contains(request.action),
+              WebFiles.validPath(request.path), (request.path.hasSuffix(".swift") || ["build","testList","test"].contains(request.action)), request.text.utf8.count <= 65536,
               (0...request.text.count).contains(request.cursor) else { throw KilnError.message("Invalid Swift IDE request or language service busy") }
         let registered = try project(module)
         var snapshot = try WebFiles.read(registered.configuration)
@@ -30,7 +31,9 @@ extension WebDevelopment {
         snapshot.files[request.path] = Data(request.text.utf8); try snapshot.validate()
         ideRequests += 1
         defer { ideRequests -= 1 }
+        if ["testList","test"].contains(request.action) { return try await test(module:module,request:request,snapshot:snapshot,sdk:registered.sdk,progress:progress) }
         if request.action == "build" {
+            progress("Compiling draft application")
             let root = directory.appendingPathComponent("ide/"+UUID().uuidString)
             try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
             defer { try? FileManager.default.removeItem(at:root) }
@@ -38,7 +41,7 @@ extension WebDevelopment {
             try snapshot.save(at:root)
             try KilnStateFile.write(JSONEncoder().encode(registered.sdk),to:root.appendingPathComponent("sdk.json"))
             var passed = true
-            do { try await compile(sdk:registered.sdk,job:root) }
+            do { try await compile(sdk:registered.sdk,job:root,progress:progress) }
             catch is CancellationError { throw CancellationError() }
             catch { passed = false }
             let log = (try? String(contentsOf:root.appendingPathComponent("build.log"),encoding:.utf8)) ?? "No compiler diagnostics available"
@@ -53,7 +56,9 @@ extension WebDevelopment {
             }
             return result
         }
-        let key = WebIsolation.digest(Data((scope+"\n"+module).utf8))
+        let testing = request.path.hasPrefix("Tests/")
+        if testing, registered.sdk.testArguments == nil { throw KilnError.message("Test source language tools require an updated testing-capable SDK") }
+        let key = WebIsolation.digest(Data((scope+"\n"+module+(testing ? "/tests" : "")).utf8))
         guard !languageBusy.contains(key) else { throw KilnError.message("Swift language session is busy") }
         languageBusy.insert(key); defer { languageBusy.remove(key) }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -70,16 +75,39 @@ extension WebDevelopment {
             }
             let root = directory.appendingPathComponent("ide/language-"+UUID().uuidString)
             try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
-            languageSessions[key] = SwiftLanguageSession(signature:signature,root:root,service:SwiftLanguage(sdk:registered.sdk,root:root),token:UUID().uuidString,used:Date())
+            var languageSDK = registered.sdk
+            if testing {
+                var flags: [String] = [], n = 0
+                while n < languageSDK.arguments.count {
+                    if languageSDK.arguments[n] == "-module-name" { n += 2 } else { flags.append(languageSDK.arguments[n]); n += 1 }
+                }
+                languageSDK.arguments = flags+(languageSDK.testArguments ?? [])+["-module-name","KilnApplicationTests","-I",root.path]
+            }
+            languageSessions[key] = SwiftLanguageSession(signature:signature,root:root,service:SwiftLanguage(sdk:languageSDK,root:root),token:UUID().uuidString,used:Date())
         }
         let session = languageSessions[key]!, root = session.root
         languageExpiry.removeValue(forKey:key)?.cancel()
-        var files = snapshot.files.filter { $0.key.hasSuffix(".swift") }.reduce(into:[String:String]()) { $0["Sources/"+$1.key] = String(decoding:$1.value,as:UTF8.self) }
-        if try WebTemplateCompiler.write(snapshot.files,at:root) != nil {
+        var files = snapshot.files.filter { $0.key.hasSuffix(".swift") && $0.key.hasPrefix("Tests/") == testing }.reduce(into:[String:String]()) { $0["Sources/"+$1.key] = String(decoding:$1.value,as:UTF8.self) }
+        if !testing, try WebTemplateCompiler.write(snapshot.files,at:root) != nil {
             files["GeneratedKilnViews.swift"] = try String(contentsOf:root.appendingPathComponent("GeneratedKilnViews.swift"),encoding:.utf8)
         }
         let reply: SwiftLanguageReply
-        do { reply = try await session.service.query(files:files,selected:"Sources/"+request.path,action:request.action,cursor:request.cursor,newName:request.newName) }
+        do {
+            if testing {
+                let application = WebFiles(files:snapshot.files.filter { !$0.key.hasPrefix("Tests/") })
+                let fingerprint = try application.digest
+                if languageSessions[key]?.testFingerprint != fingerprint {
+                    try snapshot.writeSources(at:root.appendingPathComponent("Sources")); try snapshot.save(at:root)
+                    try KilnStateFile.write(JSONEncoder().encode(registered.sdk),to:root.appendingPathComponent("sdk.json"))
+                    var plan = SwiftTestPlan(list:true,filter:nil); plan.moduleOnly = true
+                    try KilnStateFile.write(JSONEncoder().encode(plan),to:root.appendingPathComponent("TestPlan.json"))
+                    progress("Preparing application module for test source")
+                    try await compile(sdk:registered.sdk,job:root,progress:progress)
+                    languageSessions[key]?.testFingerprint = fingerprint
+                    await session.service.stop()
+                }
+            }
+            reply = try await session.service.query(files:files,selected:"Sources/"+request.path,action:request.action,cursor:request.cursor,newName:request.newName) }
         catch {
             languageSessions.removeValue(forKey:key); await session.service.shutdown(); throw error
         }

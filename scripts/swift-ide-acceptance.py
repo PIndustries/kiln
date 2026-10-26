@@ -41,6 +41,9 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
     root = Path(td).resolve(); state = root/'state'; state.mkdir(mode=0o700)
     project = root/'Source'; project.mkdir(mode=0o700)
     (project/'Models').mkdir(); (project/'Models/Jump.swift').write_text('struct JumpTarget { let value = 1 }\n'); (project/'Models/Jump.swift').chmod(0o600)
+    (project/'Tests').mkdir()
+    test_source = 'import Testing\n@testable import KilnApplication\n@Test func aFailure() { #expect(JumpTarget().value == 2) }\n@Test func aPass() async throws { try await Task.sleep(for: .seconds(1)); #expect(JumpTarget().value == 1) }\n'
+    (project/'Tests/ProbeTests.swift').write_text(test_source); (project/'Tests/ProbeTests.swift').chmod(0o600)
     source = project/'App.swift'; original = (ROOT/'Sources/ExampleWeb/Web.swift').read_bytes()+b'\nfunc ideDefinitionProbe(_ value: JumpTarget) {}\nfunc ideRenameProbe() { let renameLocal = 1; print(renameLocal) }\nfunc ideFixProbe() { var neverMutated = 1; print(neverMutated) }\n'
     source.write_bytes(original); source.chmod(0o600)
     sdk = root/'sdk.json'
@@ -152,6 +155,17 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
         send(b'\x1b'); expect('Discard unsaved edits?'); send(b'\x1b[B\r'); drain()
         print('PASS formatting and compiler fix over SSH: both applied only to drafts; source/release unchanged',flush=True)
+        # Swift Testing discovery and runs use the current source snapshot. The
+        # navigator retains results while source is opened and chat stays visible.
+        send(b'\x1bOP'); expect('Swift tests: 2 discovered'); expect('[discovered]')
+        send(b'a'); expect('Tests:'); expect('Tests finished:'); expect('[failed] aFailure()')
+        send(b'f'); expect('Tests/ProbeTests.swift:3:')
+        send(b'\x1b[<0;12;7M'); expect('Tests/ProbeTests.swift [focus]')
+        send(b'\x1bOP'); expect('last snapshot'); expect('[failed] aFailure()')
+        send(b'\x1b'); drain()
+        assert (project/'Tests/ProbeTests.swift').read_text()==test_source
+        assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
+        print('PASS Swift test navigator over SSH: discovery, live progress, failure mouse navigation, retained results, source/release unchanged',flush=True)
         # Run restarts the deployed release, not a discarded draft.
         send(b'\x1b[15~'); expect('Started draft/site'); send(b'\r'); expect('Codebase / draft/site')
         assert source.read_bytes()==original and get('/assets/app.css')==css

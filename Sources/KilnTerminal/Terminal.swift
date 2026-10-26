@@ -37,6 +37,11 @@ public struct KilnTerminal {
         codeWorkspace?.finish(text: text, status: status)
         if let share = codeWorkspace?.takeRestoredDivider() { codeShare = share }
     }
+    public var canCancelWorkspaceRead: Bool { codeFocus && codeWorkspace?.cancellableLanguageRead == true }
+    public mutating func cancelWorkspaceRead() { codeWorkspace?.cancelLanguageRead() }
+    public mutating func workspaceProgress(_ message: String, module: String) {
+        guard module == codeWorkspace?.module else { return }; codeWorkspace?.languageProgress(message)
+    }
     public mutating func takeDeferredWorkspaceRead() -> TerminalEffect? {
         codeWorkspace?.takeDeferredLanguageRead().map { .workspaceRead($0) }
     }
@@ -77,10 +82,10 @@ public struct KilnTerminal {
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
         if busy, codeWorkspace?.canBrowseDuringTurn != true, key != .agentReview { return [] }
-        if busy, codeWorkspace?.reviewingAgent != true, ![.agentReview,.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
+        if busy, codeWorkspace?.reviewingAgent != true, ![.agentReview,.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.tests,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
-        if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
+        if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, codeWorkspace?.toolbarAction(at:column) == .run { return [] }
         let paneWidth = width >= 110 ? splitWidth : width
         guard let command = codeWorkspace?.handle(key, width: paneWidth, height: height) else {
             if codeWorkspace?.active == false {
@@ -520,7 +525,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .format, .codeActions, .agentReview, .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
+        case .tests, .format, .codeActions, .agentReview, .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }

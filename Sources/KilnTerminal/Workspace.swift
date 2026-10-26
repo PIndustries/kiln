@@ -39,14 +39,28 @@ struct WorkspaceUI {
     private var publishAfterLanguageRead = false
     private var idePending: SwiftIDERequest?
     private var ideResult: SwiftIDEResult?
+    private var testFailureView = false
+    private var testResult: SwiftIDEResult?
+    private var testFilter: String?
+    private var languageStatus = ""
+    private var languageStarted: Date?
     private var autoCompletionReady = false
     private var automaticCompletion = false
+    private var completionDismissed = false
     private var automaticDiagnostics = false
     private var diagnosticsReady = false
     private var diagnostics: [SwiftIDELocation] = []
     private var renameName = ""
     private var toolbar: [(String,TerminalKey)] {
-        [("[Build]",.build),("[Run]",.run),("[Def]",.definition),("[Fmt F2]",.format),("[Fix F3]",.codeActions),("[Wrap]",.wrap),("[Complete]",.complete),("["+vim.label+"]",.vim),("[Refs F9]",.references),("[Rename F10]",.rename),("[Issues F4]",.diagnostics),("[Proposals Ctrl-P]",.agentReview)]
+        [("[Tests F1]",.tests),("[Build]",.build),("[Run]",.run),("[Def]",.definition),("[Fmt F2]",.format),("[Fix F3]",.codeActions),("[Wrap]",.wrap),("[Complete]",.complete),("["+vim.label+"]",.vim),("[Refs F9]",.references),("[Rename F10]",.rename),("[Issues F4]",.diagnostics),("[Proposals Ctrl-P]",.agentReview)]
+    }
+    func toolbarAction(at column: Int) -> TerminalKey? {
+        var left = 3
+        for (label,action) in toolbar {
+            if (left..<left+label.count).contains(column) { return action }
+            left += label.count+1
+        }
+        return nil
     }
     private var ideIndex = 0
     private var jump: SwiftIDELocation?
@@ -113,24 +127,36 @@ struct WorkspaceUI {
         return true
     }
     private mutating func swiftTool(_ action: String, background: Bool = false) -> String? {
-        guard change == nil, (path.hasSuffix(".swift") || action == "build"), !waiting, idePending == nil else { return nil }
+        guard change == nil, (path.hasSuffix(".swift") || ["build","testList","test"].contains(action)), !waiting, idePending == nil else { return nil }
         if action == "complete", mode != "edit" {
             guard editable else { return nil }; draft = source; isNew = false; mode = "edit"
             offset = min(offset, String(source.prefix(cursor)).filter { $0 == "\n" }.count)
         }
+        if action == "complete" { completionDismissed = false; autoCompletionReady = false }
         let value = languageRequest(action)
         guard let data = try? JSONEncoder().encode(value), let json = String(data:data,encoding:.utf8) else { return nil }
-        idePending = value
+        idePending = value; languageStarted = Date(); languageStatus = "Swift "+action+" queued"
         if !background { ideResult = nil; error = "Swift "+action+"..." }
         return command(["web","ide",module,json])
     }
     private func languageRequest(_ action: String, at position: Int? = nil) -> SwiftIDERequest {
-        SwiftIDERequest(action:action,path:path,sha256:isNew && mode == "edit" ? "" : hash,text:mode == "edit" ? draft : source,cursor:position ?? cursor,buffers:buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) },newName:action == "rename" ? renameName : nil)
+        var value = SwiftIDERequest(action:action,path:path,sha256:isNew && mode == "edit" ? "" : hash,text:mode == "edit" ? draft : source,cursor:position ?? cursor,buffers:buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) },newName:action == "rename" ? renameName : nil)
+        value.testFilter = action == "test" ? testFilter : nil
+        return value
+    }
+    mutating func languageProgress(_ message: String) {
+        guard idePending != nil, message.utf8.count <= 4096 else { return }
+        languageStatus = message
+    }
+    var cancellableLanguageRead: Bool { idePending != nil }
+    mutating func cancelLanguageRead() {
+        queuedLanguageRead = nil; publishAfterLanguageRead = false
+        languageStatus = "Cancelling Swift request"; error = languageStatus
     }
     mutating func takeDeferredLanguageRead() -> String? {
         guard proposalReview == nil, let queued = queuedLanguageRead, idePending == nil, !waiting, confirmation.isEmpty else { return nil }
         queuedLanguageRead = nil
-        let current = languageRequest(queued.action,at:["build","diagnostics","format"].contains(queued.action) ? queued.cursor : nil)
+        let current = languageRequest(queued.action,at:["build","diagnostics","format","testList","test"].contains(queued.action) ? queued.cursor : nil)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         guard (try? encoder.encode(queued)) == (try? encoder.encode(current)) else {
             error = "Queued Swift request cancelled because the editor changed; request it again."; return nil
@@ -145,7 +171,7 @@ struct WorkspaceUI {
         let command = swiftTool("complete"); automaticCompletion = command != nil; return command
     }
     mutating func diagnoseAfterTyping() -> String? {
-        guard proposalReview == nil, diagnosticsReady, mode == "edit", confirmation.isEmpty, !waiting, idePending == nil else { return nil }
+        guard proposalReview == nil, ideResult == nil, diagnosticsReady, mode == "edit", confirmation.isEmpty, !waiting, idePending == nil else { return nil }
         diagnosticsReady = false
         let command = swiftTool("diagnostics",background:true); automaticDiagnostics = command != nil; return command
     }
@@ -241,12 +267,14 @@ struct WorkspaceUI {
             let backgroundDiagnostics = automaticDiagnostics
             automaticCompletion = false
             automaticDiagnostics = false
-            idePending = nil; error = ""
+            idePending = nil; languageStarted = nil; languageStatus = ""; error = ""
             guard status == 0, let data = text.data(using:.utf8), let result = try? JSONDecoder().decode(SwiftIDEResult.self,from:data) else { if !automatic && !backgroundDiagnostics { error = text }; return }
+            if result.action == "complete", completionDismissed { return }
             let openBuffers = buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) }
-            guard (query.buffers ?? [:]) == openBuffers, query.path == path, query.text == (mode == "edit" ? draft : source), query.action == "diagnostics" || query.action == "format" || query.cursor == cursor, !automatic || (!treeFocus && (!vim.enabled || vim.insert) && confirmation.isEmpty) else { if !automatic && !backgroundDiagnostics { error = "Swift result belongs to an earlier buffer. Request it again." }; return }
+            guard (query.buffers ?? [:]) == openBuffers, query.path == path, query.text == (mode == "edit" ? draft : source), query.action == "diagnostics" || query.action == "format" || ["build","testList","test"].contains(query.action) || query.cursor == cursor, !automatic || (!treeFocus && (!vim.enabled || vim.insert) && confirmation.isEmpty) else { if !automatic && !backgroundDiagnostics { error = "Swift result belongs to an earlier buffer. Request it again." }; return }
             if result.action == "diagnostics" { diagnostics = result.locations; if backgroundDiagnostics { return } }
             if automatic && result.completions.isEmpty { return }
+            if ["testList","test"].contains(result.action) { testResult = result; testFailureView = false }
             ideResult = result; ideIndex = 0
             return
         }
@@ -370,6 +398,11 @@ struct WorkspaceUI {
         let previousDraft = draft, previousPath = path
         defer { if draft != previousDraft || path != previousPath { diagnosticsReady = true; diagnostics = [] } }
         autoCompletionReady = false
+        if input == .escape, !completionDismissed, ideResult?.action == "complete" || idePending?.action == "complete" {
+            completionDismissed = true; ideResult = nil
+            if queuedLanguageRead?.action == "complete" { queuedLanguageRead = nil }
+            return nil
+        }
         if input == .followAgent { followingAgent.toggle(); return nil }
         if followingAgent, let file = agentFile, !hasUnsavedEdits {
             var preview = self
@@ -417,7 +450,8 @@ struct WorkspaceUI {
         if key == .panLeft || key == .panRight {
             scroll(across:key == .panLeft ? -8 : 8,width:width,height:height); return nil
         }
-        if [.format,.codeActions,.build,.definition,.complete,.run,.references,.rename,.diagnostics].contains(key) { ideResult = nil }
+        if key == .tests, idePending == nil, let saved = testResult { ideResult = saved; testFailureView = false; ideIndex = 0; return nil }
+        if [.tests,.format,.codeActions,.build,.definition,.complete,.run,.references,.rename,.diagnostics].contains(key) { ideResult = nil }
         if key == .wrap {
             let rows = visualRows(width:width), line = rows.indices.contains(offset) ? rows[offset].0 : 0
             wrapping.toggle(); horizontal = 0
@@ -428,7 +462,16 @@ struct WorkspaceUI {
             if result.action == "complete" {
                 switch key { case .text, .paste, .backspace, .delete: ideResult = nil; return handle(key,width:width,height:height); default: break }
             }
-            let count = result.action == "complete" ? result.completions.count : result.action == "codeActions" ? (result.codeActions?.count ?? 0) : result.locations.count
+            if ["testList","test"].contains(result.action), case .text(let choice) = key {
+                if choice.lowercased() == "f" { testFailureView.toggle(); ideIndex = 0; return nil }
+                if choice.lowercased() == "d" { testResult = nil; ideResult = nil; return swiftTool("testList") }
+                if choice.lowercased() == "a" || choice.lowercased() == "r" {
+                    testFilter = choice.lowercased() == "r" && !testFailureView ? result.tests.flatMap { $0.indices.contains(ideIndex) ? $0[ideIndex].id : nil } : nil
+                    if choice.lowercased() == "r", testFilter == nil { error = "Select a discovered test first"; return nil }
+                    ideResult = nil; return swiftTool("test")
+                }
+            }
+            let count = (testFailureView ? nil : result.tests?.count) ?? (result.action == "complete" ? result.completions.count : result.action == "codeActions" ? (result.codeActions?.count ?? 0) : result.locations.count)
             if key == .escape { ideResult = nil; return nil }
             if key == .up { ideIndex = max(0,ideIndex-1) }
             if key == .down || (key == .tab && result.action != "complete") { ideIndex = min(max(0,count-1),ideIndex+1) }
@@ -465,12 +508,16 @@ struct WorkspaceUI {
                     revealCaret(width:width,height:height)
                     return nil
                 }
+                if !testFailureView, let tests = result.tests, tests.indices.contains(ideIndex), let target = tests[ideIndex].failures.first ?? tests[ideIndex].location { return openLocation(target) }
                 if result.locations.indices.contains(ideIndex) { return openLocation(result.locations[ideIndex]) }
                 ideResult = nil
             }
             return nil
         }
         if idePending != nil {
+            if key == .escape, completionDismissed, idePending?.action == "complete", mode == "edit" {
+                confirmation = "discard"; accepted = false; return nil
+            }
             if key == .escape, publishAfterLanguageRead || queuedLanguageRead != nil { publishAfterLanguageRead = false; queuedLanguageRead = nil; error = ""; return nil }
             if let action = key.swiftLanguageAction {
                 publishAfterLanguageRead = false; queuedLanguageRead = languageRequest(action)
@@ -502,6 +549,7 @@ struct WorkspaceUI {
             if mode != "edit" { draft = source; isNew = false }
             mode = "rename"; renameName = ""; return nil
         }
+        if key == .tests { return swiftTool("testList") }
         if key == .build { return swiftTool("build") }
         if key == .run {
             guard !hasUnsavedEdits else { error = "Publish drafts with Ctrl-D before running the release"; return nil }
@@ -812,18 +860,33 @@ struct WorkspaceUI {
             }
             row(h-3,"| "+fit("Suggestions: Up/Down choose  Tab/Enter insert  Esc dismiss; keep typing to refine",w-4)+" |")
         } else if let result = ideResult {
-            row(3,"| "+fit(result.message.components(separatedBy:"\n").first ?? "Swift tools",w-4)+" |")
-            let labels = result.action == "complete" ? result.completions.map { $0.label+"  "+$0.detail } : result.action == "codeActions" ? (result.codeActions ?? []).map { $0.title+($0.disabledReason.map { " [unavailable: "+$0+"]" } ?? "") } : result.locations.map { "\($0.path):\($0.line):\($0.column)  "+$0.message }
+            for y in 3..<h-3 { row(y,"| "+String(repeating:" ",count:w-4)+" |") }
+            if result.tests != nil { row(2,"| "+fit("TEST NAVIGATOR / "+module,w-4)+" |") }
+            let heading = result.message.components(separatedBy:"\n").first ?? "Swift tools"
+            row(3,"| "+fit(result.tests == nil ? heading : "Swift tests / last snapshot",w-4)+" |")
+            if result.tests != nil { row(4,"| "+fit(heading,w-4)+" |") }
+            let labels: [String]
+            if let tests = result.tests, !testFailureView {
+                labels = tests.map { test in
+                    let failure = test.failures.first.map { "  "+$0.path+":"+String($0.line)+" "+$0.message } ?? ""
+                    return "["+test.state+"] "+test.name+failure
+                }
+            } else if result.action == "complete" { labels = result.completions.map { $0.label+"  "+$0.detail } }
+            else if result.action == "codeActions" { labels = (result.codeActions ?? []).map { $0.title+($0.disabledReason.map { " [unavailable: "+$0+"]" } ?? "") } }
+            else { labels = result.locations.map { "\($0.path):\($0.line):\($0.column)  "+$0.message } }
             let visible = max(1,height-13), start = max(0,ideIndex-visible+1)
             if labels.isEmpty {
                 for (i,line) in result.message.components(separatedBy:"\n").prefix(visible).enumerated() { row(5+i,"| "+fit(line,w-4)+" |") }
             } else {
                 for (i,label) in labels.dropFirst(start).prefix(visible).enumerated() {
-                    let color = label.contains("error:") ? 203 : label.contains("warning:") ? 220 : theme.foreground
+                    let color = label.contains("error:") || label.hasPrefix("[failed]") ? 203 : label.hasPrefix("[passed]") ? 82 : label.contains("warning:") || label.hasPrefix("[skipped]") ? 220 : theme.foreground
                     row(5+i,"| "+"\u{1b}[38;5;\(color)m"+fit((start+i == ideIndex ? "> " : "  ")+label,w-4)+" |")
                 }
             }
-            row(h-3,"| "+fit(["rename","format","codeActions"].contains(result.action) ? "Enter applies selected edits to drafts (no publish)  Esc discard" : "Arrows choose  Enter/click open or insert  Esc close",w-4)+" |")
+            row(h-3,"| "+fit(result.tests != nil ? "A all  R selected  F failures/tests  D discover  Enter/click source  Esc code; F1 returns" : ["rename","format","codeActions"].contains(result.action) ? "Enter applies selected edits to drafts (no publish)  Esc discard" : "Arrows choose  Enter/click open or insert  Esc close",w-4)+" |")
+        }
+        if let began = languageStarted, idePending != nil, !automaticCompletion, !automaticDiagnostics {
+            row(h-3,"| "+fit(languageStatus+" / "+String(Int(Date().timeIntervalSince(began)))+"s / Ctrl-C cancel",w-4)+" |")
         }
         if mode == "rename" {
             row(4,"| "+fit("Rename symbol at cursor. Changes stay in drafts until you publish.",w-4)+" |")

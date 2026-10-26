@@ -1,5 +1,5 @@
 /// Independent SSH lane for registered-source inspection and local draft data.
-/// No source mutation, publication or general command execution is admitted here.
+/// No source mutation, publication or general shell execution is admitted here.
 func workspaceReadAllowed(_ parts: [String]) -> Bool {
     guard parts.count >= 3, parts[0] == "web" else { return false }
     switch parts[1] {

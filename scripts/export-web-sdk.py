@@ -69,7 +69,36 @@ if args.snapshot_dir:
     inputs = {remap(v) for v in inputs}
     read_roots = [remap(v) for v in read_roots]
     builder, launcher = remap(builder), remap(launcher)
-metadata = dict(nativeViews=True, htmlTemplates=True, schemaVersion=1, projectFiles=True, compiler=str(compiler), arguments=arguments, objects=objects,
+# Use the installed toolchain's test flags, never a project package or plugin.
+test_command = next((v for k, v in plan['swiftCommands'].items() if k.startswith('C.KilnTests-')), command)
+testing_arguments = []
+testing_roots = []
+flags = iter(test_command['otherArguments'])
+for flag in flags:
+    if flag == '-Xcc':
+        next(flags)
+        continue
+    if flag in ['-plugin-path', '-F', '-I', '-L']:
+        path = next(flags)
+        if flag == '-plugin-path' or (flag, path) not in zip(arguments, arguments[1:]):
+            testing_arguments += [flag, path]
+        if flag in ['-F', '-L'] and path not in testing_roots:
+            testing_roots.append(path)
+        if flag == '-F':
+            binary = Path(path) / 'Testing.framework/Testing'
+            if binary.is_file():
+                inputs.add(str(binary.resolve()))
+                testing_arguments += ['-Xlinker', '-rpath', '-Xlinker', path]
+plugin = compiler.parent.parent / 'lib/swift/host/plugins/testing'
+if plugin.is_dir() and '-plugin-path' not in testing_arguments:
+    testing_arguments += ['-plugin-path', str(plugin)]
+if plugin.is_dir():
+    inputs |= {str(p.resolve()) for p in plugin.rglob('*') if p.is_file()}
+# Test-only flags may point at build modules; preserve immutable SDK remapping.
+if args.snapshot_dir:
+    testing_arguments = [remap(v) for v in testing_arguments]
+    testing_roots = [remap(v) for v in testing_roots]
+metadata = dict(testArguments=testing_arguments, testReadRoots=testing_roots, nativeViews=True, htmlTemplates=True, schemaVersion=1, projectFiles=True, compiler=str(compiler), arguments=arguments, objects=objects,
                 readRoots=read_roots, runtimeLibraries=libraries, builder=builder, launcher=launcher,
                 inputDigests={path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in sorted(inputs)})
 for name in ['builder', 'launcher']:

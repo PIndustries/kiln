@@ -55,13 +55,13 @@ extension KilnCommands {
             let object = try JSONSerialization.jsonObject(with:Data(raw.utf8)) as? [String:Any]
             guard let text = object?["source"] as? String, let hash = object?["sha256"] as? String else { throw KilnError.message("Invalid Swift source") }
             let request = SwiftIDERequest(action:p[3],path:p[4],sha256:hash,text:text,cursor:cursor,newName:p.count == 7 ? p[6] : nil)
-            let result = try await webDevelopment.ide(module:p[2],request:request,scope:try aiSessionID(sessionID))
+            let result = try await webDevelopment.ide(module:p[2],request:request,scope:try aiSessionID(sessionID),progress:{ progress(.status($0)) })
             try authorizeAdmin()
             return CommandResult(String(decoding:try JSONEncoder().encode(result),as:UTF8.self))
         case let p where p.count == 4 && p[1] == "ide":
             guard p[3].utf8.count <= 2_097_152 else { throw KilnError.message("Oversized IDE request") }
             let request = try JSONDecoder().decode(SwiftIDERequest.self,from:Data(p[3].utf8))
-            let result = try await webDevelopment.ide(module:p[2],request:request,scope:try aiSessionID(sessionID))
+            let result = try await webDevelopment.ide(module:p[2],request:request,scope:try aiSessionID(sessionID),progress:{ progress(.status($0)) })
             try authorizeAdmin()
             return CommandResult(String(decoding:try JSONEncoder().encode(result),as:UTF8.self))
         case ["web", "projects"]: return CommandResult(try await webDevelopment.inventory())

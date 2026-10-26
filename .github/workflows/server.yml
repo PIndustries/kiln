@@ -82,6 +82,11 @@ jobs:
           "$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/vault-integration.py
       - name: Offline AI streaming, approvals and reconnect through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/offline-ai-terminal-integration.py'
+      - name: Native Swift Testing discovery, failures and cancellation
+        shell: bash
+        run: |
+          python3 scripts/export-web-sdk.py --build-dir .build/debug --output "$RUNNER_TEMP/kiln-testing-sdk.json" --snapshot-dir "$RUNNER_TEMP/kiln-testing-sdk-inputs"
+          KILN_SWIFT_TEST_SDK="$RUNNER_TEMP/kiln-testing-sdk.json" KILN_TEST_SECRET=private-fixture swift test --skip-build --filter swiftTestDiscoveryExecution
       - name: Swift IDE compiler and terminal acceptance
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/swift-ide-acceptance.py'
       - name: Editor draft recovery after failed compilation

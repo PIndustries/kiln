@@ -173,3 +173,14 @@ private func dragDivider(_ ui: inout KilnTerminal, from: Int, to: Int, row: Int 
     ui.finishWorkspace(text:"Current workspace failure",status:1,module:"demo/web")
     #expect(ui.render().contains("Current workspace failure"))
 }
+
+@Test func runToolbarDuringForegroundWorkCannotLeaveTheWorkspaceWaiting() throws {
+    var ui = try codeUI()
+    _ = ui.handle(.focusWorkspace); _ = ui.handle(.text("Explain this source")); _ = ui.handle(.enter)
+    #expect(ui.busy)
+    _ = ui.handle(.focusWorkspace)
+    // Tests now precedes Build and Run. Resolve the action from the toolbar,
+    // rather than treating its former fixed character range as the Run button.
+    #expect(ui.handle(.mouse(button:0,column:24,row:1,released:false)).isEmpty)
+    #expect(ui.handle(.build).contains(where: { if case .workspaceRead = $0 { return true }; return false }))
+}

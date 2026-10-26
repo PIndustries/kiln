@@ -12,6 +12,7 @@ struct SwiftLanguageSession: Sendable {
     let service: SwiftLanguage
     let token: String
     var used: Date
+    var testFingerprint: String? = nil
 }
 struct SwiftLanguageReply: Sendable {
     let data: Data

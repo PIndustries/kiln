@@ -13,6 +13,7 @@ language service or package dependency is required.
 | F12 / Def | Resolve a definition in registered project files |
 | F9 / Refs | Compiler-indexed project references; any document-only fallback is labelled |
 | F10 / Rename | Request a rename proposal, then Enter applies it to local drafts |
+| F1 / Tests | Open retained test results or discover registered Swift tests |
 | F2 / Fmt | Review document formatting, then apply it to local drafts |
 | F3 / Fix | Review compiler actions for the caret line, then apply supported draft edits |
 | F4 / Issues | Open clickable diagnostics for the current document |
@@ -80,7 +81,7 @@ proposal, not proof of behavior equivalence; review it before publishing.
 The current index resource guards are 30 seconds of compilation, 64 KiB compiler
 diagnostics, 4,096 units/record dependencies, 200,000 raw occurrences, and 100,000
 deduplicated occurrences/16 MiB retained metadata per session. IndexStore UTF-8
-columns are converted to editor UTF-16 positions. Test navigation, deeper
+columns are converted to editor UTF-16 positions. Deeper
 override/protocol refactoring and LLDB/DAP remain separate work.
 
 The real SourceKit test in `SwiftIDETests` is enabled with
@@ -157,3 +158,45 @@ unsupported file operation are marked unavailable and are not executed. Availabl
 actions depend on the installed toolchain and the current source. Formatting is provided by the registered Swift toolchain. Kiln adds no separate
 package dependency and invokes no workspace shell command or package plugin for
 these controls. Formatting currently requests four-space indentation.
+
+### Swift test navigator
+
+Place native Swift Testing tests in `Tests/*.swift` (nested directories are
+supported). Import `Testing` and `@testable import KilnApplication`. Kiln compiles
+the registered application into that module with its entry point renamed, then
+compiles a generated toolchain runner. Application `@main` does not run during
+these tests. Deployment builds exclude `Tests/` source.
+
+F1 discovers tests or reopens the last result snapshot. In the navigator, **A**
+runs all tests, **R** runs the selected test, **D** rediscovers and **F** switches
+between the test inventory and all recorded failure locations. Enter or a click
+opens the selected source location. Escape returns to code; F1 reopens the same
+results. Failed tests appear first and use red; passing tests use green. Results
+remain labelled as the last snapshot until another discovery/run finishes.
+Known issues and skipped tests retain their toolchain meanings. Incomplete runs
+are reported as partial results, never as a successful run.
+
+Build/test phases and elapsed time appear in the code pane. Test execution reports
+live passed/failed/running/skipped counts independently of AI chat. Ctrl-C while
+the code pane has focus cancels its pending Swift request. Drafts and the deployed
+release are preserved. Explicit tools queued behind diagnostics can be cancelled;
+new edits invalidate a queued request for older text.
+
+Tests run in a separate macOS sandbox with a private scratch directory, trusted
+runtime libraries, no provider environment, no network grant and no child-process
+execution grant. Compilation uses the pinned SDK and installed Swift Testing
+macros. Kiln does not evaluate a project package manifest, fetch dependencies or
+execute package plugins. This is registered-source Swift Testing support; arbitrary
+SwiftPM/Xcode test plans and XCTest discovery require separate integration.
+
+Export/register an updated SDK with `scripts/export-web-sdk.py` to enable testing.
+Older grants remain usable for existing capabilities and explicitly reject test
+operations until updated. Test-source language sessions prepare a private
+application module and reuse it while application contents match. Their compiler
+index covers the test target; application indexing uses its own session.
+
+Resource guards are 120 seconds per compile/run, 64 KiB captured console output,
+2 MiB structured events, 256 discovered tests and 512 issues. Reaching a guard
+fails explicitly. Swift Testing JSON Lines v0 supplies discovery, events and
+locations; unknown event kinds are ignored, while unsupported schemas and malformed
+complete records fail. See the [Swift Testing event schema](https://github.com/swiftlang/swift-testing/blob/swift-6.2-RELEASE/Documentation/ABI/JSON.md).
