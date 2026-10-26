@@ -198,6 +198,16 @@ struct WorkspaceUI {
         let longest = lines.map { KilnTerminal.safe($0).replacingOccurrences(of:"\t",with:"    ").count }.max() ?? 0
         horizontal = min(max(0,longest-max(1,codeWidth(width))),max(0,horizontal+across))
     }
+    private mutating func revealCaret(width: Int, height: Int) {
+        let before = Array(draft.prefix(cursor)), sourceLine = before.filter { $0 == "\n" }.count
+        let visible = max(1,height-8)
+        let rawColumn = String(before.reversed().prefix(while: { $0 != "\n" }).reversed()).replacingOccurrences(of:"\t",with:"    ").count
+        let line = wrapping ? visualRows(width:width).lastIndex(where: { $0.0 == sourceLine && $0.1 <= rawColumn }) ?? 0 : sourceLine
+        if line < offset { offset = line }; if line >= offset+visible { offset = line-visible+1 }
+        let column = rawColumn
+        let room = max(8,(width-4)-min(32,max(18,(width-4)/4))-11)
+        if !wrapping { if column < horizontal { horizontal = column }; if column >= horizontal+room { horizontal = column-room+1 } }
+    }
     private mutating func openRefactor() {
         guard editable && projectRoot && path.hasSuffix(".swift") else { error = "Refactor requires a current Swift file in a registered project root"; return }
         mode = "refactor"; refactorChoice = 2; error = ""
@@ -279,7 +289,7 @@ struct WorkspaceUI {
                     guard String(chars).utf8.count <= 65536 else { error = "Completion exceeds file limit"; ideResult = nil; return nil }
                     vim.record(draft,cursor)
                     draft = String(chars); cursor = item.start+item.text.count; ideResult = nil
-                    position(at:SwiftIDELocation(path:path,line:String(draft.prefix(cursor)).components(separatedBy:"\n").count,column:(String(draft.prefix(cursor)).components(separatedBy:"\n").last?.utf16.count ?? 0)+1))
+                    revealCaret(width:width,height:height)
                     return nil
                 }
                 if result.locations.indices.contains(ideIndex) { return openLocation(result.locations[ideIndex]) }
@@ -471,14 +481,7 @@ struct WorkspaceUI {
             }
             if String(chars) != previousDraft { vim.record(previousDraft,previousCursor) }
             draft = String(chars)
-            let before = Array(chars.prefix(cursor)), sourceLine = before.filter { $0 == "\n" }.count
-            let visible = max(1,height-8)
-            let rawColumn = String(before.reversed().prefix(while: { $0 != "\n" }).reversed()).replacingOccurrences(of:"\t",with:"    ").count
-            let line = wrapping ? visualRows(width:width).lastIndex(where: { $0.0 == sourceLine && $0.1 <= rawColumn }) ?? 0 : sourceLine
-            if line < offset { offset = line }; if line >= offset+visible { offset = line-visible+1 }
-            let column = rawColumn
-            let room = max(8,(width-4)-min(32,max(18,(width-4)/4))-11)
-            if !wrapping { if column < horizontal { horizontal = column }; if column >= horizontal+room { horizontal = column-room+1 } }
+            revealCaret(width:width,height:height)
             if draft != previousDraft, !vim.enabled || vim.insert {
                 switch key {
                 case .text, .backspace, .delete:

@@ -142,6 +142,7 @@ private func reply(_ result: SwiftIDEResult) throws -> String { String(decoding:
         #expect(frame.contains("Suggestions:") && frame.contains("func"))
         _ = ui.handle(.tab,width:110,height:35)
         #expect(!ui.render(width:110,height:35,theme:TerminalTheme()).contains("Suggestions:"))
+        #expect(ui.render(width:110,height:35,theme:TerminalTheme()).contains("ViewCol 1"))
         let nextEffect = ui.handle(.complete,width:110,height:35)
         let next = try #require(nextEffect)
         let args = try KilnCommands.tokenize(next)
