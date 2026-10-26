@@ -4,6 +4,7 @@ import KilnKit
 /// Read-only proposal review. Staging is a separate explicit local-draft action.
 struct AgentReviewUI {
     let module: String
+    init(module: String) { self.module = module }
     var active = true
     private(set) var waiting = true
     private var pending = "list"

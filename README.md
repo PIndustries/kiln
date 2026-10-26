@@ -126,7 +126,7 @@ Libraries are composed at build time. Application modules are deployed as execut
 - [AI configuration, tools, and tasks](docs/ai.md)
 - [Background-agent events and recovery](docs/agent-events.md)
 - [Swift IDE controls and isolation](docs/swift-ide.md)
-- [Owned workspace recovery](docs/workspace-recovery.md) and [sovereignty roadmap](docs/sovereignty-roadmap.md)
+- [Owned workspace recovery](docs/workspace-recovery.md) and [development status](docs/development-status.md)
 - [Bastion destinations](docs/bastion.md) and [persistent terminals](docs/sessions.md)
 - [Peer adoption](docs/clustering.md) and [Linux resource limits](docs/resources.md)
 - [Release checks and operating boundaries](docs/release-readiness.md)

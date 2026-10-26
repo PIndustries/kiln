@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "principle": "Kiln owns product policy, workspace, agents, rendering, application data contracts and release lifecycle. No mandatory hosted control plane. New dependencies require an explicit reviewed policy change.",
+  "principle": "Kiln implements application policy, workspace state, agent lifecycle, rendering and release controls in this repository. Dependency changes include an updated inventory and review rationale.",
   "directSources": [
     "https://github.com/apple/swift-crypto.git",
     "https://github.com/apple/swift-nio-ssh.git",
