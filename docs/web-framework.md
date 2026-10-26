@@ -415,8 +415,9 @@ Create refuses an existing path. Delete is
 Full replace uses `action: replace`, the matching `sha256` and `content`.
 Legacy `{before,after}` edits still target App.swift. Validate/update tools accept up to 256 KiB of JSON arguments in both ordinary
 chat and refactor turns. Other tools retain a 4 KiB input guard. These are local
-resource guards, separate from provider generation limits. One publish attempt
-per turn remains in force. Tools cannot
+resource guards, separate from provider generation limits. When validate tools are available, only an unchanged proposal that passed validation
+in the same turn can publish; a different proposal is rejected before any write and
+can be validated safely. One publish attempt per turn remains in force. Tools cannot
 expand the root grant, read host filesystem files or change SDK configuration.
 
 
@@ -433,7 +434,9 @@ Cancel is selected initially. The action uses the selected provider and the
 existing development autoPublish grant. It binds the displayed file hash and
 registration, narrows the AI turn to project tools, reads the affected source,
 validates the proposed group and publishes once after compilation and health
-checks. On refactor failure the tree and code stay visible at the same position, with
+checks. Refactors use full-file replace operations bound to the file hashes returned by
+inspection, plus create operations for extracted components. On refactor failure
+(including failure receipt text from a completed command) the tree and code stay visible at the same position, with
 a failure notice. V opens the complete diagnostic result; Enter/Esc returns to
 code. No success is claimed and uncertain writes are not retried. Historical code is read-only;
 W opens the current workspace before refactoring.

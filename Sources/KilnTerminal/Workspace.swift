@@ -101,7 +101,7 @@ struct WorkspaceUI {
             return
         }
         waiting = false
-        if pending == "refactor", status != 0 {
+        if pending == "refactor", status != 0 || text.hasPrefix("Web change failed or unconfirmed") {
             // Keep the source/tree usable; retain the complete failure for review.
             // Never replay a failed or uncertain write automatically.
             mode = "browse"; receipt = text; refactorFailed = true

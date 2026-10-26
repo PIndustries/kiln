@@ -98,7 +98,7 @@ private func refactorCall(_ name: String, _ args: [String:String]) throws -> AIT
     #expect(result == "Published ordinary edit receipt")
 }
 
-@Test func failedRefactorKeepsTreeSourcePositionAndFullDetailsWithoutRepeatingWrite() throws {
+@Test(arguments: [0, 1]) func failedRefactorKeepsTreeSourcePositionAndFullDetailsWithoutRepeatingWrite(status: Int) throws {
     var browser = WorkspaceUI(module:"demo/web")
     let source = (0..<100).map { "// source row \($0)" }.joined(separator:"\n")
     browser.finish(text:try scrollFixture(source),status:0)
@@ -109,7 +109,7 @@ private func refactorCall(_ name: String, _ args: [String:String]) throws -> AIT
     _ = browser.handle(.text("r"),width:120,height:25)
     _ = browser.handle(.up,width:120,height:25)
     #expect(browser.handle(.enter,width:120,height:25)?.contains("'refactor'") == true)
-    browser.finish(text:"Error: fixture input failed\nComplete diagnostic detail",status:1)
+    browser.finish(text:"Web change failed or unconfirmed: Each before text must match exactly once\nComplete diagnostic detail",status:status)
     let frame = unstyled(browser.render(width:120,height:25,theme:TerminalTheme()))
     #expect(frame.contains("source row 17")); #expect(frame.contains("App.swift"))
     #expect(frame.contains("Refactor failed. V details"))
