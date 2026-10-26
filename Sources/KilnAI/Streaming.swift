@@ -61,7 +61,7 @@ struct ErebineStreamDecoder {
                 call.name += function["name"] as? String ?? ""
                 call.arguments += function["arguments"] as? String ?? ""
             }
-            guard call.id.count <= 256, call.name.count <= 128, call.arguments.utf8.count <= 4096 else { throw AIError.message("Oversized streamed tool call") }
+            guard call.id.count <= 256, call.name.count <= 128, call.arguments.utf8.count <= ToolInputLimits.maximumArgumentBytes else { throw AIError.message("Streamed tool call exceeded Kiln’s local input guard; no partial tool call executed") }
             calls[index] = call
         }
         guard answer.utf8.count + reasoning.utf8.count <= ErebineClient.messageByteLimit else { throw AIError.message("Provider message exceeded its limit") }
@@ -70,6 +70,7 @@ struct ErebineStreamDecoder {
         guard done, finished else { throw AIError.message("Provider stream interrupted; no partial tool call executed") }
         let tools = try calls.keys.sorted().map { index -> AIToolCall in
             let call = calls[index]!
+            guard call.arguments.utf8.count <= ToolInputLimits.argumentBytes(for: call.name) else { throw AIError.message("Tool arguments exceeded Kiln’s local input guard; no partial tool call executed") }
             guard !call.id.isEmpty, !call.name.isEmpty else { throw AIError.message("Incomplete streamed tool call") }
             return AIToolCall(id: call.id, type: "function", function: .init(name: call.name, arguments: call.arguments))
         }

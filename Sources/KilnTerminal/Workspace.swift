@@ -18,6 +18,8 @@ struct WorkspaceUI {
     private var confirmation = "", accepted = false
     private var refactorChoice = 2
     private var publishingDraft = false, recoverableDraft = false
+    private var refactorFailed = false, returnToSource = false
+    private var sourceOffset = 0
     private var offset = 0, horizontal = 0, cursor = 0
     private var wrapping = false
     private var idePending: SwiftIDERequest?
@@ -99,8 +101,16 @@ struct WorkspaceUI {
             return
         }
         waiting = false
+        if pending == "refactor", status != 0 {
+            // Keep the source/tree usable; retain the complete failure for review.
+            // Never replay a failed or uncertain write automatically.
+            mode = "browse"; receipt = text; refactorFailed = true
+            error = "Refactor failed. V details: " + (text.components(separatedBy:"\n").first ?? "Inspect history before another write.")
+            return
+        }
         if pending == "run" { mode = "receipt"; receipt = text; offset = 0; return }
         if pending == "apply" || pending == "refactor" {
+            refactorFailed = false
             recoverableDraft = pending == "apply" && publishingDraft && status != 0
             publishingDraft = false
             if status == 0 { buffers.removeAll() }
@@ -220,6 +230,9 @@ struct WorkspaceUI {
             default: return nil
             }
         }
+        if mode == "browse", refactorFailed, key == .text("v") || key == .text("V") {
+            sourceOffset = offset; offset = 0; returnToSource = true; mode = "receipt"; return nil
+        }
         if key == .complete { return swiftTool("complete") }
         if key == .definition { return swiftTool("definition") }
         if key == .build { return swiftTool("build") }
@@ -295,6 +308,9 @@ struct WorkspaceUI {
             }
         }
         if mode == "receipt" {
+            if returnToSource, key == .enter || key == .escape {
+                returnToSource = false; mode = "browse"; offset = sourceOffset; return nil
+            }
             if recoverableDraft, key == .enter || key == .escape || key == .text("d") || key == .text("D") {
                 // Keep the original path/hash/new-file intent. Recovery is local,
                 // and does not refresh source, rebase, or repeat a publish.
@@ -489,7 +505,7 @@ struct WorkspaceUI {
             for i in 0..<visible {
                 row(3+i,"| "+fit(start+i < all.count ? all[start+i] : "",w-4)+" |")
             }
-            row(h-3,"| "+fit(waiting ? "Working..." : recoverableDraft ? "Enter/D recover draft  Esc edit  PgUp/PgDn diagnostics" : "Enter refresh files  Esc back  PgUp/PgDn scroll",w-4)+" |")
+            row(h-3,"| "+fit(waiting ? "Working..." : returnToSource ? "Enter/Esc return to code  PgUp/PgDn details; inspect history before retry" : recoverableDraft ? "Enter/D recover draft  Esc edit  PgUp/PgDn diagnostics" : "Enter refresh files  Esc back  PgUp/PgDn scroll",w-4)+" |")
             row(h-2,"| "+fit("Result lines \(start+1)-\(min(all.count,start+visible))/\(all.count)"+(recoverableDraft ? " | Draft retained in this connection" : ""),w-4)+" |")
         }
         if mode == "refactor" {

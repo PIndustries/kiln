@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import KilnKit
-import KilnAI
+@testable import KilnAI
 @testable import KilnTerminal
 
 private func scrollFixture(_ source: String, readOnly: Bool = false) throws -> String {
@@ -85,12 +85,68 @@ private func refactorCall(_ name: String, _ args: [String:String]) throws -> AIT
     _ = try await malicious.ask("refactor",session:"refactor",configuration:config,key:"",modules:[module],context:"",knowledge:nil,webChange:{ _,_ in Issue.record("Unrelated write"); return "" },webOnly:true) { _,_ in "" }
     #expect(await malicious.pendingProposals(session:"refactor").isEmpty)
 }
-@Test func ordinaryAIWritesKeepTheirSmallArgumentLimit() async throws {
+@Test func ordinaryAIFileEditsUseTheSameAllowanceAsRefactors() async throws {
     let config = AIConfiguration(baseURL:"http://127.0.0.1:11434",model:"fixture",secret:"",provider:.ollama)
     let module = ModuleSnapshot(application:"demo",name:"web",version:"1",state:"running",pid:42)
     let assistant = KilnAssistant { _,_,messages,_ in
         if messages.last?.role == "tool" { return AIMessage(role:"assistant",content:"rejected") }
         return AIMessage(role:"assistant",content:nil,tool_calls:[try refactorCall("update_web_source",["module":"demo/web","edits":String(repeating:"x",count:6000)])])
     }
-    _ = try await assistant.ask("edit",session:"normal",configuration:config,key:"",modules:[module],context:"",knowledge:nil,webChange:{ _,_ in Issue.record("Ordinary tool exceeded its argument grant"); return "" }) { _,_ in "" }
+    let result = try await assistant.ask("edit",session:"normal",configuration:config,key:"",modules:[module],context:"",knowledge:nil,webChange:{ _,edits in
+        #expect(edits.utf8.count == 6000); return "Published ordinary edit receipt"
+    }) { _,_ in "" }
+    #expect(result == "Published ordinary edit receipt")
+}
+
+@Test func failedRefactorKeepsTreeSourcePositionAndFullDetailsWithoutRepeatingWrite() throws {
+    var browser = WorkspaceUI(module:"demo/web")
+    let source = (0..<100).map { "// source row \($0)" }.joined(separator:"\n")
+    browser.finish(text:try scrollFixture(source),status:0)
+    _ = browser.handle(.tab,width:120,height:25)
+    _ = browser.handle(.pageDown,width:120,height:25)
+    func context(_ ui: WorkspaceUI) throws -> [String:String] { try JSONDecoder().decode([String:String].self,from:Data((ui.contextJSON ?? "{}").utf8)) }
+    let before = try context(browser)
+    _ = browser.handle(.text("r"),width:120,height:25)
+    _ = browser.handle(.up,width:120,height:25)
+    #expect(browser.handle(.enter,width:120,height:25)?.contains("'refactor'") == true)
+    browser.finish(text:"Error: fixture input failed\nComplete diagnostic detail",status:1)
+    let frame = unstyled(browser.render(width:120,height:25,theme:TerminalTheme()))
+    #expect(frame.contains("source row 17")); #expect(frame.contains("App.swift"))
+    #expect(frame.contains("Refactor failed. V details"))
+    #expect(try context(browser) == before)
+    #expect(browser.handle(.text("v"),width:120,height:25) == nil)
+    #expect(unstyled(browser.render(width:120,height:25,theme:TerminalTheme())).contains("Complete diagnostic detail"))
+    #expect(browser.handle(.escape,width:120,height:25) == nil)
+    #expect(browser.active)
+    #expect(try context(browser) == before)
+}
+
+@Test func realStreamedRefactorReachesControllerWithCompleteArgumentsOnce() async throws {
+    let config = AIConfiguration(baseURL:"http://127.0.0.1:11434",model:"fixture",secret:"",provider:.ollama)
+    let module = ModuleSnapshot(application:"demo",name:"web",version:"1",state:"running",pid:42)
+    let edits = String(decoding:try JSONSerialization.data(withJSONObject:[["path":"Views/Home.swift","action":"create","content":String(repeating:"// component é\n",count:1500)]]),as:UTF8.self)
+    let args = String(decoding:try JSONEncoder().encode(["module":"demo/web","edits":edits]),as:UTF8.self)
+    let assistant = KilnAssistant(streamingCompletion: { _,_,_,_,_ in
+        var decoder = ErebineStreamDecoder()
+        func event(_ delta: [String:Any], finish: String? = nil) throws -> Data {
+            var choice: [String:Any] = ["delta":delta]
+            if let finish { choice["finish_reason"] = finish }
+            return Data("data: ".utf8)+(try JSONSerialization.data(withJSONObject:["choices":[choice]]))+Data("\n\n".utf8)
+        }
+        try decoder.feed(event(["tool_calls":[["index":0,"id":"refactor","function":["name":"update_web_source","arguments":""]]]])) { _ in }
+        // Fragment the JSON argument across SSE events, then split transport bytes.
+        var remaining = args
+        while !remaining.isEmpty {
+            let fragment = String(remaining.prefix(731)); remaining = String(remaining.dropFirst(fragment.count))
+            let data = try event(["tool_calls":[["index":0,"function":["arguments":fragment]]]])
+            for start in stride(from:0,to:data.count,by:113) { try decoder.feed(data.subdata(in:start..<min(start+113,data.count))) { _ in } }
+        }
+        try decoder.feed(event([:],finish:"tool_calls")) { _ in }
+        try decoder.feed(Data("data: [DONE]\n\n".utf8)) { _ in }
+        return try decoder.message()
+    })
+    let result = try await assistant.ask("refactor",session:"streamed-refactor",configuration:config,key:"",modules:[module],context:"",knowledge:nil,webChange:{ _,received in
+        #expect(received == edits); return "Published complete streamed refactor"
+    },webOnly:true) { _,_ in Issue.record("Unexpected read"); return "" }
+    #expect(result == "Published complete streamed refactor")
 }

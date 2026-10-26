@@ -63,7 +63,7 @@ struct OllamaStreamDecoder {
                       let name = f["name"] as? String, !name.isEmpty, name.utf8.count <= 128,
                       let arguments = f["arguments"] as? [String: Any] else { throw AIError.message("Invalid Ollama tool call") }
                 let encoded = try JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
-                guard encoded.count <= 4096 else { throw AIError.message("Oversized Ollama tool arguments") }
+                guard encoded.count <= ToolInputLimits.argumentBytes(for: name) else { throw AIError.message("Oversized Ollama tool arguments") }
                 calls.append(AIToolCall(id: UUID().uuidString, type: "function", function: .init(name: name, arguments: String(decoding: encoded, as: UTF8.self))))
             }
         }

@@ -209,3 +209,16 @@ private actor WorkerGate {
         try bounded.feed(event(["delta":["reasoning_content":String(repeating:"x",count:ErebineClient.messageByteLimit+1)]])) { _ in }
     }
 }
+
+@Test func streamedToolInputGuardsDistinguishSourceEditsFromSmallControlTools() throws {
+    func message(name: String, count: Int) throws -> AIMessage {
+        var decoder = ErebineStreamDecoder()
+        let args = "{\"value\":\""+String(repeating:"x",count:count)+"\"}"
+        let object: [String:Any] = ["choices":[["delta":["tool_calls":[["index":0,"id":"fixture","function":["name":name,"arguments":args]]]],"finish_reason":"tool_calls"]]]
+        try decoder.feed(Data("data: ".utf8)+(try JSONSerialization.data(withJSONObject:object))+Data("\n\ndata: [DONE]\n\n".utf8)) { _ in }
+        return try decoder.message()
+    }
+    #expect(try message(name:"validate_web_source",count:60000).tool_calls?.first?.function.arguments.utf8.count == 60012)
+    #expect(throws:AIError.self) { try message(name:"system_status",count:4097) }
+    #expect(throws:AIError.self) { try message(name:"update_web_source",count:ToolInputLimits.maximumArgumentBytes+1) }
+}

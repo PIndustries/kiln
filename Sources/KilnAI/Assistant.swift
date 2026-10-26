@@ -358,7 +358,7 @@ public actor KilnAssistant {
                     }
                     progress(.status("Tool: " + call.function.name))
                     var result = "Tool rejected: unsupported name or arguments."
-                    if call.type == "function", let bytes = call.function.arguments.data(using: .utf8), bytes.count <= (webOnly && ["validate_web_source", "update_web_source"].contains(call.function.name) ? 262144 : 4096),
+                    if call.type == "function", let bytes = call.function.arguments.data(using: .utf8), bytes.count <= ToolInputLimits.argumentBytes(for: call.function.name),
                        (!webOnly || call.function.name == "tool_help" || Self.webToolNames.contains(call.function.name)),
                        let args = try? JSONDecoder().decode([String: String].self, from: bytes) {
                         let name = call.function.name
