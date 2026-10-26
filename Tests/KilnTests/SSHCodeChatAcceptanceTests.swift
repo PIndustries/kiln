@@ -20,7 +20,7 @@ import KilnSSH
         if prompt.hasPrefix("Publish isolated branch proof") {
             let previous = Set(messages.flatMap { $0.tool_calls ?? [] }.filter { $0.id.hasPrefix("branch-") }.map { $0.function.name })
             let name = !previous.contains("read_web_file") ? "read_web_file" : !previous.contains("validate_web_source") ? "validate_web_source" : "update_web_source"
-            let edits = "[{\"before\":\"Your application.\",\"after\":\"Isolated agent publication.\"}]"
+            let edits = "[{\"before\":\"Your application.\",\"after\":\"Isolated agent publication.\"},{\"path\":\"Models/Counter.swift\",\"before\":\"count = 0\",\"after\":\"count = 1\"}]"
             let args = name == "read_web_file" ? ["module":"draft/site","path":"App.swift","offset":"0"] : ["module":"draft/site","edits":edits]
             let call: [String:Any] = ["id":"branch-"+name,"type":"function","function":["name":name,"arguments":String(decoding:try JSONEncoder().encode(args),as:UTF8.self)]]
             return AIMessage(role:"assistant",content:nil,tool_calls:[try JSONDecoder().decode(AIToolCall.self,from:JSONSerialization.data(withJSONObject:call))])

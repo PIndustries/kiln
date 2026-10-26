@@ -134,7 +134,7 @@ actor SwiftLanguage {
         _ = fcntl(fd,F_SETFL,fcntl(fd,F_GETFL)|O_NONBLOCK)
         sessionID = UUID().uuidString.lowercased()
         let result = try await request("initialize",["processId":ProcessInfo.processInfo.processIdentifier,"rootUri":root.absoluteString,
-            "capabilities":["textDocument":["completion":["completionItem":["snippetSupport":false]],"diagnostic":["dynamicRegistration":true]],"workspace":["workspaceEdit":["documentChanges":true]]],
+            "capabilities":["textDocument":["completion":["completionItem":["snippetSupport":false]],"diagnostic":["dynamicRegistration":true],"codeAction":["codeActionLiteralSupport":["codeActionKind":["valueSet":["quickfix","refactor"]]],"disabledSupport":true]],"workspace":["workspaceEdit":["documentChanges":true]]],
             "initializationOptions":["backgroundIndexing":false]])
         capabilities = (result as? [String:Any])?["capabilities"] as? [String:Any] ?? [:]
         try send(["method":"initialized","params":[:]])
@@ -180,11 +180,26 @@ actor SwiftLanguage {
             case "definition": method = "definition"
             case "references": method = "references"; params["context"] = ["includeDeclaration":true]
             case "rename": method = "rename"; params["newName"] = newName
+            case "format":
+                method = "formatting"; params = ["textDocument":["uri":uri(selected)],"options":["tabSize":4,"insertSpaces":true]]
+            case "codeActions":
+                method = "codeAction"
+                let report = try await request("textDocument/diagnostic",["textDocument":["uri":uri(selected)]]) as? [String:Any]
+                let items = (report?["items"] as? [[String:Any]] ?? []).filter { item in
+                    guard let range = item["range"] as? [String:Any], let start = range["start"] as? [String:Any], let end = range["end"] as? [String:Any],
+                          let first = start["line"] as? Int, let last = end["line"] as? Int else { return false }
+                    return first <= line && line <= last
+                }
+                params = ["textDocument":["uri":uri(selected)],"range":["start":["line":line,"character":0],"end":["line":line,"character":source.components(separatedBy:"\n")[line].utf16.count]],"context":["diagnostics":items]]
             case "diagnostics":
                 method = "diagnostic"; params.removeValue(forKey:"position")
             default: throw KilnError.message("Unsupported Swift language request")
             }
             var result = try await request("textDocument/"+method,params)
+            if action == "format" {
+                guard let edits = result as? [[String:Any]] else { throw KilnError.message("Swift toolchain returned no formatting edits") }
+                result = ["changes":[uri(selected):edits]]
+            }
             var coverage: String? = action == "rename" ? "document" : nil
             if action == "references", (result as? [Any])?.isEmpty != false {
                 // Older SourceKit versions require an index for references, but
@@ -198,11 +213,12 @@ actor SwiftLanguage {
                 }
                 coverage = "document"
             }
-            if action == "rename", let edits = (result as? [String:Any])?["documentChanges"] as? [[String:Any]] {
-                for edit in edits {
-                    guard let document = edit["textDocument"] as? [String:Any], let target = document["uri"] as? String else { throw KilnError.message("Unsupported rename resource operation") }
+            let workspaceEdits: [[String:Any]] = action == "codeActions" ? (result as? [[String:Any]] ?? []).compactMap { $0["edit"] as? [String:Any] } : (result as? [String:Any]).map { [$0] } ?? []
+            for workspaceEdit in workspaceEdits {
+                for edit in workspaceEdit["documentChanges"] as? [[String:Any]] ?? [] {
+                    guard let document = edit["textDocument"] as? [String:Any], let target = document["uri"] as? String else { throw KilnError.message("Unsupported language-service resource operation") }
                     if let supplied = document["version"], !(supplied is NSNull) {
-                        guard let version = supplied as? Int, let path = files.keys.first(where: { uri($0) == target }), versions[path] == version else { throw KilnError.message("Rename belongs to a stale or invalid Swift document version") }
+                        guard let version = supplied as? Int, let path = files.keys.first(where: { uri($0) == target }), versions[path] == version else { throw KilnError.message("Source edit belongs to a stale or invalid Swift document version") }
                     }
                 }
             }

@@ -13,6 +13,8 @@ language service or package dependency is required.
 | F12 / Def | Resolve a definition in registered project files |
 | F9 / Refs | Compiler-indexed project references; any document-only fallback is labelled |
 | F10 / Rename | Request a rename proposal, then Enter applies it to local drafts |
+| F2 / Fmt | Review document formatting, then apply it to local drafts |
+| F3 / Fix | Review compiler actions for the caret line, then apply supported draft edits |
 | F4 / Issues | Open clickable diagnostics for the current document |
 | F11 / Build | Compile all current buffers in isolation |
 | F5 / Run | Restart the deployed release after unsaved edits are resolved |
@@ -78,8 +80,8 @@ proposal, not proof of behavior equivalence; review it before publishing.
 The current index resource guards are 30 seconds of compilation, 64 KiB compiler
 diagnostics, 4,096 units/record dependencies, 200,000 raw occurrences, and 100,000
 deduplicated occurrences/16 MiB retained metadata per session. IndexStore UTF-8
-columns are converted to editor UTF-16 positions. Test navigation, formatting/code
-actions, deeper override/protocol refactoring and LLDB/DAP remain separate work.
+columns are converted to editor UTF-16 positions. Test navigation, deeper
+override/protocol refactoring and LLDB/DAP remain separate work.
 
 The real SourceKit test in `SwiftIDETests` is enabled with
 `KILN_SWIFT_IDE_SDK=/path/to/pinned-sdk.json`. It checks session reuse, document
@@ -124,10 +126,12 @@ horizontal scrolling apply to the review pane. `R` refreshes the review.
 
 `S`, followed by Enter, stages the selected proposed file as a **local draft**
 against the current file hash. It does not publish or change the running app.
-Existing local edits must be saved or discarded first. If the source or retained
-proposal changed since inspection, staging rejects the stale review. Edit the
-staged file to resolve the conflict, build, then use the regular guarded publish
-control. Proposed deletions are inspected here but require the workspace's normal
+Other local drafts are retained when another file is staged. Staging over a file
+that already has local edits is rejected. If the source or retained proposal
+changed since inspection, staging rejects the stale review. Edit the
+staged files to resolve conflicts, build, then use the regular guarded publish
+control for the combined change. The workspace recovery limits also apply to
+staging; reaching them preserves existing drafts and rejects the additional file. Proposed deletions are inspected here but require the workspace's normal
 explicit Delete action. Staging an old proposal is an operator choice; it does
 not retry the original agent's publication.
 
@@ -135,3 +139,21 @@ While reviewing a proposal, chat receives its worker and selected-file context.
 The AI can inspect that owned proposal through `read_web_diff` with
 `change: agent:WORKER-UUID`. Review context is explicitly read-only and is not
 reported as an unsaved local edit; staging is a separate operator action.
+
+### Formatting and compiler actions
+
+**F2** requests document formatting from the registered Swift toolchain.
+**F3** requests compiler actions for the caret's line, including applicable
+quick fixes from its diagnostics. The result list shows the proposed operation;
+Enter applies its supported source edits to local drafts. Source files and the
+running application change only through the normal guarded publication path.
+Escape discards the suggestion. New typing or changes to another open buffer
+invalidate an outstanding edit response.
+
+These controls reuse the isolated SourceKit session and the project's existing
+file grant. Edit ranges, document versions, file paths, overlaps, and resulting
+source sizes are validated. Code actions that require a toolchain command or
+unsupported file operation are marked unavailable and are not executed. Available
+actions depend on the installed toolchain and the current source. Formatting is provided by the registered Swift toolchain. Kiln adds no separate
+package dependency and invokes no workspace shell command or package plugin for
+these controls. Formatting currently requests four-space indentation.

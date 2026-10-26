@@ -46,7 +46,7 @@ struct WorkspaceUI {
     private var diagnostics: [SwiftIDELocation] = []
     private var renameName = ""
     private var toolbar: [(String,TerminalKey)] {
-        [("[Build]",.build),("[Run]",.run),("[Def]",.definition),("[Wrap]",.wrap),("[Complete]",.complete),("["+vim.label+"]",.vim),("[Refs F9]",.references),("[Rename F10]",.rename),("[Issues F4]",.diagnostics),("[Proposals Ctrl-P]",.agentReview)]
+        [("[Build]",.build),("[Run]",.run),("[Def]",.definition),("[Fmt F2]",.format),("[Fix F3]",.codeActions),("[Wrap]",.wrap),("[Complete]",.complete),("["+vim.label+"]",.vim),("[Refs F9]",.references),("[Rename F10]",.rename),("[Issues F4]",.diagnostics),("[Proposals Ctrl-P]",.agentReview)]
     }
     private var ideIndex = 0
     private var jump: SwiftIDELocation?
@@ -128,7 +128,7 @@ struct WorkspaceUI {
         SwiftIDERequest(action:action,path:path,sha256:isNew && mode == "edit" ? "" : hash,text:mode == "edit" ? draft : source,cursor:position ?? cursor,buffers:buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) },newName:action == "rename" ? renameName : nil)
     }
     mutating func takeDeferredLanguageRead() -> String? {
-        guard let queued = queuedLanguageRead, idePending == nil, !waiting, confirmation.isEmpty else { return nil }
+        guard proposalReview == nil, let queued = queuedLanguageRead, idePending == nil, !waiting, confirmation.isEmpty else { return nil }
         queuedLanguageRead = nil
         let current = languageRequest(queued.action,at:["build","diagnostics","format"].contains(queued.action) ? queued.cursor : nil)
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -139,13 +139,13 @@ struct WorkspaceUI {
     }
     /// Called after a short idle period, never once per keystroke.
     mutating func completeAfterTyping() -> String? {
-        guard !waiting, autoCompletionReady, mode == "edit", !treeFocus, confirmation.isEmpty,
+        guard proposalReview == nil, !waiting, autoCompletionReady, mode == "edit", !treeFocus, confirmation.isEmpty,
               !vim.enabled || vim.insert, idePending == nil, ideResult == nil else { return nil }
         autoCompletionReady = false
         let command = swiftTool("complete"); automaticCompletion = command != nil; return command
     }
     mutating func diagnoseAfterTyping() -> String? {
-        guard diagnosticsReady, mode == "edit", confirmation.isEmpty, !waiting, idePending == nil else { return nil }
+        guard proposalReview == nil, diagnosticsReady, mode == "edit", confirmation.isEmpty, !waiting, idePending == nil else { return nil }
         diagnosticsReady = false
         let command = swiftTool("diagnostics",background:true); automaticDiagnostics = command != nil; return command
     }
@@ -198,15 +198,29 @@ struct WorkspaceUI {
         waiting = true; pending = name; error = ""; return command(parts)
     }
     mutating func finish(text: String, status: Int) {
-        if pending == "agent-review", proposalReview != nil {
+        if pending == "agent-review", proposalReview != nil, idePending == nil {
             proposalReview?.finish(text,status:status); return
         }
-        if pending == "agent-stage", proposalReview != nil {
-            guard status == 0, !hasUnsavedEdits,
+        if pending == "agent-stage", proposalReview != nil, idePending == nil {
+            guard status == 0,
                   let result = try? JSONDecoder().decode(SwiftIDEResult.self,from:Data(text.utf8)),
                   let proposed = result.renameFiles, let filePath = proposed.keys.first, let file = proposed[filePath] else {
-                proposalReview?.failedStage(status == 0 ? "Existing local edits must be saved or discarded before staging" : text); return
+                proposalReview?.failedStage(status == 0 ? "Invalid proposed file response; local drafts preserved" : text); return
             }
+            let selectedDirty = filePath == path && ["edit","rename"].contains(mode) && (isNew || draft != source)
+            let storedDirty = buffers[filePath].map { $0.isNew || $0.draft != $0.source } ?? false
+            guard !selectedDirty, !storedDirty else {
+                proposalReview?.failedStage("This file already has local edits. They were preserved; choose another file or review those edits first."); return
+            }
+            var staged = buffers
+            if mode == "edit", isNew || draft != source {
+                staged[path] = Buffer(source:source,draft:draft,hash:hash,cursor:cursor,offset:offset,horizontal:horizontal,isNew:isNew)
+            }
+            staged[filePath] = Buffer(source:file.source,draft:file.text,hash:file.sha256,cursor:0,offset:0,horizontal:0,isNew:file.sha256.isEmpty)
+            guard staged.count <= 32, staged.values.reduce(0,{ $0+$1.source.utf8.count+$1.draft.utf8.count }) <= 524288 else {
+                proposalReview?.failedStage("Recovery storage limit reached. Existing drafts were preserved; save or export them before staging another file."); return
+            }
+            buffers = staged; buffers.removeValue(forKey:filePath)
             proposalReview = nil; waiting = false; followingAgent = false
             path = filePath; source = file.source; draft = file.text; hash = file.sha256
             isNew = hash.isEmpty; mode = "edit"; treeFocus = false; cursor = 0; offset = 0; horizontal = 0
@@ -229,7 +243,8 @@ struct WorkspaceUI {
             automaticDiagnostics = false
             idePending = nil; error = ""
             guard status == 0, let data = text.data(using:.utf8), let result = try? JSONDecoder().decode(SwiftIDEResult.self,from:data) else { if !automatic && !backgroundDiagnostics { error = text }; return }
-            guard query.path == path, query.text == (mode == "edit" ? draft : source), query.action == "diagnostics" || query.cursor == cursor, !automatic || (!treeFocus && (!vim.enabled || vim.insert) && confirmation.isEmpty) else { if !automatic && !backgroundDiagnostics { error = "Swift result belongs to an earlier buffer. Request it again." }; return }
+            let openBuffers = buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) }
+            guard (query.buffers ?? [:]) == openBuffers, query.path == path, query.text == (mode == "edit" ? draft : source), query.action == "diagnostics" || query.action == "format" || query.cursor == cursor, !automatic || (!treeFocus && (!vim.enabled || vim.insert) && confirmation.isEmpty) else { if !automatic && !backgroundDiagnostics { error = "Swift result belongs to an earlier buffer. Request it again." }; return }
             if result.action == "diagnostics" { diagnostics = result.locations; if backgroundDiagnostics { return } }
             if automatic && result.completions.isEmpty { return }
             ideResult = result; ideIndex = 0
@@ -348,7 +363,7 @@ struct WorkspaceUI {
             return nil
         }
         if input == .agentReview {
-            guard !waiting, idePending == nil, !hasUnsavedEdits else { error = "Save or discard local edits before reviewing proposals"; return nil }
+            guard !waiting, idePending == nil, confirmation.isEmpty, mode == "browse" || mode == "edit" else { error = "Finish the current editor action before reviewing proposals"; return nil }
             followingAgent = false; proposalReview = AgentReviewUI(module:module); pending = "agent-review"
             return command(["web","agents",module])
         }
@@ -402,7 +417,7 @@ struct WorkspaceUI {
         if key == .panLeft || key == .panRight {
             scroll(across:key == .panLeft ? -8 : 8,width:width,height:height); return nil
         }
-        if [.build,.definition,.complete,.run,.references,.rename,.diagnostics].contains(key) { ideResult = nil }
+        if [.format,.codeActions,.build,.definition,.complete,.run,.references,.rename,.diagnostics].contains(key) { ideResult = nil }
         if key == .wrap {
             let rows = visualRows(width:width), line = rows.indices.contains(offset) ? rows[offset].0 : 0
             wrapping.toggle(); horizontal = 0
@@ -413,7 +428,7 @@ struct WorkspaceUI {
             if result.action == "complete" {
                 switch key { case .text, .paste, .backspace, .delete: ideResult = nil; return handle(key,width:width,height:height); default: break }
             }
-            let count = result.action == "complete" ? result.completions.count : result.locations.count
+            let count = result.action == "complete" ? result.completions.count : result.action == "codeActions" ? (result.codeActions?.count ?? 0) : result.locations.count
             if key == .escape { ideResult = nil; return nil }
             if key == .up { ideIndex = max(0,ideIndex-1) }
             if key == .down || (key == .tab && result.action != "complete") { ideIndex = min(max(0,count-1),ideIndex+1) }
@@ -427,7 +442,10 @@ struct WorkspaceUI {
                 if button == 0, row >= 7, row < height-5, start+row-7 < count { ideIndex = start+row-7; return handle(.enter,width:width,height:height) }
             }
             if key == .enter || (key == .tab && result.action == "complete") {
-                if result.action == "rename", let proposed = result.renameFiles {
+                let action = result.action == "codeActions" ? result.codeActions.flatMap { $0.indices.contains(ideIndex) ? $0[ideIndex] : nil } : nil
+                if let disabled = action?.disabledReason { error = disabled; ideResult = nil; return nil }
+                if ["rename","format","codeActions"].contains(result.action), let proposed = action?.files ?? result.renameFiles {
+                    vim.record(mode == "edit" ? draft : source,cursor)
                     retainBuffer()
                     for (name,file) in proposed {
                         buffers[name] = Buffer(source:file.source,draft:file.text,hash:file.sha256,cursor:0,offset:0,horizontal:0,isNew:file.sha256.isEmpty)
@@ -435,7 +453,7 @@ struct WorkspaceUI {
                     if let selected = buffers.removeValue(forKey:path) {
                         source = selected.source; draft = selected.draft; hash = selected.hash; cursor = min(cursor,draft.count); mode = "edit"
                     }
-                    ideResult = nil; error = "Rename applied to drafts. Review files; Ctrl-D publishes the complete change."; return nil
+                    ideResult = nil; error = (result.action == "rename" ? "Rename" : result.action == "format" ? "Formatting" : "Compiler action")+" applied to drafts. Review files; Ctrl-D publishes the complete change."; return nil
                 }
                 if result.action == "complete", result.completions.indices.contains(ideIndex) {
                     let item = result.completions[ideIndex]; var chars = Array(draft)
@@ -470,6 +488,10 @@ struct WorkspaceUI {
         }
         if mode == "browse", refactorFailed, key == .text("v") || key == .text("V") {
             sourceOffset = offset; offset = 0; returnToSource = true; mode = "receipt"; return nil
+        }
+        if key == .format || key == .codeActions {
+            guard change == nil, editable else { error = "Open the current editable workspace for formatting or compiler fixes"; return nil }
+            return swiftTool(key == .format ? "format" : "codeActions")
         }
         if key == .complete { return swiftTool("complete") }
         if key == .definition { return swiftTool("definition") }
@@ -791,7 +813,7 @@ struct WorkspaceUI {
             row(h-3,"| "+fit("Suggestions: Up/Down choose  Tab/Enter insert  Esc dismiss; keep typing to refine",w-4)+" |")
         } else if let result = ideResult {
             row(3,"| "+fit(result.message.components(separatedBy:"\n").first ?? "Swift tools",w-4)+" |")
-            let labels = result.action == "complete" ? result.completions.map { $0.label+"  "+$0.detail } : result.locations.map { "\($0.path):\($0.line):\($0.column)  "+$0.message }
+            let labels = result.action == "complete" ? result.completions.map { $0.label+"  "+$0.detail } : result.action == "codeActions" ? (result.codeActions ?? []).map { $0.title+($0.disabledReason.map { " [unavailable: "+$0+"]" } ?? "") } : result.locations.map { "\($0.path):\($0.line):\($0.column)  "+$0.message }
             let visible = max(1,height-13), start = max(0,ideIndex-visible+1)
             if labels.isEmpty {
                 for (i,line) in result.message.components(separatedBy:"\n").prefix(visible).enumerated() { row(5+i,"| "+fit(line,w-4)+" |") }
@@ -801,7 +823,7 @@ struct WorkspaceUI {
                     row(5+i,"| "+"\u{1b}[38;5;\(color)m"+fit((start+i == ideIndex ? "> " : "  ")+label,w-4)+" |")
                 }
             }
-            row(h-3,"| "+fit(result.action == "rename" ? "Enter applies rename to drafts (no publish)  Esc discard proposal" : "Arrows choose  Enter/click open or insert  Esc close",w-4)+" |")
+            row(h-3,"| "+fit(["rename","format","codeActions"].contains(result.action) ? "Enter applies selected edits to drafts (no publish)  Esc discard" : "Arrows choose  Enter/click open or insert  Esc close",w-4)+" |")
         }
         if mode == "rename" {
             row(4,"| "+fit("Rename symbol at cursor. Changes stay in drafts until you publish.",w-4)+" |")

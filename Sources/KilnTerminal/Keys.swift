@@ -1,6 +1,7 @@
 import Foundation
 
 public enum TerminalKey: Equatable {
+    case format, codeActions
     case agentReview
     case followAgent
     case references, rename, diagnostics
@@ -68,6 +69,8 @@ public struct TerminalKeys {
                     case "[19~": .followAgent
                     case "[20~": .references
                     case "[21~": .rename
+                    case "[12~": .format
+                    case "[13~": .codeActions
                     case "[14~": .diagnostics
                     case "[1;2D": .panLeft
                     case "[1;2C": .panRight
@@ -119,6 +122,8 @@ extension TerminalKey {
         switch self {
         case .build: "build"
         case .diagnostics: "diagnostics"
+        case .format: "format"
+        case .codeActions: "codeActions"
         case .definition: "definition"
         case .references: "references"
         case .complete: "complete"

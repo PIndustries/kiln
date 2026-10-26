@@ -13,14 +13,15 @@ separates implemented capabilities from current development and validation limit
 - **Swift workspace:** file browsing/editing, syntax highlighting, Vim interaction,
   configurable wrapping and horizontal scrolling, resizable code/chat panes,
   completion, definition navigation, diagnostics, isolated builds, references,
-  and draft rename proposals.
+  draft rename proposals, formatting, and compiler-action draft edits.
 - **Workspace recovery:** scoped draft storage, compare-and-swap saves, conflicting
   recovery copies, and reconnection to running workspace agents.
 - **Background agents:** independent chat, up to 48 concurrent workers, live source
   following, context delivery at safe steps, ordered event journals, scoped source
   snapshots, and per-application integration queues.
 - **Change review:** retained source history, colored diffs, current/base/proposed
-  source views, stale-review rejection, and explicit staging into local drafts.
+  source views, stale-review rejection, and explicit multi-file staging into local
+  drafts that preserves existing edits.
 
 See [Swift IDE](swift-ide.md), [web framework](web-framework.md),
 [workspace recovery](workspace-recovery.md), and [agent events](agent-events.md)
@@ -28,10 +29,8 @@ for supported workflows and their limits.
 
 ## Current core development
 
-- Swift formatting and compiler code actions that produce reviewable drafts.
 - Navigable Swift test results and build/test controls.
 - Agent concurrency, cancellation, reconnect, and conflict-handling refinements.
-- Multi-file conflict-resolution workflows.
 
 Portable application bundles are outside the current core milestone.
 

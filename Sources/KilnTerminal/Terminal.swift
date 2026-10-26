@@ -76,7 +76,7 @@ public struct KilnTerminal {
     }
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
-        if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
+        if busy, codeWorkspace?.canBrowseDuringTurn != true, key != .agentReview { return [] }
         if busy, codeWorkspace?.reviewingAgent != true, ![.agentReview,.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
@@ -520,7 +520,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .agentReview, .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
+        case .format, .codeActions, .agentReview, .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }

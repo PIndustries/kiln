@@ -185,6 +185,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         instance_after_publish = json.loads(get('/__kiln/instance'))['instance']
         external = source.read_bytes().replace(b'Isolated agent publication.', b'Concurrent source change.')
         source.write_bytes(external)
+        (project/'Models/Counter.swift').write_text('actor Counter { var count = 8 }\n')
         send(b'\x17\x1b'); expect('Discard unsaved edits?')
         send(b'\x1b[A\r'); expect('Codebase / draft/site')
         send(b'\x10'); expect('AGENT PROPOSALS'); expect('integrated')
@@ -197,7 +198,19 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\r'); expect('Agent proposal staged locally.')
         assert source.read_bytes() == external
         assert json.loads(get('/__kiln/instance'))['instance'] == instance_after_publish
-        print('PASS Terminal proposal review: conflict, source tabs, colored diff, explicit local draft staging; live source/release unchanged by staging',flush=True)
+        send(b'\x10'); expect('AGENT PROPOSALS'); expect('integrated')
+        send(b'\r'); expect('CONFLICT'); drain()
+        send(b']'); expect('Models/Counter.swift /'); drain()
+        send(b's'); expect('Use proposed file as a local draft?')
+        send(b'\r'); expect('Agent proposal staged locally.'); drain()
+        def saved_both_drafts():
+            saved=json.loads(ssh('web workspace draft/site App.swift'))['workspace']['state']['buffers']
+            return 'App.swift' in saved and 'Models/Counter.swift' in saved and 'count = 1' in saved['Models/Counter.swift']['draft']
+        wait(saved_both_drafts)
+        assert source.read_bytes() == external
+        assert (project/'Models/Counter.swift').read_text() == 'actor Counter { var count = 8 }\n'
+        assert json.loads(get('/__kiln/instance'))['instance'] == instance_after_publish
+        print('PASS Terminal proposal review: two conflicting files staged and checkpointed without overwriting earlier drafts; live source/release unchanged',flush=True)
         (root/'passed').touch(); (root/'done').touch()
         print('PASS real SSH: local unsaved draft and divider recovered across disconnect; workspace worker automatically reattached and accepted context; independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; code+chat visible; read-only phase preserved source and worker; isolated publication verified separately',flush=True)
         runtime.wait(timeout=30); assert runtime.returncode==0
