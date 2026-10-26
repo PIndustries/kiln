@@ -152,6 +152,6 @@ These controls reuse the isolated SourceKit session and the project's existing
 file grant. Edit ranges, document versions, file paths, overlaps, and resulting
 source sizes are validated. Code actions that require a toolchain command or
 unsupported file operation are marked unavailable and are not executed. Available
-actions depend on the installed toolchain and the current source. No formatter
-package, workspace shell command, or package plugin is installed or invoked by
+actions depend on the installed toolchain and the current source. Formatting is provided by the registered Swift toolchain. Kiln adds no separate
+package dependency and invokes no workspace shell command or package plugin for
 these controls. Formatting currently requests four-space indentation.
