@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import KilnKit
+@testable import KilnCommands
 @testable import KilnSSH
 @testable import KilnTerminal
 @testable import KilnDevelopment
@@ -43,7 +44,17 @@ private func reviewJSON() throws -> String {
     ui.finish(text:String(decoding:try JSONEncoder().encode(result),as:UTF8.self),status:0)
     #expect(ui.hasUnsavedEdits)
     #expect(ui.render(width:100,height:25,theme:TerminalTheme()).contains("staged locally"))
-    #expect(ui.handle(.agentReview,width:100,height:25) == nil)
+    _ = ui.handle(.text("// local context"),width:100,height:25)
+    let nextReview = ui.handle(.agentReview,width:100,height:25)
+    #expect(nextReview?.contains("'agents'") == true)
+    #expect(ui.completeAfterTyping() == nil)
+    #expect(ui.diagnoseAfterTyping() == nil)
+    #expect(ui.hasUnsavedEdits)
+    ui.finish(text:"[{\"worker\":\"12345678-0000-0000-0000-000000000000\",\"status\":\"conflict\",\"created\":0}]",status:0)
+    _ = ui.handle(.enter,width:100,height:25); ui.finish(text:try reviewJSON(),status:0)
+    _ = ui.handle(.text("s"),width:100,height:25); _ = ui.handle(.enter,width:100,height:25)
+    ui.finish(text:String(decoding:try JSONEncoder().encode(result),as:UTF8.self),status:0)
+    #expect(ui.render(width:100,height:25,theme:TerminalTheme()).contains("already has local edits"))
     #expect(ui.hasUnsavedEdits)
 }
 @Test func proposalShortcutDoesNotReplaceBuildAndDefinitionKeys() {
@@ -60,4 +71,32 @@ private func reviewJSON() throws -> String {
     #expect(!workspaceReadAllowed(["web","restore","demo/web","change"]))
     #expect(!workspaceReadAllowed(["app","deploy","manifest"]))
     #expect(!workspaceReadAllowed(["web","agent-stage","demo/web","worker"]))
+}
+
+@Test func multipleProposalFilesPreserveEarlierDraftsAndPublishAsOneOperationSet() throws {
+    var ui = WorkspaceUI(module:"demo/web")
+    let browse: [String:Any] = ["tree":["version":"workspace","editable":true,"projectRoot":true,"files":[["path":"App.swift","sha256":"app-hash","bytes":4],["path":"Views/Page.swift","sha256":"page-hash","bytes":4]]],"file":["file":"App.swift","source":"app old","sha256":"app-hash","version":"workspace"]]
+    ui.finish(text:String(decoding:try JSONSerialization.data(withJSONObject:browse),as:UTF8.self),status:0)
+    for (path,source,hash,changed) in [("App.swift","app old","app-hash","app resolved"),("Views/Page.swift","page old","page-hash","page resolved")] {
+        _ = ui.handle(.agentReview,width:120,height:30)
+        ui.finish(text:"[{\"worker\":\"12345678-0000-0000-0000-000000000000\",\"status\":\"conflict\",\"created\":0}]",status:0)
+        _ = ui.handle(.enter,width:120,height:30)
+        let review = AgentFileReview(worker:"12345678-0000-0000-0000-000000000000",status:"conflict",files:["App.swift","Views/Page.swift"],path:path,base:source,current:source,proposed:changed,currentSHA256:hash,proposalSHA256:"proposal",conflict:true,diff:"-old\n+resolved")
+        ui.finish(text:String(decoding:try JSONEncoder().encode(review),as:UTF8.self),status:0)
+        _ = ui.handle(.text("s"),width:120,height:30); _ = ui.handle(.enter,width:120,height:30)
+        var result = SwiftIDEResult(action:"agent-draft",message:"local only")
+        result.renameFiles = [path:SwiftIDERenameFile(source:source,sha256:hash,text:changed)]
+        ui.finish(text:String(decoding:try JSONEncoder().encode(result),as:UTF8.self),status:0)
+        #expect(ui.hasUnsavedEdits)
+    }
+    _ = ui.handle(.eof,width:120,height:30); _ = ui.handle(.down,width:120,height:30)
+    let response = ui.handle(.enter,width:120,height:30), command = try #require(response)
+    let args = try KilnCommands.tokenize(command)
+    #expect(Array(args.prefix(3)) == ["web","apply","demo/web"])
+    let operations = try JSONDecoder().decode([[String:String]].self,from:Data(args[3].utf8))
+    #expect(operations.count == 2)
+    #expect(operations.first { $0["path"] == "App.swift" }?["content"] == "app resolved")
+    #expect(operations.first { $0["path"] == "App.swift" }?["sha256"] == "app-hash")
+    #expect(operations.first { $0["path"] == "Views/Page.swift" }?["content"] == "page resolved")
+    #expect(operations.first { $0["path"] == "Views/Page.swift" }?["sha256"] == "page-hash")
 }

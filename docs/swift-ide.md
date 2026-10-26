@@ -124,10 +124,12 @@ horizontal scrolling apply to the review pane. `R` refreshes the review.
 
 `S`, followed by Enter, stages the selected proposed file as a **local draft**
 against the current file hash. It does not publish or change the running app.
-Existing local edits must be saved or discarded first. If the source or retained
-proposal changed since inspection, staging rejects the stale review. Edit the
-staged file to resolve the conflict, build, then use the regular guarded publish
-control. Proposed deletions are inspected here but require the workspace's normal
+Other local drafts are retained when another file is staged. Staging over a file
+that already has local edits is rejected. If the source or retained proposal
+changed since inspection, staging rejects the stale review. Edit the
+staged files to resolve conflicts, build, then use the regular guarded publish
+control for the combined change. The workspace recovery limits also apply to
+staging; reaching them preserves existing drafts and rejects the additional file. Proposed deletions are inspected here but require the workspace's normal
 explicit Delete action. Staging an old proposal is an operator choice; it does
 not retry the original agent's publication.
 

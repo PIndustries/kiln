@@ -76,7 +76,7 @@ public struct KilnTerminal {
     }
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
-        if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
+        if busy, codeWorkspace?.canBrowseDuringTurn != true, key != .agentReview { return [] }
         if busy, codeWorkspace?.reviewingAgent != true, ![.agentReview,.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
