@@ -1,7 +1,7 @@
 import Foundation
 import KilnKit
 
-public enum TerminalEffect: Equatable { case command(String), workspaceRead(String), disconnect, selectText(Bool) }
+public enum TerminalEffect: Equatable { case command(String), workspaceRead(String), workerControl(String), disconnect, selectText(Bool) }
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
@@ -13,6 +13,11 @@ public struct KilnTerminal {
     public private(set) var selected = 0
     public private(set) var busy = false
     private var management = ManagementUI()
+    public private(set) var activeWorkerID: String?
+    public var workerCancelCommand: String? { activeWorkerID.map { "ai work cancel " + Self.quote($0) } }
+    public mutating func finishWorkerControl(text: String, status: Int) {
+        messages.append(ChatMessage(role:"Kiln",text:text)); messages = Array(messages.suffix(40))
+    }
     private var codeWorkspace: WorkspaceUI?
     private var codeFocus = true
     private var codeCommand = false
@@ -42,7 +47,7 @@ public struct KilnTerminal {
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
         if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
-        if busy, ![.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.build,.wrap].contains(key) {
+        if busy, ![.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.build,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
         if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
@@ -110,7 +115,7 @@ public struct KilnTerminal {
         let item = workspaceItems[index]
         if item.approval { reviewID = item.id; reviewButton = 0; sidebarFocus = false; return [] }
         sidebarFocus = false; reviewID = nil
-        return execute("ai task show " + Self.quote(item.id))
+        return execute(item.id.hasPrefix("work:") ? "ai work watch " + Self.quote(String(item.id.dropFirst(5))) : "ai task show " + Self.quote(item.id))
     }
     private mutating func reviewAction(_ action: Int) -> [TerminalEffect] {
         guard !busy, let id = reviewID else { return [] }
@@ -171,6 +176,16 @@ public struct KilnTerminal {
         let previousLines = scroll > 0 ? chatBody(columns: chatColumns).count : 0
         defer { if scroll > 0 { scroll = max(0, scroll + chatBody(columns: chatColumns).count - previousLines) } }
         switch event {
+        case .source(let file): codeWorkspace?.showAgentFile(file)
+        case .work(let work):
+            if activeWorkerID != work.id {
+                for text in work.contextMessages ?? [] { messages.append(ChatMessage(role:"Earlier context",text:text)) }
+            }
+            activeWorkerID = work.id
+            responseProvider = work.provider; liveAnswer = work.answer; liveReasoning = work.reasoning
+            liveStatus = "Agent " + String(work.id.prefix(8)) + " / " + work.state + " / " + work.activity
+            if work.queuedContext > 0 { liveStatus += " / \(work.queuedContext) context queued" }
+            if let file = work.file { codeWorkspace?.showAgentFile(file) } else { codeWorkspace?.clearAgentFile() }
         case .provider(let provider):
             if busy && commandInChat && responseProvider == nil { responseProvider = provider }
         case .answer(let text): liveAnswer = String((liveAnswer + text).suffix(24000))
@@ -252,7 +267,7 @@ public struct KilnTerminal {
         }
         commandInChat = false; responseProvider = nil
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
-        busy = false
+        busy = false; activeWorkerID = nil; codeWorkspace?.endAgent()
         if codeCommand { codeWorkspace?.finish(text:text,status:status); codeCommand = false }
         else { management.finish(text:text,status:status) }
         let lines = text.components(separatedBy: "\n")
@@ -465,7 +480,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
+        case .followAgent, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }
@@ -520,9 +535,19 @@ public struct KilnTerminal {
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
-            guard !busy else { return [] }
+            guard !busy || (aiMode && activeWorkerID != nil) else { return [] }
             let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !command.isEmpty else { return [] }
+            if busy, let worker = activeWorkerID {
+                if command.hasPrefix("/") {
+                    messages.append(ChatMessage(role:"Kiln",text:"Send plain context while this agent works. Ctrl-C cancels; use another chat for separate work.")); return []
+                }
+                let context = codeWorkspace?.contextJSON(width:width >= 110 ? splitWidth : width)
+                let payload = command + (context.map { "\nCURRENT EDITOR CONTEXT (reference only; does not expand the active app grant): " + $0 } ?? "")
+                messages.append(ChatMessage(role:"You",text:command+" [queued context]"))
+                input = ""; cursor = 0; scroll = 0
+                return [.workerControl("ai work input " + Self.quote(worker) + " " + Self.quote(payload))]
+            }
             if history.last != command { history.append(command); history = Array(history.suffix(100)) }
             input = ""; cursor = 0; historyPosition = nil
             if (!aiMode && (command == "theme" || command.hasPrefix("theme "))) ||
@@ -575,6 +600,8 @@ public struct KilnTerminal {
                 if command == "/exit" { setAIChatMode(false); transcript.append("Left AI chat."); return [] }
                 if command.hasPrefix("/recover ") { return execute("ai recovery new " + Self.quote(String(command.dropFirst(9)))) }
                 if command == "/context" { return execute("ai context") }
+                if command == "/agents" { return execute("ai work list") }
+                if command.hasPrefix("/agent ") { return execute("ai work watch " + Self.quote(String(command.dropFirst(7)))) }
                 if command == "/tasks" { return execute("ai task list") }
                 if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
                 if command.hasPrefix("/watch ") { return execute("ai task watch " + Self.quote(String(command.dropFirst(7)))) }
@@ -588,9 +615,9 @@ public struct KilnTerminal {
                         input = command; cursor = command.count
                         return []
                     }
-                    return execute("ai ask --workspace " + Self.quote(context) + " " + quoted, display: "You: " + command)
+                    return execute("ai work start --workspace " + Self.quote(context) + " " + quoted, display: "You: " + command)
                 }
-                return execute("ai ask " + quoted, display: "You: " + command)
+                return execute("ai work start " + quoted, display: "You: " + command)
             }
             return execute(command)
         }

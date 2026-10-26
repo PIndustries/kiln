@@ -25,8 +25,8 @@ private func codeUI(width: Int = 160) throws -> KilnTerminal {
 private func sentContext(_ effects: [TerminalEffect]) throws -> [String:String] {
     guard case .command(let command) = try #require(effects.first) else { Issue.record("Expected chat command"); return [:] }
     let args = try KilnCommands.tokenize(command)
-    #expect(Array(args.prefix(3)) == ["ai","ask","--workspace"])
-    return try JSONDecoder().decode([String:String].self,from:Data(args[3].utf8))
+    #expect(Array(args.prefix(4)) == ["ai","work","start","--workspace"])
+    return try JSONDecoder().decode([String:String].self,from:Data(args[4].utf8))
 }
 @Test func codeChatBindsTheDisplayedFileAndKeepsBrowsingIndependentOfStreaming() throws {
     var ui = try codeUI()

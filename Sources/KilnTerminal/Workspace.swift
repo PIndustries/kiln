@@ -6,6 +6,17 @@ struct WorkspaceUI {
     let module: String
     let change: String?
     var active = true
+    private var agentFile: AISourcePreview?
+    private var followingAgent = true
+    private var agentOffset = 0, agentHorizontal = 0
+    mutating func showAgentFile(_ file: AISourcePreview) {
+        guard file.module == module else { return }
+        if agentFile?.path != file.path { agentOffset = 0; agentHorizontal = 0 }
+        agentFile = file
+    }
+    mutating func clearAgentFile() { agentFile = nil }
+    mutating func endAgent() { agentFile = nil; followingAgent = true }
+
     private struct Entry: Decodable { let path: String; let sha256: String; let bytes: Int }
     private struct Tree: Decodable { let version: String; let editable: Bool; let projectRoot: Bool; let files: [Entry] }
     private struct File: Decodable { let file: String; let sha256: String; let source: String; let version: String }
@@ -87,14 +98,15 @@ struct WorkspaceUI {
     init(module: String, change: String? = nil) { self.module = module; self.change = change }
     private func command(_ parts: [String]) -> String { parts.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ") }
     var canBrowseDuringTurn: Bool { mode == "browse" && confirmation.isEmpty }
-    var filePath: String { path }
+    var filePath: String { followingAgent && !hasUnsavedEdits ? agentFile?.path ?? path : path }
     var hasUnsavedEdits: Bool { (mode == "edit" && (isNew || draft != source)) || recoverableDraft || publishingDraft || buffers.values.contains { $0.isNew || $0.draft != $0.source } }
     var contextJSON: String? { contextJSON(width:120) }
     func contextJSON(width: Int) -> String? {
         guard !hash.isEmpty, !waiting, mode != "receipt", mode != "name" else { return nil }
-        let context: [String: String] = ["module": module, "path": path, "sha256": hash,
-            "revision": change ?? "workspace", "unsaved": hasUnsavedEdits ? "true" : "false",
-            "firstVisibleLine": String(wrapping ? (visualRows(width:width).dropFirst(offset).first?.0 ?? 0)+1 : offset+1)]
+        let shown = followingAgent && !hasUnsavedEdits ? agentFile : nil
+        let context: [String: String] = ["module": module, "path": shown?.path ?? path, "sha256": shown == nil ? hash : "",
+            "revision": change ?? "workspace", "unsaved": hasUnsavedEdits || shown?.draft == true ? "true" : "false",
+            "firstVisibleLine": String(shown != nil ? agentOffset+1 : wrapping ? (visualRows(width:width).dropFirst(offset).first?.0 ?? 0)+1 : offset+1)]
         guard let data = try? JSONEncoder().encode(context) else { return nil }
         return String(data: data, encoding: .utf8)
     }
@@ -201,6 +213,22 @@ struct WorkspaceUI {
     private let scrollButtons = "[PgUp] [PgDn] [Top] [End] [<] [>]"
     mutating func handle(_ input: TerminalKey, width: Int, height: Int) -> String? {
         autoCompletionReady = false
+        if input == .followAgent { followingAgent.toggle(); return nil }
+        if followingAgent, let file = agentFile, !hasUnsavedEdits {
+            var preview = self
+            preview.agentFile = nil; preview.source = file.source; preview.path = file.path
+            preview.mode = "browse"; preview.treeFocus = false
+            preview.offset = agentOffset; preview.horizontal = agentHorizontal
+            switch input {
+            case .up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.panLeft,.panRight,.wrap:
+                _ = preview.handle(input,width:width,height:height)
+                agentOffset = preview.offset; agentHorizontal = preview.horizontal; wrapping = preview.wrapping; return nil
+            case let .mouse(button,_,_,_) where button & 64 != 0:
+                _ = preview.handle(input,width:width,height:height)
+                agentOffset = preview.offset; agentHorizontal = preview.horizontal; return nil
+            default: followingAgent = false // User navigation takes precedence over auto-follow.
+            }
+        }
         var key = input
         guard !waiting else { return nil }
         if case let .mouse(button,column,row,released) = key, !released, button == 0, row == 1 {
@@ -515,6 +543,18 @@ struct WorkspaceUI {
     }
     func render(width: Int, height: Int, theme: TerminalTheme) -> String {
         guard width >= 50, height >= 16 else { return "" }
+        if followingAgent, let file = agentFile, !hasUnsavedEdits {
+            var preview = self; preview.agentFile = nil; preview.path = file.path
+            preview.source = file.source; preview.mode = "browse"; preview.editable = false
+            preview.treeFocus = false; preview.offset = agentOffset; preview.horizontal = agentHorizontal
+            preview.ideResult = nil; preview.idePending = nil
+            if !preview.entries.contains(where: { $0.path == file.path }) {
+                preview.entries.append(Entry(path:file.path,sha256:"",bytes:file.source.utf8.count)); preview.entries.sort { $0.path < $1.path }
+            }
+            preview.selected = preview.entries.firstIndex(where: { $0.path == file.path }) ?? 0
+            preview.error = file.draft ? "AGENT DRAFT - not published | F8 browse your code" : "AGENT READING | F8 browse your code"
+            return preview.render(width:width,height:height,theme:theme)
+        }
         let w = width-4, h = height-2, left = 3, top = 2, treeWidth = min(32,max(18,w/4)), codeWidth = w-treeWidth-5
         let display = mode == "receipt" ? "" : mode == "edit" ? draft : source
         let lines = display.components(separatedBy:"\n")
@@ -557,7 +597,7 @@ struct WorkspaceUI {
             row(h-2,"| "+fit(scrollButtons+"  "+(wrapping ? "Wrap ON" : "Wrap OFF")+"  Ln \(caretLine+1):\(caretColumn+1)  ViewCol \(horizontal+1)  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)",w-4)+" |")
         }
         row(h-1,"+"+String(repeating:"-",count:w-2)+"+")
-        out += "\u{1b}[1;3H" + theme.accentCode + fit("[Build] [Run] [Def] [Wrap] [Complete] ["+vim.label+"]",width-5)
+        out += "\u{1b}[1;3H" + theme.accentCode + fit("[Build] [Run] [Def] [Wrap] [Complete] ["+vim.label+"] [F8 Follow]",width-5)
         if let result = ideResult, result.action == "complete", !result.completions.isEmpty {
             let count = min(6,result.completions.count), first = max(0,ideIndex-count+1)
             let menuWidth = min(64,max(20,codeWidth-2))

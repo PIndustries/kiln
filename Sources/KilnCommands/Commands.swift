@@ -33,6 +33,7 @@ public struct KilnCommands: Sendable {
     private let aiAccounts: AIAccountServices
     let webDevelopment: WebDevelopment
     private let assistant: KilnAssistant
+    let aiWork: AIWorkSessions
     private let aiTasks: AITasks
     private let recoveries: AIRecoveryTasks
     var terminalPreferencesDirectory: URL { runtime.stateDirectory.appendingPathComponent("terminal-preferences", isDirectory: true) }
@@ -48,13 +49,14 @@ public struct KilnCommands: Sendable {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     func aiSessionID(_ id: String) throws -> String { try aiOwnerFingerprint() + ":" + id }
-    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault); self.assistant = KilnAssistant(directory: runtime.stateDirectory); self.webDevelopment = WebDevelopment(directory: runtime.stateDirectory); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault); self.assistant = KilnAssistant(directory: runtime.stateDirectory); self.webDevelopment = WebDevelopment(directory: runtime.stateDirectory); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiWork = AIWorkSessions(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     // Internal dependency injection keeps snapshot tests deterministic without
     // granting the presentation layer authority to create proposals.
     init(runtime: KilnRuntime, assistant: KilnAssistant) {
         self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault)
         self.runtime = runtime; self.assistant = assistant; self.cluster = nil; self.webDevelopment = WebDevelopment(directory: runtime.stateDirectory)
         self.identities = KilnIdentityStore(directory: runtime.stateDirectory)
+        self.aiWork = AIWorkSessions(directory: runtime.stateDirectory)
         self.aiTasks = AITasks(directory: runtime.stateDirectory)
         self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory)
         self.bastion = BastionClient(directory: runtime.stateDirectory)
@@ -66,6 +68,7 @@ public struct KilnCommands: Sendable {
         }
         guard let scopedSession = try? aiSessionID(sessionID) else { return AIWorkspaceSnapshot(error: "Identity revoked or unauthorized") }
         let scope = try? aiOwnerFingerprint()
+        let ownWork = (try? await aiWork.list(owner: scope ?? "")) ?? []
         let conversation = await assistant.selectedConversation(session: scopedSession)
         var proposals = await assistant.pendingProposals(session: scopedSession)
         var tasks: [AITaskSnapshot] = []
@@ -93,7 +96,7 @@ public struct KilnCommands: Sendable {
             (identity.role == "admin" || identity.modules.isEmpty || identity.modules.contains($0.module))
         }
         let provider = (try? activeAIConfiguration()).map { AIProviderSnapshot(provider: $0.provider.rawValue, profile: $0.profile, model: $0.model) }
-        return AIWorkspaceSnapshot(proposals: visible, tasks: identity.role == "admin" ? tasks : [],
+        return AIWorkspaceSnapshot(proposals: visible, tasks: (identity.role == "admin" ? tasks : []) + ownWork.map { AITaskSnapshot(id:"work:"+$0.id,prompt:$0.prompt,status:$0.state) },
                                    error: identity.role == "admin" ? taskError : nil, provider: provider, conversation: conversation, contextScope: scope)
     }
     public func allowForward(host: String, port: Int) async -> Bool {
@@ -429,7 +432,8 @@ extension KilnCommands {
         catch { throw AIError.message("Task was created but completion audit failed. Inspect ai task list before retrying.") }
         return result
     }
-    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil, webRefactor: WebRefactor? = nil) async throws -> CommandResult {
+    func aiCommand(_ parts: [String], sessionID: String, progress: @escaping @Sendable (AIProgress) -> Void = { _ in }, pinnedConfiguration: AIConfiguration? = nil, webRefactor: WebRefactor? = nil, workerID: String? = nil) async throws -> CommandResult {
+        if parts.count >= 3, parts[1] == "work" { return try await workCommand(parts,sessionID:sessionID,progress:progress) }
         let accountOwner = (principal?.name ?? "local-console") + ":" + SHA256.hash(data: Data((principal?.publicKey ?? "local-console").utf8)).map { String(format: "%02x", $0) }.joined()
         if parts.count >= 2, parts[1] == "conversation" {
             let owner = try aiOwnerFingerprint()
@@ -694,7 +698,9 @@ extension KilnCommands {
             /reset                Clear conversation and interactive proposals
             /theme [PRESET]       Show or save colors (green/cyan/amber/mono)
             /task PROMPT          Start a background investigation
-            /tasks                List background tasks
+            /agents               List your background chat agents
+            /agent ID             Reattach to an agent (disconnect leaves it running)
+            /tasks                List background investigations
             /watch TASK-ID        Watch a task
             /cancel TASK-ID       Cancel a task
             /recover APP/MODULE   Propose a durable recovery
@@ -703,7 +709,10 @@ extension KilnCommands {
             /exit                 Return to the command drawer
             Ctrl-C cancels; Ctrl-S selects text/resumes; PgUp/PgDn scroll.
             Backtick opens commands; Esc returns to the dashboard.
-            Plain messages go to the selected provider.
+            Plain messages start a runtime-owned agent using the selected provider.
+            While it works, Enter queues context for its next safe step. Ctrl-C cancels.
+            In code: F8 follows agent file/draft activity; browsing pauses follow.
+            Up to 48 agents can run concurrently across chats; same-app publication is serialized.
             Help makes no provider request.
             """)
         case ["ai"], ["ai", "help"]:
@@ -808,6 +817,9 @@ extension KilnCommands {
             webValidation = { module, edits in
                 if let editorContext, module != editorContext["module"] { throw AIError.message("Validation is limited to the active application") }
                 if let webRefactor { try await webDevelopment.verifyRefactor(webRefactor, module: module) }
+                if workerID != nil {
+                    for file in try await webDevelopment.previewEdits(module:module,edits:edits,limit:webRefactor == nil ? 8 : 32) { progress(.source(file)) }
+                }
                 return try await validateWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, progress: progress)
             }
         } else { webValidation = nil }
@@ -817,7 +829,11 @@ extension KilnCommands {
                 progress(event)
             }, allowProposals: !sessionID.hasPrefix("task:") && (try identities.resolve(principal).role != "viewer"), validateAccess: {
                 guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Identity or authorization scope changed during this turn") }
-            }, webChange: webChange, webValidation: webValidation, webOnly: webRefactor != nil) { name, module in
+            }, webChange: webChange, webValidation: webValidation, webOnly: webRefactor != nil, waitForCapacity: workerID != nil, additionalContext: {
+                guard let workerID else { return [] }
+                guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Worker identity changed") }
+                return try await aiWork.takeContext(workerID,owner:expectedOwner)
+            }) { name, module in
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {
                 case "list_web_projects": try authorizeAdmin(); return try await webDevelopment.inventory()
@@ -827,7 +843,14 @@ extension KilnCommands {
                     guard let target = args["module"] else { throw AIError.message("Missing web project") }
                     if name == "list_web_files" { return try await webDevelopment.tree(module: target) }
                     guard let path = args["path"], let offset = args["offset"].flatMap(Int.init) else { throw AIError.message("Invalid file arguments") }
-                    return try await webDevelopment.file(module: target, path: path, offset: offset)
+                    let value = try await webDevelopment.file(module: target, path: path, offset: offset)
+                    if workerID != nil {
+                        let full = try await webDevelopment.file(module:target,path:path)
+                        if let object = try JSONSerialization.jsonObject(with:Data(full.utf8)) as? [String:Any], let text = object["source"] as? String {
+                            progress(.source(AISourcePreview(module:target,path:path,source:text,draft:false)))
+                        }
+                    }
+                    return value
                 case "read_web_source":
                     try authorizeAdmin()
                     let args = try JSONDecoder().decode([String: String].self, from: Data(module!.utf8))
@@ -876,14 +899,14 @@ private extension KilnCommands {
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
         case "web": return ["register", "restore", "apply", "refactor"].contains(p[1])
-        case "ai": return ["configure", "knowledge", "approve", "deny", "headless", "login", "logout", "use"].contains(p[1]) || (p[1] == "recovery" && p.count > 2 && p[2] != "list") || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2]))
+        case "ai": return ["configure", "knowledge", "approve", "deny", "headless", "login", "logout", "use"].contains(p[1]) || (p[1] == "recovery" && p.count > 2 && p[2] != "list") || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2])) || (p[1] == "work" && p.count > 2 && ["start","input","cancel","remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
         }
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["web", "app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["projects", "register", "source", "changes", "history", "diff", "code", "tree", "file", "apply", "browse", "refactor", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["work", "projects", "register", "source", "changes", "history", "diff", "code", "tree", "file", "apply", "browse", "refactor", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)
@@ -903,7 +926,7 @@ private extension KilnCommands {
             if ["install", "deploy"].contains(p[1]) { try authorizeAdmin(); return }
         }
         if p.first == "ai" {
-            if p.count == 1 || ["help", "chat-help", "status", "context", "ask", "reset", "deny", "providers", "usage", "conversation"].contains(p[1]) { return }
+            if p.count == 1 || ["help", "chat-help", "status", "context", "ask", "work", "reset", "deny", "providers", "usage", "conversation"].contains(p[1]) { return }
             if p[1] == "approve" { try identities.require(principal, mutation: true); return }
             if ["check", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "profile", "headless", "login", "logout", "accounts", "models", "use"].contains(p[1]) { try authorizeAdmin(); return }
         }

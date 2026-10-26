@@ -109,11 +109,20 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         # Open a different file on the SAME SSH channel while inference is pending.
         send(b'\x17\x1b[B\r'); expect('actor Counter')
         expect('App: draft/site | Models/Counter.swift')
+        # Send guidance while the first worker is streaming on this same channel.
+        send(b'\x17Keep the green theme\r'); expect('Context queued;')
+        wait(lambda:(root/'context-received').exists(),seconds=20)
         expect('Complete: Explain the displayed file')
-        send(b'\x17Now explain this file\r'); expect('Streaming: Now explain this file')
+        send(b'Now explain this file\r'); expect('Streaming: Now explain this file')
         wait(lambda:'Models/Counter.swift' in (root/'last-prompt').read_text().replace('\\/','/'))
         send(b'\x13'); expect('SELECT TEXT'); send(b'\x13')
         expect('Complete: Now explain this file')
+        send(b'Observe live draft\r'); expect('AGENT DRAFT'); expect('AgentDraft')
+        assert 'App: draft/site | Models/Counter.swift' in frame()
+        # F8 lets the operator browse without the worker moving the source pane.
+        send(b'\x17\x1b[19~'); expect('actor Counter')
+        send(b'\x1b[19~'); expect('AgentDraft')
+        expect('Complete: Observe live draft'); send(b'\x17')
         send(b'\x1b[<0;105;22M\x1b[<32;70;22M\x1b[<0;70;22m'); expect_divider(70)
         assert b'\x1b[?1002l' in wire and b'\x1b[?1000h\x1b[?1002h\x1b[?1006h' in wire
         send(b'\x1b[<0;70;22M\x1b[<32;90;22M\x1b[<0;90;22m'); expect_divider(90)
@@ -127,8 +136,21 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         assert source.read_bytes()==original
         assert (project/'Models/Counter.swift').read_text()=='actor Counter { var count = 0 }\n'
         assert json.loads(get('/__kiln/instance'))['instance']==old_instance and get('/assets/app.css')==css
+        # Disconnect an observer, then reattach from a new SSH connection.
+        detached = subprocess.Popen(base+['ai work start "Detach and reattach proof"'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            wait(lambda:'Detach and reattach proof' in ssh('ai work list'))
+            rows=ssh('ai work list').splitlines()
+            worker_id=next(line.split()[0] for line in rows if 'Detach and reattach proof' in line)
+            detached.terminate(); detached.wait(timeout=5)
+            assert worker_id in ssh('ai work list')
+            resumed=ssh('ai work watch '+worker_id)
+            assert 'Complete: Detach and reattach proof' in resumed and '[completed]' in resumed,resumed
+            ssh('ai work remove '+worker_id)
+        finally:
+            if detached.poll() is None: detached.kill(); detached.wait(timeout=5)
         (root/'passed').touch(); (root/'done').touch()
-        print('PASS real SSH: code+chat visible; per-message app/file context; open file while inference streams; draggable divider during inference and after copy mode; unsaved draft survives; live source and worker unchanged',flush=True)
+        print('PASS real SSH: independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; queued context consumed while streaming; code+chat visible; per-message app/file context; open file while inference streams; draggable divider during inference and after copy mode; unsaved draft survives; live source and worker unchanged',flush=True)
         runtime.wait(timeout=30); assert runtime.returncode==0
         print('KILN_CODE_CHAT_ACCEPTANCE_COMPLETE',flush=True)
     finally:

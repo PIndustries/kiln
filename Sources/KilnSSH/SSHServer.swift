@@ -259,7 +259,11 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func apply(_ key: TerminalKey, channel: Channel) {
         guard commands.isAuthorized() else { channel.close(promise: nil); return }
-        if key == .interrupt, busy, secretName == nil, !secretSaving { commandTask?.cancel(); return }
+        if key == .interrupt, busy, secretName == nil, !secretSaving {
+            if let command = terminal?.workerCancelCommand { controlWorker(command,channel:channel) }
+            else { commandTask?.cancel() }
+            return
+        }
         if secretSaving { return }
         if let name = secretName {
             switch key {
@@ -295,6 +299,7 @@ private final class ShellHandler: ChannelInboundHandler {
             switch effect {
             case .command(let command): submit(command, channel: channel)
             case .workspaceRead(let command): readWorkspace(command, channel: channel)
+            case .workerControl(let command): controlWorker(command,channel:channel)
             case .disconnect: close(channel: channel, status: 0)
             case .selectText(let enabled):
                 selectingText = false; lastFrame = ""; paint(channel: channel)
@@ -303,6 +308,17 @@ private final class ShellHandler: ChannelInboundHandler {
             }
         }
         scheduleCompletion(channel:channel)
+    }
+    func controlWorker(_ command: String, channel: Channel) {
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), commands = commands, sessionID = owner.uuidString
+        Task {
+            let result = await commands.execute(command,sessionID:sessionID)
+            channel.eventLoop.execute {
+                guard channel.isActive else { return }
+                bound.value.terminal?.finishWorkerControl(text:result.text,status:result.status)
+                bound.value.paint(channel:channel)
+            }
+        }
     }
     func scheduleCompletion(channel: Channel) {
         completionDelay?.cancel()

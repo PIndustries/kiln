@@ -120,6 +120,16 @@ public actor WebDevelopment {
             content = String(content.prefix(content.count / 2))
         }
     }
+    /// Proposed source for the IDE only. Uses the exact edit/hash/path checks of
+    /// publication, without changing disk or the running release.
+    public func previewEdits(module: String, edits: String, limit: Int) throws -> [AISourcePreview] {
+        let registered = try project(module), before = try WebFiles.read(registered.configuration)
+        let after = try before.applying(edits,multiFile:registered.configuration.root != nil,limit:limit)
+        return Set(before.files.keys).union(after.files.keys).sorted().compactMap { path in
+            guard before.files[path] != after.files[path] else { return nil }
+            return AISourcePreview(module:module,path:path,source:after.files[path].flatMap { String(data:$0,encoding:.utf8) } ?? "// Proposed deletion",draft:true)
+        }
+    }
     public func browse(module: String, path: String = "App.swift", change: String? = nil) throws -> String {
         let tree = try tree(module: module, change: change), file = try file(module: module, path: path, change: change)
         return "{\"tree\":" + tree + ",\"file\":" + file + "}"

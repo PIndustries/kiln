@@ -17,7 +17,14 @@ import KilnSSH
     let assistant = KilnAssistant(streamingCompletion: { _, _, messages, _, emit in
         let prompt = messages.last(where: { $0.role == "user" })?.content ?? ""
         try KilnStateFile.write(Data(prompt.utf8),to:root.appendingPathComponent("last-prompt"))
-        let label = String(prompt.split(separator:"\n").first ?? "unknown")
+        let firstPrompt = messages.last(where: { $0.role == "user" && $0.content?.hasPrefix("Keep the green theme") != true })?.content ?? prompt
+        let label = String(firstPrompt.split(separator:"\n").first ?? "unknown")
+        if messages.contains(where: { $0.role == "user" && $0.content?.hasPrefix("Keep the green theme") == true }) {
+            try KilnStateFile.write(Data("received".utf8),to:root.appendingPathComponent("context-received"))
+        }
+        if prompt.hasPrefix("Observe live draft") {
+            emit(.source(AISourcePreview(module:"draft/site",path:"Models/Counter.swift",source:"actor AgentDraft { var count = 7 }",draft:true)))
+        }
         emit(.answer("Streaming: " + label))
         for _ in 0..<60 { try await Task.sleep(for:.milliseconds(100)); try Task.checkCancellation() }
         return AIMessage(role:"assistant",content:"Complete: " + label)

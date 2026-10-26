@@ -658,3 +658,35 @@ host path; they continue using registered project tools.
 Browser form pages use `Referrer-Policy: same-origin`: ordinary same-origin POSTs
 retain their Origin header, and cross-origin destinations receive no referrer.
 The server still rejects missing/null/foreign origins and invalid CSRF tokens.
+
+### Background chat agents and the live code pane
+
+Plain chat messages start a runtime-owned worker. The terminal observes the worker;
+closing SSH detaches that observer and leaves the work running. `/agents` lists
+only your identity's work, and `/agent ID` reattaches. Ctrl-C explicitly cancels
+an observed worker. Cancellation cannot undo a publication that already committed;
+inspect the source history and release receipt when an outcome is uncertain.
+Runtime restart marks active jobs interrupted and never automatically replays them.
+Completed work and accepted context are saved privately in `ai-work.json`.
+
+Up to 48 chat workers can run concurrently across chats. Other AI investigations
+share the assistant's inference capacity. Each chat has one active worker, and
+source publication retains its existing per-application serialization, snapshot
+hash checks, isolated build and healthy-worker promotion.
+
+While an agent runs, type a plain message and press Enter. It enters that worker's
+context inbox without waiting for the active command to finish. Kiln picks it up
+at the next provider/tool boundary, discards a stale pending tool plan and clears
+its old validation grant. It never interrupts a half-completed file operation.
+Messages that arrive after the last safe step remain recorded as unconsumed, with
+an explicit notice in the final receipt. Additional context cannot widen the
+original app, identity or development grant.
+
+In the code pane, **F8** toggles following the agent. Inspected files and complete
+proposed edits appear as controller events arrive. Drafts are labeled **AGENT
+DRAFT — not published** and stay separate from local editor buffers and saved
+source. They are complete proposals, not partially executed tool JSON. Navigation
+takes over from follow mode; F8 resumes following. Local unsaved buffers take
+priority and are never replaced by agent activity. The chat continues showing
+provider-visible thinking and factual tool/build activity; Ctrl-T expands the
+thinking supplied by the provider.

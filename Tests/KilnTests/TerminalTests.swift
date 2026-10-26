@@ -98,7 +98,7 @@ private let sample = ModuleSnapshot(application: "storefront", name: "rest", ver
         _ = ui.handle(.text("7"))
         #expect(ui.chatVisible)
         _ = ui.handle(.text("Inspect my services"))
-        #expect(ui.handle(.enter) == [.command("ai ask \"Inspect my services\"")])
+        #expect(ui.handle(.enter) == [.command("ai work start \"Inspect my services\"")])
         ui.finish(text: "Chat result", status: 0)
         _ = ui.handle(.text("unsent chat draft"))
         _ = ui.handle(.text(shortcut))

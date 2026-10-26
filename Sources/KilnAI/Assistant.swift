@@ -198,6 +198,8 @@ public actor KilnAssistant {
                     webChange: (@Sendable (String, String) async throws -> String)? = nil,
                     webValidation: (@Sendable (String, String) async throws -> String)? = nil,
                     webOnly: Bool = false,
+                    waitForCapacity: Bool = false,
+                    additionalContext: @escaping @Sendable () async throws -> [String] = { [] },
                     read: @escaping @Sendable (String, String?) async throws -> String) async throws -> String {
         let visibleThinking = VisibleThinkingLog()
         let downstream = progress
@@ -205,9 +207,9 @@ public actor KilnAssistant {
             visibleThinking.receive(event); downstream(event)
         }
         guard !configurationUncertain else { throw AIError.message("Provider selection requires restart reconciliation") }
-        if session.hasPrefix("task:"), busy.count >= 48 {
+        if waitForCapacity || session.hasPrefix("task:"), busy.count >= 48 {
             progress(.status("Waiting for inference capacity"))
-            while busy.count >= 48 { try await Task.sleep(for: .milliseconds(200)); try Task.checkCancellation() }
+            while busy.count >= 48 { try await Task.sleep(for: .milliseconds(200)); try Task.checkCancellation(); try validateAccess() }
         }
         guard !busy.contains(session), busy.count < 48 else { throw AIError.message("AI is busy; try again after the current turn") }
         guard !prompt.isEmpty, prompt.utf8.count <= 8192 else { throw AIError.message("Prompt must contain 1-8192 bytes") }
@@ -295,7 +297,14 @@ public actor KilnAssistant {
             }
         }
         do {
-            for round in 0..<9 {
+            rounds: for round in 0..<9 {
+                let incoming = try await additionalContext()
+                if !incoming.isEmpty {
+                    messages += incoming.map { AIMessage(role:"user",content:$0) }
+                    validatedWebEdits.removeAll(); results.removeAll()
+                    progress(.snapshot(""))
+                    progress(.status("New user context received at safe step; replanning"))
+                }
                 try Task.checkCancellation()
                 progress(.status(round == 8 ? "Summarizing collected results" : "\(configuration.provider.rawValue) / \(configuration.profile) · turn \(round + 1)"))
                 if round == 8 { messages.append(AIMessage(role: "user", content: "Tool budget is complete. Summarize the verified results already returned. State any unknowns. Do not call more tools.")) }
@@ -323,6 +332,17 @@ public actor KilnAssistant {
                 }
                 try Task.checkCancellation()
                 messages.append(message)
+                let incomingAfterResponse = try await additionalContext()
+                if !incomingAfterResponse.isEmpty {
+                    for call in message.tool_calls ?? [] {
+                        messages.append(AIMessage(role:"tool",content:"Not executed: new user context arrived. Replan with the updated instructions.",tool_call_id:call.id))
+                    }
+                    messages += incomingAfterResponse.map { AIMessage(role:"user",content:$0) }
+                    validatedWebEdits.removeAll(); results.removeAll()
+                    progress(.snapshot(""))
+                    progress(.status("New user context received; stale tool plan discarded"))
+                    continue rounds
+                }
                 guard let calls = message.tool_calls, !calls.isEmpty else {
                     var answer = String((message.content ?? "No answer returned.").prefix(24000))
                     if configuration.provider == .erebine && !tools.isEmpty {
@@ -351,8 +371,19 @@ public actor KilnAssistant {
                 }
                 if round == 8 { messages.removeLast(); break }
                 guard calls.count <= 6 else { throw AIError.message("Model requested too many tools") }
-                for call in calls {
+                for (callIndex,call) in calls.enumerated() {
                     try Task.checkCancellation()
+                    let incomingBeforeTool = taskReceipt == nil ? try await additionalContext() : []
+                    if !incomingBeforeTool.isEmpty, taskReceipt == nil {
+                        for skipped in calls.dropFirst(callIndex) {
+                            messages.append(AIMessage(role:"tool",content:"Not executed: user supplied new context. Replan before further tools.",tool_call_id:skipped.id))
+                        }
+                        messages += incomingBeforeTool.map { AIMessage(role:"user",content:$0) }
+                        validatedWebEdits.removeAll(); results.removeAll()
+                        progress(.snapshot(""))
+                        progress(.status("New user context received before next tool"))
+                        continue rounds
+                    }
                     if taskReceipt != nil {
                         messages.append(AIMessage(role: "tool", content: "Not executed: a controller mutation receipt already ended this turn.", tool_call_id: call.id))
                         continue

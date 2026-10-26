@@ -27,7 +27,7 @@ final class TaskProgressRelay: @unchecked Sendable {
             case .status(let text):
                 guard !hasAnswer else { return }
                 output = "Activity: " + String(text.prefix(23989)) + "\n"
-            case .provider, .reasoning:
+            case .provider, .reasoning, .source, .work:
                 return // Configuration is pinned separately; reasoning stays transient.
             }
             // Yield under the lock so concurrent callbacks cannot reorder snapshots.
