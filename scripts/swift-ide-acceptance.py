@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
     root = Path(td).resolve(); state = root/'state'; state.mkdir(mode=0o700)
     project = root/'Source'; project.mkdir(mode=0o700)
     (project/'Models').mkdir(); (project/'Models/Jump.swift').write_text('struct JumpTarget { let value = 1 }\n'); (project/'Models/Jump.swift').chmod(0o600)
-    source = project/'App.swift'; original = (ROOT/'Sources/ExampleWeb/Web.swift').read_bytes()+b'\nfunc ideDefinitionProbe(_ value: JumpTarget) {}\nfunc ideRenameProbe() { let renameLocal = 1; print(renameLocal) }\n'
+    source = project/'App.swift'; original = (ROOT/'Sources/ExampleWeb/Web.swift').read_bytes()+b'\nfunc ideDefinitionProbe(_ value: JumpTarget) {}\nfunc ideRenameProbe() { let renameLocal = 1; print(renameLocal) }\nfunc ideFixProbe() { var neverMutated = 1; print(neverMutated) }\n'
     source.write_bytes(original); source.chmod(0o600)
     sdk = root/'sdk.json'
     subprocess.run(['python3',str(ROOT/'scripts/export-web-sdk.py'),'--build-dir',str(BIN),'--output',str(sdk),'--snapshot-dir',str(root/'sdk-inputs')],check=True)
@@ -136,6 +136,22 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\r'); expect('NOT_VALID_SWIFT')
         assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
         send(b'\x1b'); expect('Discard unsaved edits?'); send(b'\x1b[B\r'); drain(); expect('[R Refactor]')
+        # Formatting and compiler actions create local drafts through the same
+        # independent SSH lane; they never write source or restart the release.
+        formatted=json.loads(ssh('web ide draft/site format App.swift 0'))
+        assert formatted.get('renameFiles'),formatted
+        fix_cursor=original.decode().index('var neverMutated')
+        fixes=json.loads(ssh('web ide draft/site codeActions App.swift '+str(fix_cursor)))
+        assert any('let neverMutated' in (item.get('files') or {}).get('App.swift',{}).get('text','') for item in fixes.get('codeActions',[])),fixes
+        send(b'\x1b[12~'); expect('Formatting proposal')
+        send(b'\r'); expect('Formatting applied to drafts')
+        send(b'\x1b'); expect('Discard unsaved edits?'); send(b'\x1b[B\r'); drain()
+        send(b'\x1b[F'); expect('ideFixProbe')
+        click_word('neverMutated'); send(b'\x1b[13~'); expect('Compiler actions:')
+        click_word("Replace 'var'"); expect('Compiler action applied to drafts')
+        assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
+        send(b'\x1b'); expect('Discard unsaved edits?'); send(b'\x1b[B\r'); drain()
+        print('PASS formatting and compiler fix over SSH: both applied only to drafts; source/release unchanged',flush=True)
         # Run restarts the deployed release, not a discarded draft.
         send(b'\x1b[15~'); expect('Started draft/site'); send(b'\r'); expect('Codebase / draft/site')
         assert source.read_bytes()==original and get('/assets/app.css')==css

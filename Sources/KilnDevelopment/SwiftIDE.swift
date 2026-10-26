@@ -3,7 +3,7 @@ import KilnKit
 
 extension WebDevelopment {
     public func ide(module: String, request: SwiftIDERequest, scope: String = "local-console") async throws -> SwiftIDEResult {
-        guard WebIsolation.supported, ideRequests < 4, ["complete","definition","references","diagnostics","rename","build"].contains(request.action),
+        guard WebIsolation.supported, ideRequests < 4, ["complete","definition","references","diagnostics","rename","format","codeActions","build"].contains(request.action),
               WebFiles.validPath(request.path), (request.path.hasSuffix(".swift") || request.action == "build"), request.text.utf8.count <= 65536,
               (0...request.text.count).contains(request.cursor) else { throw KilnError.message("Invalid Swift IDE request or language service busy") }
         let registered = try project(module)
@@ -105,7 +105,26 @@ extension WebDevelopment {
             result.message = result.locations.isEmpty ? "No diagnostics in this document" : "Swift diagnostics (Enter or click to open)"
             return result
         }
-        if request.action == "rename" { return try renameResult(raw,request:request,snapshot:snapshot,disk:disk,root:root,result:result) }
+        if request.action == "codeActions" {
+            for action in (raw as? [[String:Any]] ?? []).prefix(64) {
+                guard let title = action["title"] as? String, title.utf8.count <= 1024 else { continue }
+                let kind = action["kind"] as? String ?? "quickfix"
+                var reason = (action["disabled"] as? [String:Any])?["reason"] as? String
+                if action["command"] != nil { reason = reason ?? "Requires a toolchain command; no command was executed" }
+                guard reason == nil, let edit = action["edit"] as? [String:Any] else {
+                    result.codeActions = (result.codeActions ?? []) + [SwiftIDECodeAction(title:title,kind:kind,disabledReason:reason ?? "No inline source edit supplied")]; continue
+                }
+                do {
+                    let proposal = try renameResult(edit,request:request,snapshot:snapshot,disk:disk,root:root,result:SwiftIDEResult(action:"codeActions",message:title))
+                    result.codeActions = (result.codeActions ?? []) + [SwiftIDECodeAction(title:title,kind:kind,files:proposal.renameFiles,edits:proposal.edits)]
+                } catch {
+                    result.codeActions = (result.codeActions ?? []) + [SwiftIDECodeAction(title:title,kind:kind,disabledReason:"Source edit is outside this project's supported file/range/version grant")]
+                }
+            }
+            result.message = (result.codeActions ?? []).isEmpty ? "No compiler code actions at this position" : "Compiler actions: Enter applies to drafts; publish separately"
+            return result
+        }
+        if request.action == "rename" || request.action == "format" { return try renameResult(raw,request:request,snapshot:snapshot,disk:disk,root:root,result:result) }
         if request.action == "complete" {
             let items = (raw as? [String:Any])?["items"] as? [[String:Any]] ?? raw as? [[String:Any]] ?? []
             // SourceKit may return an unfiltered list. Filter before limiting it,
@@ -163,32 +182,32 @@ extension WebDevelopment {
         await session.service.shutdown()
     }
     nonisolated func renameResult(_ raw: Any?, request: SwiftIDERequest, snapshot: WebFiles, disk: WebFiles, root: URL, result: SwiftIDEResult) throws -> SwiftIDEResult {
-        guard let object = raw as? [String:Any] else { throw KilnError.message("SourceKit returned no rename edits at this position") }
+        guard let object = raw as? [String:Any] else { throw KilnError.message("SourceKit returned no source edits at this position") }
         var changes = object["changes"] as? [String:[[String:Any]]] ?? [:]
         for item in object["documentChanges"] as? [[String:Any]] ?? [] {
             guard item["kind"] == nil, let document = item["textDocument"] as? [String:Any], let uri = document["uri"] as? String,
-                  let edits = item["edits"] as? [[String:Any]], changes[uri] == nil else { throw KilnError.message("Rename returned unsupported file operations or duplicate documents") }
+                  let edits = item["edits"] as? [[String:Any]], changes[uri] == nil else { throw KilnError.message("Source edits contain unsupported file operations or duplicate documents") }
             changes[uri] = edits
         }
         let prefix = WebIsolation.canonical(root.appendingPathComponent("Sources").path)+"/"
         var result = result, updated = snapshot, proposals: [String:SwiftIDERenameFile] = [:], allEdits: [SwiftIDEEdit] = []
         for (uri,edits) in changes {
-            guard let url = URL(string:uri), url.isFileURL else { throw KilnError.message("Rename escaped the registered project") }
+            guard let url = URL(string:uri), url.isFileURL else { throw KilnError.message("Source edit escaped the registered project") }
             let absolute = WebIsolation.canonical(url.path), path = String(absolute.dropFirst(prefix.count))
-            guard absolute.hasPrefix(prefix), let bytes = snapshot.files[path], path.hasSuffix(".swift"), let text = String(data:bytes,encoding:.utf8), edits.count <= 1024 else { throw KilnError.message("Rename includes an unavailable file or too many edits") }
+            guard absolute.hasPrefix(prefix), let bytes = snapshot.files[path], path.hasSuffix(".swift"), let text = String(data:bytes,encoding:.utf8), edits.count <= 1024 else { throw KilnError.message("Source edits include an unavailable file or too many edits") }
             var replacements: [(Int,Int,String)] = []
             for edit in edits {
                 guard let range = edit["range"] as? [String:Any], let start = range["start"] as? [String:Any], let end = range["end"] as? [String:Any],
                       let a = SwiftLanguage.offset(start,in:text), let b = SwiftLanguage.offset(end,in:text), a <= b, let replacement = edit["newText"] as? String,
-                      let line = start["line"] as? Int, let column = start["character"] as? Int else { throw KilnError.message("Invalid Swift rename edit") }
+                      let line = start["line"] as? Int, let column = start["character"] as? Int else { throw KilnError.message("Invalid Swift source edit") }
                 replacements.append((a,b,replacement))
                 allEdits.append(SwiftIDEEdit(path:path,start:a,end:b,text:replacement,sha256:WebIsolation.digest(bytes)))
-                result.locations.append(SwiftIDELocation(path:path,line:line+1,column:column+1,message:"rename to "+(request.newName ?? replacement)))
+                result.locations.append(SwiftIDELocation(path:path,line:line+1,column:column+1,message:request.action == "rename" ? "rename to "+(request.newName ?? replacement) : request.action == "format" ? "format source" : "compiler fix"))
             }
             replacements.sort { $0.0 > $1.0 }
             var chars = Array(text), previous = chars.count+1
             for (a,b,replacement) in replacements {
-                guard b <= previous, a < previous else { throw KilnError.message("Overlapping Swift rename edits") }
+                guard b <= previous, a < previous else { throw KilnError.message("Overlapping Swift source edits") }
                 chars.replaceSubrange(a..<b,with:replacement); previous = a
             }
             let changed = String(chars); updated.files[path] = Data(changed.utf8)
@@ -196,9 +215,10 @@ extension WebDevelopment {
             proposals[path] = SwiftIDERenameFile(source:base.map { String(decoding:$0,as:UTF8.self) } ?? "",sha256:base.map(WebIsolation.digest) ?? "",text:changed)
         }
         try updated.validate()
-        guard !proposals.isEmpty else { throw KilnError.message("No editable project references found for rename") }
+        guard !proposals.isEmpty else { throw KilnError.message("No editable project source changes found") }
         result.edits = allEdits; result.renameFiles = proposals
-        result.message = "Rename proposal [\(result.coverage ?? "toolchain")]: \(allEdits.count) edits in \(proposals.count) files. Enter applies to drafts; publish separately."
+        result.message = (request.action == "format" ? "Formatting proposal" : request.action == "codeActions" ? "Compiler action proposal" : "Rename proposal [\(result.coverage ?? "toolchain")]")+": \(allEdits.count) edits in \(proposals.count) files. Enter applies to drafts; publish separately."
+        if allEdits.isEmpty { result.renameFiles = nil; result.message = "No source changes needed" }
         return result
     }
 

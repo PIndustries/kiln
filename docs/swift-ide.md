@@ -135,3 +135,21 @@ While reviewing a proposal, chat receives its worker and selected-file context.
 The AI can inspect that owned proposal through `read_web_diff` with
 `change: agent:WORKER-UUID`. Review context is explicitly read-only and is not
 reported as an unsaved local edit; staging is a separate operator action.
+
+### Formatting and compiler actions
+
+**F2** requests document formatting from the registered Swift toolchain.
+**F3** requests compiler actions for the caret's line, including applicable
+quick fixes from its diagnostics. The result list shows the proposed operation;
+Enter applies its supported source edits to local drafts. Source files and the
+running application change only through the normal guarded publication path.
+Escape discards the suggestion. New typing or changes to another open buffer
+invalidate an outstanding edit response.
+
+These controls reuse the isolated SourceKit session and the project's existing
+file grant. Edit ranges, document versions, file paths, overlaps, and resulting
+source sizes are validated. Code actions that require a toolchain command or
+unsupported file operation are marked unavailable and are not executed. Available
+actions depend on the installed toolchain and the current source. No formatter
+package, workspace shell command, or package plugin is installed or invoked by
+these controls. Formatting currently requests four-space indentation.

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SwiftIDEBuffer: Codable, Sendable {
+public struct SwiftIDEBuffer: Codable, Sendable, Equatable {
     public let sha256: String
     public let text: String
     public init(sha256: String, text: String) { self.sha256 = sha256; self.text = text }
@@ -45,6 +45,7 @@ public struct SwiftIDEResult: Codable, Sendable {
     public var renameFiles: [String:SwiftIDERenameFile]?
     public var sessionID: String?
     public var documentVersion: Int?
+    public var codeActions: [SwiftIDECodeAction]?
     public var coverage: String?
     public init(action: String, message: String) { self.action = action; self.message = message }
 }
@@ -62,5 +63,17 @@ public struct SwiftIDEEdit: Codable, Sendable {
     public let sha256: String
     public init(path: String, start: Int, end: Int, text: String, sha256: String) {
         self.path = path; self.start = start; self.end = end; self.text = text; self.sha256 = sha256
+    }
+}
+
+public struct SwiftIDECodeAction: Codable, Sendable {
+    public let title: String
+    public let kind: String
+    public let disabledReason: String?
+    public let files: [String:SwiftIDERenameFile]?
+    public let edits: [SwiftIDEEdit]?
+    public init(title: String, kind: String, disabledReason: String? = nil, files: [String:SwiftIDERenameFile]? = nil, edits: [SwiftIDEEdit]? = nil) {
+        self.title = title; self.kind = kind; self.disabledReason = disabledReason
+        self.files = files; self.edits = edits
     }
 }

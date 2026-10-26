@@ -146,3 +146,44 @@ private func languageReply(_ result: SwiftIDEResult) throws -> String { String(d
     #expect(ui.hasUnsavedEdits)
     if !cancel { #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("editor changed")) }
 }
+
+@Test func formattingAndCompilerFixesApplyOnlyToDraftsAndDisabledActionsNeverApply() throws {
+    var ui = try languageEditor()
+    let requested = ui.handle(.format,width:120,height:35)
+    let command = try #require(requested)
+    let parts = try KilnCommands.tokenize(command)
+    let request = try JSONDecoder().decode(SwiftIDERequest.self,from:Data(parts[3].utf8))
+    #expect(request.action == "format")
+    var formatted = SwiftIDEResult(action:"format",message:"Formatting proposal")
+    formatted.renameFiles = ["App.swift":SwiftIDERenameFile(source:request.text,sha256:"a",text:"struct Item {\n}\nlet item = Item()\n")]
+    ui.finish(text:try languageReply(formatted),status:0)
+    #expect(ui.handle(.enter,width:120,height:35) == nil)
+    #expect(ui.hasUnsavedEdits)
+    #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("Formatting applied to drafts"))
+    let requestedFix = ui.handle(.codeActions,width:120,height:35)
+    _ = try #require(requestedFix)
+    var fix = SwiftIDEResult(action:"codeActions",message:"Compiler actions")
+    fix.codeActions = [SwiftIDECodeAction(title:"Change to let",kind:"quickfix",files:["App.swift":SwiftIDERenameFile(source:request.text,sha256:"a",text:"struct Item {}\nlet fixed = Item()\n")])]
+    ui.finish(text:try languageReply(fix),status:0)
+    #expect(ui.handle(.enter,width:120,height:35) == nil)
+    #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("Compiler action applied to drafts"))
+    _ = ui.handle(.codeActions,width:120,height:35)
+    fix.codeActions = [SwiftIDECodeAction(title:"Unsupported command",kind:"refactor",disabledReason:"Requires a toolchain command; no command was executed")]
+    ui.finish(text:try languageReply(fix),status:0)
+    #expect(ui.handle(.enter,width:120,height:35) == nil)
+    #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("no command was executed"))
+    #expect(ui.hasUnsavedEdits)
+}
+@Test func formattingReplyNeverOverwritesNewTypingAndNewShortcutsPreserveExistingKeys() throws {
+    var ui = try languageEditor()
+    _ = ui.handle(.text("e"),width:120,height:35)
+    _ = ui.handle(.format,width:120,height:35)
+    _ = ui.handle(.text("// newer\n"),width:120,height:35)
+    var result = SwiftIDEResult(action:"format",message:"Formatting proposal")
+    result.renameFiles = ["App.swift":SwiftIDERenameFile(source:"old",sha256:"a",text:"stale format")]
+    ui.finish(text:try languageReply(result),status:0)
+    let frame = ui.render(width:120,height:35,theme:TerminalTheme())
+    #expect(frame.contains("newer")); #expect(!frame.contains("stale format"))
+    var keys = TerminalKeys()
+    #expect(keys.feed(Array("\u{1b}[12~\u{1b}[13~\u{1b}[14~".utf8)) == [.format,.codeActions,.diagnostics])
+}
