@@ -99,6 +99,9 @@ private final class ShellHandler: ChannelInboundHandler {
     var commandTask: Task<Void, Never>?
     var workspaceTask: Task<Void, Never>?
     var completionDelay: Scheduled<Void>?
+    var workspaceSaveDelay: Scheduled<Void>?
+    var workspaceSaveTask: Task<Void,Never>?
+    var recoveryTerminal: KilnTerminal?
     var pending: [String] = []
     var lastCR = false
     var terminal: KilnTerminal?
@@ -130,6 +133,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
+        workspaceSaveDelay?.cancel(); flushWorkspace(channel:context.channel)
         completionDelay?.cancel(); workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
@@ -299,6 +303,7 @@ private final class ShellHandler: ChannelInboundHandler {
             switch effect {
             case .command(let command): submit(command, channel: channel)
             case .workspaceRead(let command): readWorkspace(command, channel: channel)
+            case .workspaceSave(let command): saveWorkspace(command,channel:channel)
             case .workerControl(let command): controlWorker(command,channel:channel)
             case .disconnect: close(channel: channel, status: 0)
             case .selectText(let enabled):
@@ -308,6 +313,34 @@ private final class ShellHandler: ChannelInboundHandler {
             }
         }
         scheduleCompletion(channel:channel)
+        scheduleWorkspaceSave(channel:channel)
+    }
+    func scheduleWorkspaceSave(channel: Channel) {
+        workspaceSaveDelay?.cancel()
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
+        workspaceSaveDelay = channel.eventLoop.scheduleTask(in: .milliseconds(500)) { bound.value.flushWorkspace(channel:channel) }
+    }
+    func flushWorkspace(channel: Channel) {
+        guard workspaceSaveTask == nil else { return }
+        let effect = terminal != nil ? terminal?.checkpointCodeWorkspace() : recoveryTerminal?.checkpointCodeWorkspace()
+        if case .workspaceSave(let command) = effect { saveWorkspace(command,channel:channel) }
+        else if !channel.isActive { recoveryTerminal = nil }
+    }
+    func saveWorkspace(_ command: String, channel: Channel) {
+        guard workspaceSaveTask == nil else { return }
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), commands = commands, sessionID = owner.uuidString
+        workspaceSaveTask = Task {
+            // Recovery saves may finish after SSH disconnects. They only write
+            // owner-scoped editor state, never application source.
+            let result = await commands.execute(command,sessionID:sessionID)
+            channel.eventLoop.execute {
+                let shell = bound.value; shell.workspaceSaveTask = nil
+                shell.terminal?.finishWorkspaceSave(text:result.text,status:result.status)
+                shell.recoveryTerminal?.finishWorkspaceSave(text:result.text,status:result.status)
+                if !channel.isActive { shell.flushWorkspace(channel:channel) }
+                if channel.isActive { shell.paint(channel:channel); shell.scheduleWorkspaceSave(channel:channel) }
+            }
+        }
     }
     func controlWorker(_ command: String, channel: Channel) {
         let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), commands = commands, sessionID = owner.uuidString
@@ -332,6 +365,7 @@ private final class ShellHandler: ChannelInboundHandler {
         }
     }
     func close(channel: Channel, status: Int) {
+        workspaceSaveDelay?.cancel(); flushWorkspace(channel:channel); recoveryTerminal = terminal
         completionDelay?.cancel(); workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
@@ -384,7 +418,7 @@ private final class ShellHandler: ChannelInboundHandler {
         guard workspaceTask == nil else { return }
         // A separate lane is deliberately restricted to registered source reads.
         guard let parts = try? KilnCommands.tokenize(line), parts.count >= 4,
-              parts[0] == "web", ["browse", "file", "ide"].contains(parts[1]) else { return }
+              parts[0] == "web", ["browse", "file", "ide", "workspace"].contains(parts[1]) else { return }
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands, sessionID = owner.uuidString
         workspaceTask = Task {
@@ -398,8 +432,10 @@ private final class ShellHandler: ChannelInboundHandler {
                 } else {
                     shell.terminal?.updateAIWorkspace(AIWorkspaceSnapshot(error: "Identity revoked or unauthorized"))
                 }
+                if case .command(let command) = shell.terminal?.takeWorkspaceAttachment(), !shell.busy { shell.submit(command,channel:channel) }
                 shell.paint(channel: channel)
                 shell.scheduleCompletion(channel:channel)
+                shell.scheduleWorkspaceSave(channel:channel)
             }
         }
     }

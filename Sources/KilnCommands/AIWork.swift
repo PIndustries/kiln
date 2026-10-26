@@ -12,9 +12,16 @@ extension KilnCommands {
             // Use the normal ask parser and its registered-project write scope.
             let ask = ["ai","ask"] + Array(p.dropFirst(3))
             let prompt = p.last ?? ""
-            let id = try await aiWork.start(owner:owner,session:sessionID,prompt:prompt) { id, emit in
+            var workspace: String?
+            if p.count == 6, p[3] == "--workspace",
+               let value = try? JSONDecoder().decode([String:String].self,from:Data(p[4].utf8)), let module = value["module"] {
+                _ = try await webDevelopment.tree(module:module)
+                workspace = try await workspaces.load(owner:owner,module:module).id
+            }
+            let workSession = sessionID
+            let id = try await aiWork.start(owner:owner,session:workSession,prompt:prompt,workspace:workspace) { id, emit in
                 guard try aiOwnerFingerprint() == owner else { throw AIError.message("Worker identity changed") }
-                let result = try await aiCommand(ask,sessionID:sessionID,progress:emit,pinnedConfiguration:configuration,workerID:id)
+                let result = try await aiCommand(ask,sessionID:workSession,progress:emit,pinnedConfiguration:configuration,workerID:id)
                 guard result.status == 0 else { throw AIError.message(result.text) }
                 return result.text
             }

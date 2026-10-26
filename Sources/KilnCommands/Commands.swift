@@ -33,6 +33,7 @@ public struct KilnCommands: Sendable {
     private let aiAccounts: AIAccountServices
     let webDevelopment: WebDevelopment
     private let assistant: KilnAssistant
+    let workspaces: CodeWorkspaceStore
     let aiWork: AIWorkSessions
     private let aiTasks: AITasks
     private let recoveries: AIRecoveryTasks
@@ -49,13 +50,14 @@ public struct KilnCommands: Sendable {
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     func aiSessionID(_ id: String) throws -> String { try aiOwnerFingerprint() + ":" + id }
-    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault); self.assistant = KilnAssistant(directory: runtime.stateDirectory); self.webDevelopment = WebDevelopment(directory: runtime.stateDirectory); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.aiWork = AIWorkSessions(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
+    public init(runtime: KilnRuntime, cluster: KilnCluster? = nil) { self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault); self.assistant = KilnAssistant(directory: runtime.stateDirectory); self.webDevelopment = WebDevelopment(directory: runtime.stateDirectory); self.cluster = cluster; self.identities = KilnIdentityStore(directory: runtime.stateDirectory); self.workspaces = CodeWorkspaceStore(directory: runtime.stateDirectory); self.aiWork = AIWorkSessions(directory: runtime.stateDirectory); self.aiTasks = AITasks(directory: runtime.stateDirectory); self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory); self.runtime = runtime; self.bastion = BastionClient(directory: runtime.stateDirectory); self.telemetry = KilnTelemetry(diskPath: runtime.stateDirectory.path) }
     // Internal dependency injection keeps snapshot tests deterministic without
     // granting the presentation layer authority to create proposals.
     init(runtime: KilnRuntime, assistant: KilnAssistant) {
         self.aiAccounts = AIAccountServices(directory: runtime.stateDirectory, vault: runtime.vault)
         self.runtime = runtime; self.assistant = assistant; self.cluster = nil; self.webDevelopment = WebDevelopment(directory: runtime.stateDirectory)
         self.identities = KilnIdentityStore(directory: runtime.stateDirectory)
+        self.workspaces = CodeWorkspaceStore(directory: runtime.stateDirectory)
         self.aiWork = AIWorkSessions(directory: runtime.stateDirectory)
         self.aiTasks = AITasks(directory: runtime.stateDirectory)
         self.recoveries = AIRecoveryTasks(directory: runtime.stateDirectory)
@@ -898,7 +900,7 @@ private extension KilnCommands {
         case "key": return ["create", "delete"].contains(p[1])
         case "server": return ["add", "edit", "generate-key", "remove", "key", "trust", "exec"].contains(p[1])
         case "session": return ["new", "open", "rename", "close", "attach"].contains(p[1])
-        case "web": return ["register", "restore", "apply", "refactor"].contains(p[1])
+        case "web": return ["register", "restore", "apply", "refactor", "workspace-save", "workspace-recover"].contains(p[1])
         case "ai": return ["configure", "knowledge", "approve", "deny", "headless", "login", "logout", "use"].contains(p[1]) || (p[1] == "recovery" && p.count > 2 && p[2] != "list") || (p[1] == "profile" && p.count > 2 && ["add", "use"].contains(p[2])) || (p[1] == "concurrency" && p.count > 2) || (p[1] == "task" && p.count > 2 && ["new", "cancel", "remove"].contains(p[2])) || (p[1] == "work" && p.count > 2 && ["start","input","cancel","remove"].contains(p[2]))
         case "node", "cluster": return ["accept", "revoke", "start", "stop", "restart"].contains(p[1]) || (p[1] == "adoption" && p.count > 2 && ["accept", "revoke"].contains(p[2]))
         default: return false
@@ -906,7 +908,7 @@ private extension KilnCommands {
     }
     func auditMetadata(_ p: [String]) -> (String, String?) {
         let families = ["web", "app", "identity", "node", "cluster", "ai", "vault", "server", "key", "session", "help", "status", "metrics", "exit", "quit"]
-        let actions = ["work", "projects", "register", "source", "changes", "history", "diff", "code", "tree", "file", "apply", "browse", "refactor", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
+        let actions = ["workspace", "workspace-save", "workspace-conflicts", "workspace-recover", "work", "projects", "register", "source", "changes", "history", "diff", "code", "tree", "file", "apply", "browse", "refactor", "restore", "preview", "login", "logout", "accounts", "models", "use", "providers", "headless", "list", "help", "status", "ask", "reset", "deny", "approve", "task", "recovery", "concurrency", "configure", "knowledge", "operations", "metrics", "usage", "profile", "health", "logs", "releases", "resources", "start", "stop", "restart", "rollback", "install", "deploy", "add", "set", "revoke", "identity", "adoption", "receipt", "discover", "accept", "put", "grant", "grants", "delete", "edit", "generate-key", "remove", "key", "scan", "trust", "exec", "config", "create", "public", "open", "rename", "new", "attach", "close"]
         let verb = families.contains(p[0]) ? p[0] + (p.count > 1 ? " " + (actions.contains(p[1]) ? p[1] : "unknown") : "") : "unknown"
         let target = p.count > 2 && ["app", "identity", "node", "cluster"].contains(p[0]) && p[1] != "install" && p[1] != "deploy" && p[2].count <= 256 && p[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "_.-/:+=".contains($0)) }) ? p[2] : nil
         return (verb, target)

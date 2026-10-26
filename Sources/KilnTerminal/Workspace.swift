@@ -20,7 +20,7 @@ struct WorkspaceUI {
     private struct Entry: Decodable { let path: String; let sha256: String; let bytes: Int }
     private struct Tree: Decodable { let version: String; let editable: Bool; let projectRoot: Bool; let files: [Entry] }
     private struct File: Decodable { let file: String; let sha256: String; let source: String; let version: String }
-    private struct Browse: Decodable { let tree: Tree; let file: File }
+    private struct Browse: Decodable { let tree: Tree; let file: File; let workspace: CodeWorkspaceRecord?; let worker: AIWorkSnapshot?; let recoveryNotice: String? }
     private var entries: [Entry] = []
     private var selected = 0
     private var path = "App.swift", hash = "", source = "", version = ""
@@ -42,6 +42,52 @@ struct WorkspaceUI {
     private var jump: SwiftIDELocation?
     private struct Buffer { var source: String; var draft: String; var hash: String; var cursor: Int; var offset: Int; var horizontal: Int; var isNew: Bool }
     private var buffers: [String:Buffer] = [:]
+    private var savedWorkspace: CodeWorkspaceRecord?
+    private var sentCheckpoint: CodeWorkspaceState?
+    var checkpointPending: Bool { sentCheckpoint != nil }
+    private var recoveryFailure = ""
+    private var restoredDivider: Int?
+    mutating func takeRestoredDivider() -> Int? { defer { restoredDivider = nil }; return restoredDivider }
+    private(set) var reattachWorker: AIWorkSnapshot?
+    mutating func takeWorkerToAttach() -> AIWorkSnapshot? { defer { reattachWorker = nil }; return reattachWorker }
+    mutating func checkpoint(dividerShare: Int) -> String? {
+        guard change == nil, let saved = savedWorkspace, sentCheckpoint == nil, recoveryFailure.isEmpty else { return nil }
+        var value = CodeWorkspaceState()
+        value.path = path; value.cursor = cursor; value.offset = offset; value.horizontal = horizontal
+        value.wrapping = wrapping; value.vim = vim.enabled; value.treeFocus = treeFocus; value.dividerShare = dividerShare
+        value.buffers = buffers.mapValues { CodeWorkspaceBuffer(source:$0.source,draft:$0.draft,sha256:$0.hash,cursor:$0.cursor,offset:$0.offset,horizontal:$0.horizontal,isNew:$0.isNew) }
+        if (mode == "edit" || recoverableDraft || publishingDraft), isNew || draft != source {
+            value.buffers[path] = CodeWorkspaceBuffer(source:source,draft:draft,sha256:hash,cursor:cursor,offset:offset,horizontal:horizontal,isNew:isNew)
+        }
+        guard value != saved.state, let bytes = try? JSONEncoder().encode(CodeWorkspaceSave(expectedRevision:saved.revision,state:value)) else { return nil }
+        sentCheckpoint = value
+        return command(["web","workspace-save",module,String(decoding:bytes,as:UTF8.self)])
+    }
+    mutating func finishCheckpoint(text: String, status: Int) {
+        guard let sent = sentCheckpoint else { return }
+        sentCheckpoint = nil
+        guard status == 0, let result = try? JSONDecoder().decode(CodeWorkspaceRecord.self,from:Data(text.utf8)),
+              result.id == savedWorkspace?.id, result.module == module, result.state == sent else {
+            recoveryFailure = "Recovery save stopped: " + text; return
+        }
+        savedWorkspace = result
+    }
+    private mutating func restore(_ record: CodeWorkspaceRecord) {
+        savedWorkspace = record; restoredDivider = record.state.dividerShare
+        wrapping = record.state.wrapping; vim.enabled = record.state.vim; treeFocus = record.state.treeFocus
+        buffers = record.state.buffers.mapValues { Buffer(source:$0.source,draft:$0.draft,hash:$0.sha256,cursor:$0.cursor,offset:$0.offset,horizontal:$0.horizontal,isNew:$0.isNew) }
+        if path == record.state.path { cursor = min(record.state.cursor,source.count); offset = record.state.offset; horizontal = record.state.horizontal }
+        if let value = buffers.removeValue(forKey:record.state.path) {
+            let changed = path != record.state.path || hash != value.hash
+            path = record.state.path; source = value.source; draft = value.draft; hash = value.hash; cursor = value.cursor
+            offset = value.offset; horizontal = value.horizontal; isNew = value.isNew; mode = "edit"
+            if changed { error = "Recovered draft has a different source base. Compare before publishing; no source was overwritten." }
+        }
+        for (name,value) in record.state.buffers where !entries.contains(where: { $0.path == name }) {
+            entries.append(Entry(path:name,sha256:value.sha256,bytes:value.draft.utf8.count))
+        }
+        entries.sort { $0.path < $1.path }; selected = entries.firstIndex { $0.path == path } ?? 0
+    }
     private mutating func retainBuffer() {
         if mode == "edit", isNew || draft != source {
             buffers[path] = Buffer(source:source,draft:draft,hash:hash,cursor:cursor,offset:offset,horizontal:horizontal,isNew:isNew)
@@ -114,7 +160,7 @@ struct WorkspaceUI {
         guard !waiting, idePending == nil, ideResult == nil, !hasUnsavedEdits, mode == "browse" else { return nil }
         return request("refresh", ["web", "browse", module, path] + (change.map { [$0] } ?? []))
     }
-    func load() -> String { command(["web", "browse", module, "App.swift"] + (change.map { [$0] } ?? [])) }
+    func load() -> String { command(["web", change == nil ? "workspace" : "browse", module, "App.swift"] + (change.map { [$0] } ?? [])) }
     private mutating func request(_ name: String, _ parts: [String]) -> String { waiting = true; pending = name; error = ""; return command(parts) }
     mutating func finish(text: String, status: Int) {
         if let query = idePending {
@@ -148,9 +194,11 @@ struct WorkspaceUI {
         guard status == 0, let data = text.data(using: .utf8) else { error = text; return }
         do {
             let file: File
+            var restoration: CodeWorkspaceRecord?
             if pending == "browse" || pending == "refresh" {
                 let view = try JSONDecoder().decode(Browse.self, from: data)
                 entries = view.tree.files; editable = view.tree.editable; projectRoot = view.tree.projectRoot; file = view.file
+                if pending == "browse" { restoration = view.workspace; reattachWorker = view.worker; error = view.recoveryNotice ?? "" }
                 for (name,value) in buffers where value.isNew && !entries.contains(where: { $0.path == name }) { entries.append(Entry(path:name,sha256:"",bytes:value.draft.utf8.count)) }
                 entries.sort { $0.path < $1.path }
             } else { file = try JSONDecoder().decode(File.self, from: data) }
@@ -166,6 +214,7 @@ struct WorkspaceUI {
                 offset = buffer.offset; horizontal = buffer.horizontal; isNew = buffer.isNew; mode = "edit"
                 if changed { error = "File changed on disk; original draft retained. Review before publishing." }
             }
+            if let restoration { restore(restoration) }
             if vim.enabled, editable, mode == "browse" { draft = source; mode = "edit"; isNew = false; treeFocus = false }
             if let location = jump { jump = nil; position(at:location) }
         } catch { self.error = "Invalid project browser response" }
@@ -409,8 +458,8 @@ struct WorkspaceUI {
             if key == .enter {
                 let operation = confirmation; confirmation = ""
                 guard accepted else { return nil }
-                if operation == "close" { buffers.removeAll(); active = false; return nil }
-                if operation == "discard" { buffers.removeValue(forKey:path); mode = "browse"; draft = ""; offset = 0; if isNew { return request("browse",["web","browse",module,"App.swift"]) }; return nil }
+                if operation == "close" { buffers.removeAll(); mode = "browse"; recoverableDraft = false; publishingDraft = false; active = false; return nil }
+                if operation == "discard" { buffers.removeValue(forKey:path); mode = "browse"; draft = ""; recoverableDraft = false; publishingDraft = false; offset = 0; if isNew { return request("browse",["web","browse",module,"App.swift"]) }; return nil }
                 return publish(delete: operation == "delete")
             }
             return nil
@@ -595,7 +644,7 @@ struct WorkspaceUI {
                 } else { body += fit("",codeWidth)+"|" }
                 row(y,body)
             }
-            let footer = waiting ? "Working..." : !error.isEmpty ? error : mode == "edit" ? vim.enabled ? vim.label+"  i insert  Esc normal  Tab files  :w publish  F7 standard" : "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
+            let footer = waiting ? "Working..." : !recoveryFailure.isEmpty ? recoveryFailure : !error.isEmpty ? error : mode == "edit" ? vim.enabled ? vim.label+"  i insert  Esc normal  Tab files  :w publish  F7 standard" : "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
             row(h-3,"| "+fit(footer,w-4)+" |")
             row(h-2,"| "+fit(scrollButtons+"  "+(wrapping ? "Wrap ON" : "Wrap OFF")+"  Ln \(caretLine+1):\(caretColumn+1)  ViewCol \(horizontal+1)  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)",w-4)+" |")
         }

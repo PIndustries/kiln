@@ -12,6 +12,42 @@ extension KilnCommands {
     func webCommand(_ parts: [String], sessionID: String = "web-console", progress: @escaping @Sendable (AIProgress) -> Void) async throws -> CommandResult {
         try authorizeAdmin()
         switch parts {
+        case let p where p.count == 4 && p[1] == "workspace":
+            let owner = try aiOwnerFingerprint()
+            _ = try await webDevelopment.tree(module:p[2])
+            let record = try await workspaces.load(owner:owner,module:p[2])
+            let selected = record.state.buffers[record.state.path]?.isNew == true ? "App.swift" : record.state.path
+            let browse: String
+            if let value = try? await webDevelopment.browse(module:p[2],path:selected) { browse = value }
+            else { browse = try await webDevelopment.browse(module:p[2],path:p[3]) }
+            var object = try JSONSerialization.jsonObject(with:Data(browse.utf8)) as! [String:Any]
+            object["workspace"] = try JSONSerialization.jsonObject(with:JSONEncoder().encode(record))
+            let conflicts = try await workspaces.conflicts(owner:owner,module:p[2])
+            if !conflicts.isEmpty { object["recoveryNotice"] = "Saved conflicting drafts: \(conflicts.count). Inspect web workspace-conflicts \(p[2]) before recovering." }
+            if let worker = try await aiWork.active(owner:owner,workspace:record.id) { object["worker"] = try JSONSerialization.jsonObject(with:JSONEncoder().encode(worker)) }
+            guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Workspace identity changed") }
+            return CommandResult(String(decoding:try JSONSerialization.data(withJSONObject:object),as:UTF8.self))
+        case let p where p.count == 3 && p[1] == "workspace-conflicts":
+            let owner = try aiOwnerFingerprint()
+            _ = try await webDevelopment.tree(module:p[2])
+            let copies = try await workspaces.conflicts(owner:owner,module:p[2])
+            guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Workspace identity changed") }
+            return CommandResult(copies.joined(separator:"\n"))
+        case let p where p.count == 5 && p[1] == "workspace-recover":
+            guard let revision = Int(p[4]) else { throw KilnError.message("Expected workspace revision required") }
+            let owner = try aiOwnerFingerprint()
+            _ = try await webDevelopment.tree(module:p[2])
+            let record = try await workspaces.recover(owner:owner,module:p[2],conflict:p[3],expectedRevision:revision)
+            guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Workspace identity changed") }
+            return CommandResult(String(decoding:try JSONEncoder().encode(record),as:UTF8.self))
+        case let p where p.count == 4 && p[1] == "workspace-save":
+            let owner = try aiOwnerFingerprint()
+            _ = try await webDevelopment.tree(module:p[2])
+            guard p[3].utf8.count <= 2_097_152 else { throw KilnError.message("Workspace checkpoint too large") }
+            let update = try JSONDecoder().decode(CodeWorkspaceSave.self,from:Data(p[3].utf8))
+            let result = try await workspaces.save(owner:owner,module:p[2],update:update)
+            guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Workspace identity changed") }
+            return CommandResult(String(decoding:try JSONEncoder().encode(result),as:UTF8.self))
         case let p where p.count == 6 && p[1] == "ide":
             guard let cursor = Int(p[5]) else { throw KilnError.message("Invalid Swift caret offset") }
             let raw = try await webDevelopment.file(module:p[2],path:p[4])
@@ -84,7 +120,7 @@ extension KilnCommands {
         case let p where p.count == 3 && p[1] == "changes":
             let text = try await webDevelopment.changes(module: p[2])
             try authorizeAdmin(); return CommandResult(text)
-        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web apply-file APP/MODULE OWNED-PATCH.json / web refactor APP/MODULE PATH SHA256 components|functions / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
+        default: return CommandResult("web register CONFIG.json / web projects / web workspace APP/MODULE FALLBACK-PATH / web workspace-conflicts APP/MODULE / web workspace-recover APP/MODULE COPY-ID EXPECTED-REVISION / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web apply-file APP/MODULE OWNED-PATCH.json / web refactor APP/MODULE PATH SHA256 components|functions / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
         }
     }
     func rollbackService(_ module: String, expectedGeneration: String? = nil) async throws -> String {

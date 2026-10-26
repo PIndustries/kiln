@@ -132,6 +132,18 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\x1b[200~// local draft\n\x1b[201~'); expect('local draft')
         send(b'\x17Explain this code\r'); expect('Streaming: Explain this code')
         wait(lambda:'"unsaved":"true"' in (root/'last-prompt').read_text().replace(' ',''))
+        # Drop the transport while inference and autosave are active. The next
+        # connection must recover the local draft and attach its running worker
+        # without an explicit /agent command or any application source write.
+        client.kill(); client.wait(timeout=5); os.close(master)
+        master, slave = pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,150,0,0))
+        client = subprocess.Popen(base[:-1]+['-tt','-e','none',base[-1]],stdin=slave,stdout=slave,stderr=slave,env={**os.environ,'TERM':'xterm-256color'}); os.close(slave)
+        screen = pyte.Screen(150,45); stream = pyte.ByteStream(screen)
+        expect('7 AI Chat'); send(b'\r'); expect('Codebase / files')
+        for _ in range(8):send(b'\x1b[B')
+        send(b'\r'); expect('local draft'); expect('Streaming: Explain this code')
+        expect_divider(90)
+        send(b'\x17Keep the green theme after reconnect\r'); expect('Context queued;')
         expect('Complete: Explain this code'); expect('local draft')
         assert source.read_bytes()==original
         assert (project/'Models/Counter.swift').read_text()=='actor Counter { var count = 0 }\n'
@@ -150,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         finally:
             if detached.poll() is None: detached.kill(); detached.wait(timeout=5)
         (root/'passed').touch(); (root/'done').touch()
-        print('PASS real SSH: independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; queued context consumed while streaming; code+chat visible; per-message app/file context; open file while inference streams; draggable divider during inference and after copy mode; unsaved draft survives; live source and worker unchanged',flush=True)
+        print('PASS real SSH: local unsaved draft and divider recovered across disconnect; workspace worker automatically reattached and accepted context; independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; code+chat visible; live source and worker unchanged',flush=True)
         runtime.wait(timeout=30); assert runtime.returncode==0
         print('KILN_CODE_CHAT_ACCEPTANCE_COMPLETE',flush=True)
     finally:

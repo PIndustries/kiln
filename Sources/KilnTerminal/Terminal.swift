@@ -1,7 +1,7 @@
 import Foundation
 import KilnKit
 
-public enum TerminalEffect: Equatable { case command(String), workspaceRead(String), workerControl(String), disconnect, selectText(Bool) }
+public enum TerminalEffect: Equatable { case command(String), workspaceRead(String), workspaceSave(String), workerControl(String), disconnect, selectText(Bool) }
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
@@ -19,6 +19,9 @@ public struct KilnTerminal {
         messages.append(ChatMessage(role:"Kiln",text:text)); messages = Array(messages.suffix(40))
     }
     private var codeWorkspace: WorkspaceUI?
+    // Keep the final discard/close state until any earlier save is acknowledged.
+    // Otherwise a late acknowledgement can resurrect a deliberately discarded draft.
+    private var closedWorkspaces: [WorkspaceUI] = []
     private var codeFocus = true
     private var codeCommand = false
     private var codeShare = 6000
@@ -31,6 +34,25 @@ public struct KilnTerminal {
     private var workspaceVisible: Bool { codeWorkspace != nil && chatVisible }
     public mutating func finishWorkspace(text: String, status: Int) {
         codeWorkspace?.finish(text: text, status: status)
+        if let share = codeWorkspace?.takeRestoredDivider() { codeShare = share }
+    }
+    public mutating func checkpointCodeWorkspace() -> TerminalEffect? {
+        guard !closedWorkspaces.contains(where: { $0.checkpointPending }), codeWorkspace?.checkpointPending != true else { return nil }
+        while !closedWorkspaces.isEmpty {
+            if let command = closedWorkspaces[0].checkpoint(dividerShare:codeShare) { return .workspaceSave(command) }
+            closedWorkspaces.removeFirst()
+        }
+        return codeWorkspace?.checkpoint(dividerShare:codeShare).map { .workspaceSave($0) }
+    }
+    public mutating func finishWorkspaceSave(text: String, status: Int) {
+        if let index = closedWorkspaces.firstIndex(where: { $0.checkpointPending }) {
+            closedWorkspaces[index].finishCheckpoint(text:text,status:status)
+            if status != 0 { messages.append(ChatMessage(role:"Kiln",text:"Workspace recovery save failed: "+text)) }
+        } else { codeWorkspace?.finishCheckpoint(text:text,status:status) }
+    }
+    public mutating func takeWorkspaceAttachment() -> TerminalEffect? {
+        guard !busy, let worker = codeWorkspace?.takeWorkerToAttach() else { return nil }
+        return execute("ai work watch " + Self.quote(worker.id),display:"You: "+worker.prompt).first
     }
     public mutating func refreshCodeWorkspace() -> TerminalEffect? {
         codeWorkspace?.refresh().map { .workspaceRead($0) }
@@ -53,7 +75,12 @@ public struct KilnTerminal {
         if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
         let paneWidth = width >= 110 ? splitWidth : width
         guard let command = codeWorkspace?.handle(key, width: paneWidth, height: height) else {
-            if codeWorkspace?.active == false { codeWorkspace = nil }
+            if codeWorkspace?.active == false {
+                if let workspace = codeWorkspace { closedWorkspaces.append(workspace) }
+                codeWorkspace = nil
+                let save = checkpointCodeWorkspace()
+                return save.map { [$0] } ?? []
+            }
             return []
         }
         if command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") || command.hasPrefix("'web' 'ide' ") {

@@ -5,7 +5,7 @@ import KilnKit
 /// detaches the observer; cancellation is explicit. Restart never replays a write.
 public actor AIWorkSessions {
     public typealias Runner = @Sendable (String, @escaping @Sendable (AIProgress) -> Void) async throws -> String
-    private struct Record: Codable { let owner: String; let session: String; var view: AIWorkSnapshot; var inbox: [String] = [] }
+    private struct Record: Codable { let owner: String; let session: String; var view: AIWorkSnapshot; var inbox: [String] = []; var workspace: String?; var created: Date? }
     private let directory: URL
     private var records: [String:Record] = [:]
     private var runners: [String:Runner] = [:]
@@ -36,16 +36,20 @@ public actor AIWorkSessions {
         do { try KilnStateFile.write(bytes,to:directory.appendingPathComponent("ai-work.json")) }
         catch let error as KilnStateFile.CommitUncertain { uncertain = true; throw error }
     }
-    public func start(owner: String, session: String, prompt: String, runner: @escaping Runner) throws -> String {
+    public func start(owner: String, session: String, prompt: String, workspace: String? = nil, runner: @escaping Runner) throws -> String {
         try load()
         guard !prompt.isEmpty, prompt.utf8.count <= 8192 else { throw AIError.message("Worker prompt must be 1–8192 bytes") }
         guard records.count < 200 else { throw AIError.message("Worker history full; remove completed work") }
         guard !records.values.contains(where: { $0.owner == owner && $0.session == session && $0.view.active }) else { throw AIError.message("This chat already has active work. Send context or open another chat for a separate agent.") }
         let id = UUID().uuidString.lowercased()
-        records[id] = Record(owner:owner,session:session,view:AIWorkSnapshot(id:id,prompt:prompt,state:"queued"))
+        records[id] = Record(owner:owner,session:session,view:AIWorkSnapshot(id:id,prompt:prompt,state:"queued"),workspace:workspace,created:Date())
         do { try save() } catch { records.removeValue(forKey:id); throw error }
         runners[id] = runner; schedule()
         return id
+    }
+    public func active(owner: String, workspace: String) throws -> AIWorkSnapshot? {
+        try load()
+        return records.values.filter { $0.owner == owner && $0.workspace == workspace && $0.view.active }.sorted { ($0.created ?? .distantPast) > ($1.created ?? .distantPast) }.first?.view
     }
     public func snapshot(_ id: String, owner: String) throws -> AIWorkSnapshot {
         try load()

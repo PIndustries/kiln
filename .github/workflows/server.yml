@@ -43,6 +43,8 @@ jobs:
             echo 'Deterministic local fixtures only; no live AI provider credentials.'
             echo 'Hard cgroup enforcement is covered separately by linux-resources.'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify owned dependency policy without network
+        run: python3 scripts/check-dependencies.py
       - name: Unit and policy tests with locked dependencies
         run: KILN_TEST_GROK_SANDBOX=1 swift test --jobs 2 --force-resolved-versions
       - name: Verify real non-root permission denial

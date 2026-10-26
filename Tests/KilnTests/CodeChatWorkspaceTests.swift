@@ -18,7 +18,7 @@ private func codeUI(width: Int = 160) throws -> KilnTerminal {
     ui.update([ModuleSnapshot(application:"demo",name:"web",version:"1",state:"running",pid:42)])
     _ = ui.handle(.enter)
     for _ in 0..<8 { _ = ui.handle(.down) }
-    #expect(ui.handle(.enter) == [.workspaceRead("'web' 'browse' 'demo/web' 'App.swift'")])
+    #expect(ui.handle(.enter) == [.workspaceRead("'web' 'workspace' 'demo/web' 'App.swift'")])
     ui.finishWorkspace(text:try codeFixture(),status:0)
     return ui
 }
