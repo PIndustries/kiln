@@ -124,6 +124,7 @@ Libraries are composed at build time. Application modules are deployed as execut
 - [Users, roles, and module scopes](docs/identities.md)
 - [Vault setup and grants](docs/vault.md)
 - [AI configuration, tools, and tasks](docs/ai.md)
+- [Background-agent events and recovery](docs/agent-events.md)
 - [Owned workspace recovery](docs/workspace-recovery.md) and [sovereignty roadmap](docs/sovereignty-roadmap.md)
 - [Bastion destinations](docs/bastion.md) and [persistent terminals](docs/sessions.md)
 - [Peer adoption](docs/clustering.md) and [Linux resource limits](docs/resources.md)

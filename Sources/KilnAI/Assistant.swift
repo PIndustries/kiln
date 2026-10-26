@@ -200,6 +200,7 @@ public actor KilnAssistant {
                     webOnly: Bool = false,
                     waitForCapacity: Bool = false,
                     additionalContext: @escaping @Sendable () async throws -> [String] = { [] },
+                    toolCheckpoint: @escaping @Sendable (AIWorkEvent) async throws -> Void = { _ in },
                     read: @escaping @Sendable (String, String?) async throws -> String) async throws -> String {
         let visibleThinking = VisibleThinkingLog()
         let downstream = progress
@@ -396,6 +397,19 @@ public actor KilnAssistant {
                         messages.append(AIMessage(role: "tool", content: cached, tool_call_id: call.id)); continue
                     }
                     progress(.status("Tool: " + call.function.name))
+                    try await toolCheckpoint(AIWorkEvent(.toolStarted,text:call.function.arguments,callID:call.id,tool:call.function.name))
+                    try Task.checkCancellation()
+                    try validateAccess()
+                    let incomingAtCheckpoint = try await additionalContext()
+                    if !incomingAtCheckpoint.isEmpty {
+                        let skipped = "Not executed: new context arrived while recording the tool checkpoint."
+                        try await toolCheckpoint(AIWorkEvent(.toolReturned,text:skipped,callID:call.id,tool:call.function.name))
+                        for pending in calls.dropFirst(callIndex) { messages.append(AIMessage(role:"tool",content:skipped,tool_call_id:pending.id)) }
+                        messages += incomingAtCheckpoint.map { AIMessage(role:"user",content:$0) }
+                        validatedWebEdits.removeAll(); results.removeAll()
+                        progress(.snapshot("")); progress(.status("New user context received at tool checkpoint; replanning"))
+                        continue rounds
+                    }
                     var result = "Tool rejected: unsupported name or arguments."
                     if call.type == "function", let bytes = call.function.arguments.data(using: .utf8), bytes.count <= ToolInputLimits.argumentBytes(for: call.function.name),
                        (!webOnly || call.function.name == "tool_help" || Self.webToolNames.contains(call.function.name)),
@@ -456,6 +470,7 @@ public actor KilnAssistant {
                             receipts.append("PENDING: app \(operation) \(current.id)\nApprove: /approve \(id)\nDecline: /deny \(id)\nOutside chat: ai approve \(id)")
                         }
                     }
+                    try await toolCheckpoint(AIWorkEvent(.toolReturned,text:result,callID:call.id,tool:call.function.name))
                     let bounded = result.count > 12000 ? String(result.prefix(11800)) + "\n[Tool output truncated; inspect the Changes view for the complete diff.]" : result
                     results[cacheKey] = bounded
                     messages.append(AIMessage(role: "tool", content: bounded, tool_call_id: call.id))

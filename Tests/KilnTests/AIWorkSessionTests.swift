@@ -62,7 +62,9 @@ private func awaitStarted(_ gate: WorkerGate, _ count: Int) async throws {
     #expect(try await restarted.snapshot(id,owner:"owner").queuedContext == 1)
     await gate.release()
     for await _ in try await work.watch(id,owner:"owner") {}
-    #expect(try await work.snapshot(id,owner:"owner").activity.contains("before queued context"))
+    // The restarted runtime committed reconciliation. The old writer cannot
+    // overwrite that newer evidence when its suspended runner returns.
+    #expect(try await work.snapshot(id,owner:"owner").state == "unconfirmed")
 }
 private func workerCall(_ name: String) throws -> AIMessage {
     let data = try JSONSerialization.data(withJSONObject:["id":"call","type":"function","function":["name":name,"arguments":"{\"module\":\"demo/web\",\"edits\":\"old plan\"}"]])

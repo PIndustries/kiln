@@ -79,3 +79,15 @@ restore workspace, run tests, verify browser behavior, publish, inspect the rece
 and roll back safely. Include injected crash/conflict/cancellation scenarios.
 Record local tests, hosted validation and live deployment separately. No framework
 or IDE maturity claim is based on unit-test count alone.
+
+## Current local evidence
+
+The owned workspace checkpoint/recovery path and ordered background-agent journal
+are implemented. See [workspace recovery](workspace-recovery.md) and
+[agent events](agent-events.md) for their actual behavior, guards and limitations.
+The agent-event iteration passes 328 local tests, real SSH code/chat recovery and
+steering, and a forced process-kill/new-process recovery harness without replay.
+These are foundation milestones, not acceptance of all eight areas above. Hosted
+validation, live-provider publication after the event update, operation-aware
+reconciliation UX and the remaining Swift/coordination/framework work are still
+separate gates.

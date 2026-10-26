@@ -210,8 +210,10 @@ public struct KilnTerminal {
             }
             activeWorkerID = work.id
             responseProvider = work.provider; liveAnswer = work.answer; liveReasoning = work.reasoning
-            liveStatus = "Agent " + String(work.id.prefix(8)) + " / " + work.state + " / " + work.activity
+            liveStatus = "Agent " + String(work.id.prefix(8)) + " / " + work.state
             if work.queuedContext > 0 { liveStatus += " / \(work.queuedContext) context queued" }
+            if let consumed = work.consumedContext, consumed > 0 { liveStatus += " / \(consumed) context consumed" }
+            if !work.activity.isEmpty { liveStatus += " / " + work.activity }
             if let file = work.file { codeWorkspace?.showAgentFile(file) } else { codeWorkspace?.clearAgentFile() }
         case .provider(let provider):
             if busy && commandInChat && responseProvider == nil { responseProvider = provider }
@@ -565,6 +567,16 @@ public struct KilnTerminal {
             guard !busy || (aiMode && activeWorkerID != nil) else { return [] }
             let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !command.isEmpty else { return [] }
+            let eventArguments = command.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if aiMode, eventArguments.first == "/events" {
+                let id = eventArguments.count > 1 ? eventArguments[1] : activeWorkerID
+                guard eventArguments.count <= 3, let id,
+                      eventArguments.count < 3 || Int(eventArguments[2]).map({ $0 >= 0 }) == true else {
+                    messages.append(ChatMessage(role:"Kiln",text:"Use /events [WORKER-ID] [AFTER-SEQUENCE]. Start or attach an agent first to omit its ID.")); return []
+                }
+                input = ""; cursor = 0; scroll = 0
+                return [.workerControl("ai work timeline "+Self.quote(id)+" "+(eventArguments.count == 3 ? eventArguments[2] : "0"))]
+            }
             if busy, let worker = activeWorkerID {
                 if command.hasPrefix("/") {
                     messages.append(ChatMessage(role:"Kiln",text:"Send plain context while this agent works. Ctrl-C cancels; use another chat for separate work.")); return []

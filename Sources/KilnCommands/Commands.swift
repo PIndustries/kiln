@@ -702,6 +702,7 @@ extension KilnCommands {
             /task PROMPT          Start a background investigation
             /agents               List your background chat agents
             /agent ID             Reattach to an agent (disconnect leaves it running)
+            /events [ID] [AFTER]  Inspect ordered agent history while it keeps working
             /tasks                List background investigations
             /watch TASK-ID        Watch a task
             /cancel TASK-ID       Cancel a task
@@ -835,6 +836,10 @@ extension KilnCommands {
                 guard let workerID else { return [] }
                 guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Worker identity changed") }
                 return try await aiWork.takeContext(workerID,owner:expectedOwner)
+            }, toolCheckpoint: { event in
+                guard let workerID else { return }
+                guard try aiOwnerFingerprint() == expectedOwner else { throw AIError.message("Worker identity changed") }
+                try await aiWork.recordTool(event,id:workerID,owner:expectedOwner)
             }) { name, module in
                 try identities.require(principal, module: module.flatMap { ["module_health", "release_info", "module_resources", "create_recovery_task"].contains(name) ? $0 : nil })
                 switch name {

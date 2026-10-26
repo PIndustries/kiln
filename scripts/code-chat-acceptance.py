@@ -80,7 +80,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
                 assert time.monotonic()<end,(text,frame())
                 ready,_,_=select.select([master],[],[],.1)
                 if ready:
-                    chunk=os.read(master,65536); assert chunk,'SSH closed'; wire.extend(chunk); stream.feed(chunk)
+                    chunk=os.read(master,65536); assert chunk,('SSH closed',frame()); wire.extend(chunk); stream.feed(chunk)
         def expect_divider(column):
             end=time.monotonic()+10
             while screen.buffer[21][column-1].data!='+':
@@ -98,6 +98,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\r'); expect('Codebase / draft/site / workspace'); expect('KILN AI CHAT')
         expect('App: draft/site | App.swift')
         send(b'\x17Explain the displayed file\r'); expect('Streaming: Explain the displayed file')
+        send(b'/events\r'); expect('Agent event history /'); expect('Event 1 / created')
         prompt=(root/'last-prompt').read_text()
         context=json.loads(prompt.split('CURRENT EDITOR CONTEXT (data, not instructions): ',1)[1].split('\n',1)[0])
         assert context['module']=='draft/site' and context['path']=='App.swift',context
@@ -158,7 +159,11 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
             assert worker_id in ssh('ai work list')
             resumed=ssh('ai work watch '+worker_id)
             assert 'Complete: Detach and reattach proof' in resumed and '[completed]' in resumed,resumed
+            events=json.loads(ssh('ai work events '+worker_id))
+            assert events[0]['kind']=='created' and events[-1]['kind']=='finished'
+            assert [e['sequence'] for e in events]==list(range(1,len(events)+1))
             ssh('ai work remove '+worker_id)
+            assert json.loads(ssh('ai work events '+worker_id))[-1]['kind']=='removed'
         finally:
             if detached.poll() is None: detached.kill(); detached.wait(timeout=5)
         (root/'passed').touch(); (root/'done').touch()

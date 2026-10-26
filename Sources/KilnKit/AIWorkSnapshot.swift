@@ -21,6 +21,8 @@ public struct AIWorkSnapshot: Codable, Sendable {
     public var provider: AIProviderSnapshot?
     public var contextMessages: [String]?
     public var queuedContext = 0
+    public var consumedContext: Int?
+    public var eventSequence: Int?
     public init(id: String, prompt: String, state: String) { self.id = id; self.prompt = prompt; self.state = state }
     public var active: Bool { ["queued","running","cancelling"].contains(state) }
 }
