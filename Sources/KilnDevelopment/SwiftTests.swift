@@ -64,7 +64,12 @@ extension WebDevelopment {
         let events = try SwiftTestEvents(data:bytes,files:Set(snapshot.files.keys),sourceRoot:root.appendingPathComponent("Sources"))
         let complete = request.action == "testList" ? process.terminationStatus == 0 : events.started && events.ended && (process.terminationStatus == 0 || process.terminationStatus == 1 && events.issueCount > 0)
         let noMatch = request.action == "test" && !events.tests.contains(where:{$0.state != "discovered"})
-        var result = SwiftIDEResult(action:request.action,message:request.action == "testList" ? "Swift tests: \(events.tests.count) discovered" : !complete ? "Test run incomplete; results are partial.\n"+String(decoding:outputBytes,as:UTF8.self) : noMatch ? "No tests matched the selection" : "Tests finished: "+events.summary+" / \(events.issueCount) issues")
+        let message: String
+        if request.action == "testList" { message = "Swift tests: \(events.tests.count) discovered" }
+        else if !complete { message = "Test run incomplete; results are partial.\n"+String(decoding:outputBytes,as:UTF8.self) }
+        else if noMatch { message = "No tests matched the selection" }
+        else { message = "Tests finished: "+events.summary+" / \(events.issueCount) issues" }
+        var result = SwiftIDEResult(action:request.action,message:message)
         result.tests = events.tests.sorted { a,b in a.state == "failed" && b.state != "failed" || (a.state == "failed") == (b.state == "failed") && a.name < b.name }
         result.locations = events.globalFailures + events.tests.flatMap(\.failures)
         return result

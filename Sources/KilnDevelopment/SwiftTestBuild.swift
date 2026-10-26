@@ -19,7 +19,14 @@ extension WebIsolation {
         let prefix = ["/usr/bin/sandbox-exec","-p",buildProfile(sdk:sdk,job:root.path),sdk.compiler]
         let cache = ["-module-cache-path",root.appendingPathComponent("cache").path]
         let app = Process(); app.executableURL = URL(fileURLWithPath:prefix[0])
-        app.arguments = Array(prefix.dropFirst()) + common + cache + ["-module-name","KilnApplication","-enable-testing","-whole-module-optimization","-emit-object","-emit-module","-emit-module-path",root.appendingPathComponent("KilnApplication.swiftmodule").path,"-Xfrontend","-entry-point-function-name","-Xfrontend","kiln_application_main"] + applicationSources + ["-o",root.appendingPathComponent("Application.o").path]
+        var applicationArguments = Array(prefix.dropFirst())
+        applicationArguments.append(contentsOf:common)
+        applicationArguments.append(contentsOf:cache)
+        applicationArguments.append(contentsOf:["-module-name","KilnApplication","-enable-testing","-whole-module-optimization","-emit-object","-emit-module","-emit-module-path",root.appendingPathComponent("KilnApplication.swiftmodule").path])
+        applicationArguments.append(contentsOf:["-Xfrontend","-entry-point-function-name","-Xfrontend","kiln_application_main"])
+        applicationArguments.append(contentsOf:applicationSources)
+        applicationArguments.append(contentsOf:["-o",root.appendingPathComponent("Application.o").path])
+        app.arguments = applicationArguments
         try KilnStateFile.write(Data("Compiling application module".utf8),to:root.appendingPathComponent("phase.txt"))
         try app.run(); app.waitUntilExit()
         guard app.terminationStatus == 0 else { throw KilnError.message("Application test compilation failed") }
@@ -29,6 +36,15 @@ extension WebIsolation {
         try KilnStateFile.write(Data("import Testing\n@main struct KilnTestRunner { static func main() async { await Testing.__swiftPMEntryPoint() as Never } }\n".utf8),to:runner)
         let sources = snapshot.files.keys.filter { $0.hasPrefix("Tests/") && $0.hasSuffix(".swift") }.sorted().map { root.appendingPathComponent("Sources/"+$0).path }
         try KilnStateFile.write(Data("Compiling Swift tests".utf8),to:root.appendingPathComponent("phase.txt"))
-        try replace(arguments:prefix + common + testing + cache + ["-module-name","KilnApplicationTests","-I",root.path] + sources + [runner.path,root.appendingPathComponent("Application.o").path] + sdk.objects + ["-o",root.appendingPathComponent("tests").path])
+        var testArguments = prefix
+        testArguments.append(contentsOf:common)
+        testArguments.append(contentsOf:testing)
+        testArguments.append(contentsOf:cache)
+        testArguments.append(contentsOf:["-module-name","KilnApplicationTests","-I",root.path])
+        testArguments.append(contentsOf:sources)
+        testArguments.append(contentsOf:[runner.path,root.appendingPathComponent("Application.o").path])
+        testArguments.append(contentsOf:sdk.objects)
+        testArguments.append(contentsOf:["-o",root.appendingPathComponent("tests").path])
+        try replace(arguments:testArguments)
     }
 }
