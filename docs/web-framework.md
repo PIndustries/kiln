@@ -527,7 +527,9 @@ cleaned up; permissions are checked again before returning results.
 The code toolbar provides **Build**, **Run**, **Def**, **Wrap** and **Complete**:
 
 - **Complete / Ctrl-Space:** compiler-backed Swift suggestions at the caret. Typing
-  a dot also requests member completion. Arrows select, Enter inserts the returned
+  an identifier or a dot requests suggestions after a 250 ms typing pause, in both
+  standard editing and Vim INSERT mode. The compact menu keeps code visible.
+  Arrows select; Tab or Enter inserts the returned
   edit, Esc closes. Typing while a request runs preserves input and discards a
   reply that belongs to an older buffer.
 - **Def / F12:** click a symbol in source, request its definition, and click or

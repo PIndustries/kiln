@@ -114,3 +114,60 @@ private func reply(_ result: SwiftIDEResult) throws -> String { String(decoding:
     let first = try #require(context["firstVisibleLine"].flatMap(Int.init))
     #expect(first <= 4)
 }
+
+@Test func automaticCompletionWorksWhileTypingInStandardAndVimInsertModes() throws {
+    for modal in [false,true] {
+        var ui = try ideBrowser()
+        if modal {
+            _ = ui.handle(.vim,width:110,height:35)
+            _ = ui.handle(.text("i"),width:110,height:35)
+        } else { _ = ui.handle(.text("e"),width:110,height:35) }
+        #expect(ui.handle(.text("Str"),width:110,height:35) == nil)
+        let effect = ui.completeAfterTyping()
+        let command = try #require(effect)
+        let parts = try KilnCommands.tokenize(command)
+        let request = try JSONDecoder().decode(SwiftIDERequest.self,from:Data(parts[3].utf8))
+        #expect(request.text.hasPrefix("Str") && request.cursor == 3)
+        #expect(ui.completeAfterTyping() == nil)
+        // More typing during the request must neither be blocked nor overwritten.
+        _ = ui.handle(.text("i"),width:110,height:35)
+        var result = SwiftIDEResult(action:"complete",message:"Swift completions")
+        result.completions = [SwiftIDECompletion(label:"String",detail:"struct",text:"String",start:0,end:3)]
+        ui.finish(text:try reply(result),status:0)
+        #expect(!ui.render(width:110,height:35,theme:TerminalTheme()).contains("earlier buffer"))
+        #expect(ui.completeAfterTyping() != nil)
+        result.completions = [SwiftIDECompletion(label:"String",detail:"struct",text:"String",start:0,end:4)]
+        ui.finish(text:try reply(result),status:0)
+        let frame = ui.render(width:110,height:35,theme:TerminalTheme())
+        #expect(frame.contains("Suggestions:") && frame.contains("func"))
+        _ = ui.handle(.tab,width:110,height:35)
+        #expect(!ui.render(width:110,height:35,theme:TerminalTheme()).contains("Suggestions:"))
+        let nextEffect = ui.handle(.complete,width:110,height:35)
+        let next = try #require(nextEffect)
+        let args = try KilnCommands.tokenize(next)
+        let inserted = try JSONDecoder().decode(SwiftIDERequest.self,from:Data(args[3].utf8))
+        #expect(inserted.text.hasPrefix("Stringimport"))
+    }
+}
+@Test func automaticCompletionDismissalEmptyResultsAndPasteDoNotInterruptEditing() throws {
+    var ui = try ideBrowser()
+    _ = ui.handle(.text("e"),width:110,height:35)
+    _ = ui.handle(.paste("Many words"),width:110,height:35)
+    #expect(ui.completeAfterTyping() == nil)
+    _ = ui.handle(.text("X"),width:110,height:35)
+    #expect(ui.completeAfterTyping() != nil)
+    ui.finish(text:try reply(SwiftIDEResult(action:"complete",message:"no completions")),status:0)
+    #expect(!ui.render(width:110,height:35,theme:TerminalTheme()).contains("no completions"))
+    _ = ui.handle(.text("Y"),width:110,height:35)
+    _ = ui.handle(.left,width:110,height:35)
+    #expect(ui.completeAfterTyping() == nil)
+    _ = ui.handle(.vim,width:110,height:35)
+    _ = ui.handle(.text("i"),width:110,height:35)
+    _ = ui.handle(.text("Z"),width:110,height:35)
+    #expect(ui.completeAfterTyping() != nil)
+    _ = ui.handle(.escape,width:110,height:35)
+    var result = SwiftIDEResult(action:"complete",message:"Swift completions")
+    result.completions = [SwiftIDECompletion(label:"Zombie",detail:"",text:"Zombie",start:0,end:1)]
+    ui.finish(text:try reply(result),status:0)
+    #expect(!ui.render(width:110,height:35,theme:TerminalTheme()).contains("Suggestions:"))
+}

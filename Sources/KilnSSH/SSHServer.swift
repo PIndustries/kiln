@@ -98,6 +98,7 @@ private final class ShellHandler: ChannelInboundHandler {
     var busy = false
     var commandTask: Task<Void, Never>?
     var workspaceTask: Task<Void, Never>?
+    var completionDelay: Scheduled<Void>?
     var pending: [String] = []
     var lastCR = false
     var terminal: KilnTerminal?
@@ -129,7 +130,7 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
-        workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
+        completionDelay?.cancel(); workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
         releasePanes()
@@ -301,9 +302,21 @@ private final class ShellHandler: ChannelInboundHandler {
                 output(enabled ? "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l" : "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h", channel: channel)
             }
         }
+        scheduleCompletion(channel:channel)
+    }
+    func scheduleCompletion(channel: Channel) {
+        completionDelay?.cancel()
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
+        completionDelay = channel.eventLoop.scheduleTask(in: .milliseconds(250)) {
+            let shell = bound.value
+            guard channel.isActive, !shell.selectingText, shell.workspaceTask == nil else { return }
+            if case .workspaceRead(let command) = shell.terminal?.completeCodeAfterTyping() {
+                shell.readWorkspace(command,channel:channel)
+            }
+        }
     }
     func close(channel: Channel, status: Int) {
-        workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
+        completionDelay?.cancel(); workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
@@ -370,6 +383,7 @@ private final class ShellHandler: ChannelInboundHandler {
                     shell.terminal?.updateAIWorkspace(AIWorkspaceSnapshot(error: "Identity revoked or unauthorized"))
                 }
                 shell.paint(channel: channel)
+                shell.scheduleCompletion(channel:channel)
             }
         }
     }

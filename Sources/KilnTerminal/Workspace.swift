@@ -25,6 +25,8 @@ struct WorkspaceUI {
     private var vim = VimEditor()
     private var idePending: SwiftIDERequest?
     private var ideResult: SwiftIDEResult?
+    private var autoCompletionReady = false
+    private var automaticCompletion = false
     private var ideIndex = 0
     private var jump: SwiftIDELocation?
     private struct Buffer { var source: String; var draft: String; var hash: String; var cursor: Int; var offset: Int; var horizontal: Int; var isNew: Bool }
@@ -53,6 +55,15 @@ struct WorkspaceUI {
         guard let data = try? JSONEncoder().encode(value), let json = String(data:data,encoding:.utf8) else { return nil }
         idePending = value; ideResult = nil; error = "Swift "+action+"..."
         return command(["web","ide",module,json])
+    }
+    /// Called after a short idle period, never once per keystroke.
+    mutating func completeAfterTyping() -> String? {
+        guard autoCompletionReady, mode == "edit", !treeFocus, confirmation.isEmpty,
+              !vim.enabled || vim.insert, idePending == nil, ideResult == nil else { return nil }
+        autoCompletionReady = false
+        let command = swiftTool("complete")
+        automaticCompletion = command != nil
+        return command
     }
     private mutating func openLocation(_ location: SwiftIDELocation) -> String? {
         ideResult = nil
@@ -95,9 +106,12 @@ struct WorkspaceUI {
     private mutating func request(_ name: String, _ parts: [String]) -> String { waiting = true; pending = name; error = ""; return command(parts) }
     mutating func finish(text: String, status: Int) {
         if let query = idePending {
+            let automatic = automaticCompletion
+            automaticCompletion = false
             idePending = nil; error = ""
-            guard status == 0, let data = text.data(using:.utf8), let result = try? JSONDecoder().decode(SwiftIDEResult.self,from:data) else { error = text; return }
-            guard query.path == path, query.text == (mode == "edit" ? draft : source) else { error = "Swift result belongs to an earlier buffer. Request it again."; return }
+            guard status == 0, let data = text.data(using:.utf8), let result = try? JSONDecoder().decode(SwiftIDEResult.self,from:data) else { if !automatic { error = text }; return }
+            guard query.path == path, query.text == (mode == "edit" ? draft : source), query.cursor == cursor, !automatic || (!treeFocus && (!vim.enabled || vim.insert) && confirmation.isEmpty) else { if !automatic { error = "Swift result belongs to an earlier buffer. Request it again." }; return }
+            if automatic && result.completions.isEmpty { return }
             ideResult = result; ideIndex = 0
             return
         }
@@ -186,6 +200,7 @@ struct WorkspaceUI {
     }
     private let scrollButtons = "[PgUp] [PgDn] [Top] [End] [<] [>]"
     mutating func handle(_ input: TerminalKey, width: Int, height: Int) -> String? {
+        autoCompletionReady = false
         var key = input
         guard !waiting else { return nil }
         if case let .mouse(button,column,row,released) = key, !released, button == 0, row == 1 {
@@ -218,19 +233,23 @@ struct WorkspaceUI {
             let count = result.action == "complete" ? result.completions.count : result.locations.count
             if key == .escape { ideResult = nil; return nil }
             if key == .up { ideIndex = max(0,ideIndex-1) }
-            if key == .down || key == .tab { ideIndex = min(max(0,count-1),ideIndex+1) }
+            if key == .down || (key == .tab && result.action != "complete") { ideIndex = min(max(0,count-1),ideIndex+1) }
+            if result.action == "complete", case let .mouse(button,_,_,released) = key, !released, button == 0 {
+                ideResult = nil; return handle(key,width:width,height:height)
+            }
             if case let .mouse(button,_,row,released) = key, !released {
                 if button == 64 { ideIndex = max(0,ideIndex-1) }
                 if button == 65 { ideIndex = min(max(0,count-1),ideIndex+1) }
                 let start = max(0,ideIndex-max(1,height-13)+1)
                 if button == 0, row >= 7, row < height-5, start+row-7 < count { ideIndex = start+row-7; return handle(.enter,width:width,height:height) }
             }
-            if key == .enter {
+            if key == .enter || (key == .tab && result.action == "complete") {
                 if result.action == "complete", result.completions.indices.contains(ideIndex) {
                     let item = result.completions[ideIndex]; var chars = Array(draft)
                     guard item.start >= 0, item.end >= item.start, item.end <= chars.count else { ideResult = nil; return nil }
                     chars.replaceSubrange(item.start..<item.end,with:item.text)
                     guard String(chars).utf8.count <= 65536 else { error = "Completion exceeds file limit"; ideResult = nil; return nil }
+                    vim.record(draft,cursor)
                     draft = String(chars); cursor = item.start+item.text.count; ideResult = nil
                     position(at:SwiftIDELocation(path:path,line:String(draft.prefix(cursor)).components(separatedBy:"\n").count,column:(String(draft.prefix(cursor)).components(separatedBy:"\n").last?.utf16.count ?? 0)+1))
                     return nil
@@ -242,7 +261,7 @@ struct WorkspaceUI {
         }
         if idePending != nil {
             switch key {
-            case .text, .paste, .backspace, .delete, .up, .down, .left, .right, .home, .end, .pageUp, .pageDown, .enter, .tab: if mode != "edit" { return nil }
+            case .text, .paste, .backspace, .delete, .up, .down, .left, .right, .home, .end, .pageUp, .pageDown, .enter, .tab, .escape: if mode != "edit" { return nil }
             default: return nil
             }
         }
@@ -432,7 +451,14 @@ struct WorkspaceUI {
             let column = rawColumn
             let room = max(8,(width-4)-min(32,max(18,(width-4)/4))-11)
             if !wrapping { if column < horizontal { horizontal = column }; if column >= horizontal+room { horizontal = column-room+1 } }
-            if key == .text(".") { return swiftTool("complete") }
+            if draft != previousDraft, !vim.enabled || vim.insert {
+                switch key {
+                case .text, .backspace, .delete:
+                    let last = draft.prefix(cursor).last
+                    autoCompletionReady = last.map { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." } ?? false
+                default: break
+                }
+            }
             return nil
         }
         if key == .text("w") || key == .text("W"), change != nil {
@@ -462,7 +488,7 @@ struct WorkspaceUI {
         if key == .text("e") || key == .text("E") {
             guard editable else { error = "Retained versions are read-only. Open Codebase for workspace edits."; return nil }
             // Edit the file shown, not a different highlighted tree row.
-            draft = source; isNew = false; mode = "edit"; error = ""
+            draft = source; isNew = false; mode = "edit"; treeFocus = false; error = ""
             offset = min(offset,String(source.prefix(cursor)).filter { $0 == "\n" }.count)
         }
         if key == .text("a") || key == .text("A") {
@@ -532,7 +558,19 @@ struct WorkspaceUI {
         }
         row(h-1,"+"+String(repeating:"-",count:w-2)+"+")
         out += "\u{1b}[1;3H" + theme.accentCode + fit("[Build] [Run] [Def] [Wrap] [Complete] ["+vim.label+"]",width-5)
-        if let result = ideResult {
+        if let result = ideResult, result.action == "complete", !result.completions.isEmpty {
+            let count = min(6,result.completions.count), first = max(0,ideIndex-count+1)
+            let menuWidth = min(64,max(20,codeWidth-2))
+            let caretY = (wrapping ? visual.lastIndex(where: { $0.0 == caretLine && $0.1 <= caretColumn }) ?? 0 : caretLine)-start+3
+            let menuY = caretY+count+2 < h-3 ? max(3,caretY+1) : max(3,caretY-count-2)
+            let menuX = left+treeWidth+2
+            let menuColor = "\u{1b}[0;48;5;234;38;5;\(theme.foreground)m"
+            for (i,item) in result.completions.dropFirst(first).prefix(count).enumerated() {
+                out += "\u{1b}[\(top+menuY+i);\(menuX)H"+menuColor
+                    + (first+i == ideIndex ? "\u{1b}[7m" : "") + fit(item.label,menuWidth)+"\u{1b}[0m"
+            }
+            row(h-3,"| "+fit("Suggestions: Up/Down choose  Tab/Enter insert  Esc dismiss; keep typing to refine",w-4)+" |")
+        } else if let result = ideResult {
             row(3,"| "+fit(result.message.components(separatedBy:"\n").first ?? "Swift tools",w-4)+" |")
             let labels = result.action == "complete" ? result.completions.map { $0.label+"  "+$0.detail } : result.locations.map { "\($0.path):\($0.line):\($0.column)  "+$0.message }
             let visible = max(1,height-13), start = max(0,ideIndex-visible+1)
@@ -568,7 +606,7 @@ struct WorkspaceUI {
             row(5,"| "+fit(question,w-4)+" |")
             row(6,"| "+fit(accepted ? "  Cancel     > Confirm" : "> Cancel       Confirm",w-4)+" |")
             row(7,"| "+fit("Up/Down choose  Enter  Esc cancel",w-4)+" |")
-        } else if (mode == "edit" || mode == "browse" && !treeFocus), ideResult == nil {
+        } else if (mode == "edit" || mode == "browse" && !treeFocus), ideResult == nil || ideResult?.action == "complete" {
             let before = String((mode == "edit" ? draft : source).prefix(cursor)), line = before.filter { $0 == "\n" }.count
             let rawColumn = KilnTerminal.safe(String(before.split(separator:"\n",omittingEmptySubsequences:false).last ?? "")).replacingOccurrences(of:"\t",with:"    ").count
             let visualIndex = wrapping ? visual.lastIndex(where: { $0.0 == line && $0.1 <= rawColumn }) ?? 0 : line

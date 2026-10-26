@@ -30,6 +30,10 @@ public struct KilnTerminal {
     public mutating func refreshCodeWorkspace() -> TerminalEffect? {
         codeWorkspace?.refresh().map { .workspaceRead($0) }
     }
+    public mutating func completeCodeAfterTyping() -> TerminalEffect? {
+        guard codeFocus, !busy, !selectingText else { return nil }
+        return codeWorkspace?.completeAfterTyping().map { .workspaceRead($0) }
+    }
     private mutating func openCodeWorkspace(_ module: String) -> [TerminalEffect] {
         openAIChat(); management.close(); draggingDivider = false
         codeWorkspace = WorkspaceUI(module: module); codeFocus = true
