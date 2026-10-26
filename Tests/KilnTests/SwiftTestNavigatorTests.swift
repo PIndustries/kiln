@@ -69,6 +69,20 @@ import KilnKit
     let recovered = try await dev.ide(module:"test/site",request:single)
     #expect(recovered.tests?.filter({$0.state == "passed"}).count == 1)
     #expect(try WebFiles.read(config) == snapshot)
+    // A runner that cannot load its test runtime must not report zero tests as
+    // successful discovery. Retain a visible incomplete outcome and console reason.
+    var blockedSDK = try JSONSerialization.jsonObject(with:Data(contentsOf:URL(fileURLWithPath:sdk))) as! [String:Any]
+    blockedSDK["testReadRoots"] = [String]()
+    blockedSDK["runtimeLibraries"] = [String]()
+    let blockedFile = root.appendingPathComponent("blocked-sdk.json")
+    try KilnStateFile.write(JSONSerialization.data(withJSONObject:blockedSDK),to:blockedFile)
+    var blockedConfig = try JSONSerialization.jsonObject(with:JSONEncoder().encode(config)) as! [String:Any]
+    blockedConfig["sdk"] = blockedFile.path
+    let blocked = WebDevelopment(directory:root.appendingPathComponent("blocked"))
+    _ = try await blocked.register(data:JSONSerialization.data(withJSONObject:blockedConfig),target:target)
+    let unavailable = try await blocked.ide(module:"test/site",request:request("testList"))
+    #expect(unavailable.message.hasPrefix("Test run incomplete"),Comment(rawValue:unavailable.message))
+    #expect(try WebFiles.read(config) == snapshot)
     print("KILN_SWIFT_TEST_NAVIGATOR_COMPLETE")
 }
 

@@ -65,8 +65,8 @@ extension WebDevelopment {
         let complete = request.action == "testList" ? process.terminationStatus == 0 : events.started && events.ended && (process.terminationStatus == 0 || process.terminationStatus == 1 && events.issueCount > 0)
         let noMatch = request.action == "test" && !events.tests.contains(where:{$0.state != "discovered"})
         let message: String
-        if request.action == "testList" { message = "Swift tests: \(events.tests.count) discovered" }
-        else if !complete { message = "Test run incomplete; results are partial.\n"+String(decoding:outputBytes,as:UTF8.self) }
+        if !complete { message = "Test run incomplete; results are partial.\n"+String(decoding:outputBytes,as:UTF8.self) }
+        else if request.action == "testList" { message = "Swift tests: \(events.tests.count) discovered" }
         else if noMatch { message = "No tests matched the selection" }
         else { message = "Tests finished: "+events.summary+" / \(events.issueCount) issues" }
         var result = SwiftIDEResult(action:request.action,message:message)

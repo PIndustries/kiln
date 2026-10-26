@@ -7,6 +7,7 @@ import hashlib
 import json
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -89,6 +90,23 @@ for flag in flags:
             if binary.is_file():
                 inputs.add(str(binary.resolve()))
                 testing_arguments += ['-Xlinker', '-rpath', '-Xlinker', path]
+# Standalone toolchains may ship a dylib instead of Xcode's Testing.framework.
+# Discover its actual installed directory; do not infer a toolchain version path.
+target_flags = []
+for index, flag in enumerate(command['otherArguments'][:-1]):
+    if flag in ['-target', '-sdk']:
+        target_flags += [flag, command['otherArguments'][index + 1]]
+target_info = json.loads(subprocess.check_output([str(compiler), '-print-target-info'] + target_flags, text=True))
+native_roots = [Path(p) for p in target_info['paths']['runtimeLibraryPaths']]
+for native_root in native_roots:
+    for library in sorted(native_root.rglob('libTesting.*')):
+        if library.name not in ['libTesting.dylib', 'libTesting.so'] or not library.is_file():
+            continue
+        runtime = str(library.resolve().parent)
+        inputs.add(str(library.resolve()))
+        if runtime not in testing_roots:
+            testing_roots.append(runtime)
+        testing_arguments += ['-L', runtime, '-Xlinker', '-rpath', '-Xlinker', runtime]
 plugin = compiler.parent.parent / 'lib/swift/host/plugins/testing'
 if plugin.is_dir() and '-plugin-path' not in testing_arguments:
     testing_arguments += ['-plugin-path', str(plugin)]
