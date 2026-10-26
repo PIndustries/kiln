@@ -118,10 +118,22 @@ extension KilnCommands {
         case let p where p.count == 4 && p[1] == "preview":
             let text = try await webDevelopment.preview(module: p[2], path: p[3])
             try authorizeAdmin(); return CommandResult(text)
+        case let p where p.count == 3 && p[1] == "agents":
+            let owner = try aiOwnerFingerprint(), text = try await webDevelopment.agentHistory(module:p[2],owner:owner)
+            try authorizeAdmin(); guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Agent inspection authorization changed") }
+            return CommandResult(text)
+        case let p where p.count == 4 && p[1] == "agent-diff":
+            let owner = try aiOwnerFingerprint(), text = try await webDevelopment.agentDiff(module:p[2],worker:p[3],owner:owner)
+            try authorizeAdmin(); guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Agent inspection authorization changed") }
+            return CommandResult(text)
+        case let p where p.count == 4 && ["agent-base","agent-proposal"].contains(p[1]):
+            let owner = try aiOwnerFingerprint(), text = try await webDevelopment.agentFiles(module:p[2],worker:p[3],owner:owner,proposed:p[1] == "agent-proposal")
+            try authorizeAdmin(); guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Agent inspection authorization changed") }
+            return CommandResult(text)
         case let p where p.count == 3 && p[1] == "changes":
             let text = try await webDevelopment.changes(module: p[2])
             try authorizeAdmin(); return CommandResult(text)
-        default: return CommandResult("web register CONFIG.json / web projects / web workspace APP/MODULE FALLBACK-PATH / web workspace-conflicts APP/MODULE / web workspace-recover APP/MODULE COPY-ID EXPECTED-REVISION / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web apply-file APP/MODULE OWNED-PATCH.json / web refactor APP/MODULE PATH SHA256 components|functions / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
+        default: return CommandResult("web register CONFIG.json / web projects / web workspace APP/MODULE FALLBACK-PATH / web workspace-conflicts APP/MODULE / web workspace-recover APP/MODULE COPY-ID EXPECTED-REVISION / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web agents APP/MODULE / web agent-diff APP/MODULE WORKER-ID / web agent-base APP/MODULE WORKER-ID / web agent-proposal APP/MODULE WORKER-ID / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web apply-file APP/MODULE OWNED-PATCH.json / web refactor APP/MODULE PATH SHA256 components|functions / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
         }
     }
     func rollbackService(_ module: String, expectedGeneration: String? = nil) async throws -> String {
@@ -134,28 +146,44 @@ extension KilnCommands {
         return try await webDevelopment.rollback(module: module, currentVersion: target.version, previousVersion: previous, owner: owner,
             validate: { try authorizeAdmin() }, perform: { try await runtime.rollback(module, expectedGeneration: generation, validateAccess: { try authorizeAdmin() }) })
     }
-    func validateWebChange(module: String, edits: String, expectedOwner: String, expectedContext: String, operationLimit: Int = 8, refactorScope: WebRefactor? = nil,
+    func validateWebChange(module: String, edits: String, expectedOwner: String, expectedContext: String, operationLimit: Int = 8, refactorScope: WebRefactor? = nil, worker: String? = nil,
                            progress: @escaping @Sendable (AIProgress) -> Void) async throws -> String {
         try authorizeAdmin()
         let target = try await runtime.developmentTarget(module)
         try identities.audit(principal, verb: "web source validate", outcome: "authorized", target: module)
-        return try await webDevelopment.change(module: module, owner: expectedOwner, edits: edits, target: target, publish: false, operationLimit: operationLimit, refactorScope: refactorScope,
+        if let worker {
+            return try await webDevelopment.validateAgentChange(module:module,worker:worker,owner:expectedOwner,edits:edits,target:target,limit:operationLimit,refactorScope:refactorScope,progress:{ progress(.status($0)) },validate:{
+                try authorizeAdmin()
+                guard try aiOwnerFingerprint() == expectedOwner, try activeAIConfiguration().contextID == expectedContext else { throw KilnError.message("Validation identity or provider context changed") }
+            })
+        }
+        let result = try await webDevelopment.change(module: module, owner: expectedOwner, edits: edits, target: target, publish: false, operationLimit: operationLimit, refactorScope: refactorScope,
             progress: { text in progress(.status(text)) }, validate: {
                 try authorizeAdmin()
                 guard try aiOwnerFingerprint() == expectedOwner, try activeAIConfiguration().contextID == expectedContext else {
                     throw KilnError.message("Validation identity or provider context changed")
                 }
             }, deploy: { _ in throw KilnError.message("Validation cannot publish") })
+        return result
     }
-    func publishWebChange(module: String, edits: String, expectedOwner: String, expectedContext: String, operationLimit: Int = 8, refactorScope: WebRefactor? = nil,
+    func publishWebChange(module: String, edits: String, expectedOwner: String, expectedContext: String, operationLimit: Int = 8, refactorScope: WebRefactor? = nil, worker: String? = nil, restoring: [String:Data]? = nil, expectedSource: String? = nil,
                           progress: @escaping @Sendable (AIProgress) -> Void) async throws -> String {
         try authorizeAdmin()
+        if let worker {
+            progress(.status("Agent proposal queued for integration"))
+            return try await webDevelopment.integrateAgent(module:module,worker:worker,owner:expectedOwner,edits:edits,validate: {
+                try authorizeAdmin()
+                guard try aiOwnerFingerprint() == expectedOwner, try activeAIConfiguration().contextID == expectedContext else { throw KilnError.message("Integration authorization changed") }
+            },publish: { files,digest in
+                try await publishWebChange(module:module,edits:edits,expectedOwner:expectedOwner,expectedContext:expectedContext,operationLimit:operationLimit,refactorScope:refactorScope,restoring:files,expectedSource:digest,progress:progress)
+            })
+        }
         let target = try await runtime.developmentTarget(module)
         guard let before = await runtime.snapshot().first(where: { $0.id == module }) else { throw KilnError.message("Unknown web development module") }
         let request = UUID().uuidString.lowercased()
         try identities.audit(principal, verb: "web source update", outcome: "authorized", target: module, requestID: request)
         do {
-            let result = try await webDevelopment.change(module: module, owner: expectedOwner, edits: edits, target: target, operationLimit: operationLimit, refactorScope: refactorScope,
+            let result = try await webDevelopment.change(module: module, owner: expectedOwner, edits: edits, target: target, operationLimit: operationLimit, refactorScope: refactorScope, restoring:restoring, expectedSource:expectedSource,
                 progress: { text in progress(.status(text)) }, validate: {
                     try authorizeAdmin()
                     guard try aiOwnerFingerprint() == expectedOwner, try activeAIConfiguration().contextID == expectedContext else { throw KilnError.message("Coding identity or provider context changed") }
@@ -186,6 +214,7 @@ extension KilnCommands {
             return result + "\nHTTP root inspection: " + status + " (server response; browser interactions checked separately)."
         } catch {
             try? identities.audit(principal, verb: "web source update", outcome: "failed-or-unconfirmed", target: module, requestID: request)
+            if restoring != nil { throw error }
             return "Web change failed or unconfirmed: \(error).\nInspect web changes \(module), its registered source and active release before retrying."
         }
     }

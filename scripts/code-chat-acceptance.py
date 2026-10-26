@@ -58,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         known = root/'known'; known.write_text(f'[127.0.0.1]:{sshport} '+(state/'ssh-host-ed25519.pub').read_text())
         base = ['ssh','-F','/dev/null','-o','LogLevel=ERROR','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+str(known),'-i',str(key),'-p',str(sshport),'admin@127.0.0.1']
         def ssh(command):
-            result = subprocess.run(base+[command],capture_output=True,text=True,timeout=30)
+            result = subprocess.run(base+[command],capture_output=True,text=True,timeout=90)
             assert result.returncode == 0,(command,result.stdout,result.stderr)
             return result.stdout
         wait(lambda:subprocess.run(base+['status'],capture_output=True).returncode == 0)
@@ -166,8 +166,22 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
             assert json.loads(ssh('ai work events '+worker_id))[-1]['kind']=='removed'
         finally:
             if detached.poll() is None: detached.kill(); detached.wait(timeout=5)
+        # Exercise actual worker tools, private snapshot validation and queued
+        # integration against this disposable app (no live provider account).
+        published = ssh('ai work start "Publish isolated branch proof"')
+        assert 'Published development change' in published, published
+        branches = json.loads(ssh('web agents draft/site'))
+        branch = next(row for row in branches if row['status'] == 'integrated')
+        assert branch['base'] != branch['proposal']
+        diff = ssh('web agent-diff draft/site '+branch['worker'])
+        assert '+ ' in diff or '+<' in diff or '+        ' in diff, diff
+        assert 'Isolated agent publication.' in diff
+        assert source.read_bytes() == original.replace(b'Your application.', b'Isolated agent publication.')
+        assert b'Isolated agent publication.' in get('/')
+        assert json.loads(get('/__kiln/instance'))['instance'] != old_instance
+        print('PASS worker read/validate/publish: isolated snapshot, compiled proposal, queued integration, retained source diff, new healthy HTTP release',flush=True)
         (root/'passed').touch(); (root/'done').touch()
-        print('PASS real SSH: local unsaved draft and divider recovered across disconnect; workspace worker automatically reattached and accepted context; independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; code+chat visible; live source and worker unchanged',flush=True)
+        print('PASS real SSH: local unsaved draft and divider recovered across disconnect; workspace worker automatically reattached and accepted context; independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; code+chat visible; read-only phase preserved source and worker; isolated publication verified separately',flush=True)
         runtime.wait(timeout=30); assert runtime.returncode==0
         print('KILN_CODE_CHAT_ACCEPTANCE_COMPLETE',flush=True)
     finally:

@@ -35,7 +35,10 @@ private struct WebChange: Codable {
 }
 public actor WebDevelopment {
     let directory: URL
-    private var busy = Set<String>()
+    var busy = Set<String>()
+    var agentQueue: [(String,String)] = []
+    var agentIntegrating: Set<String> = []
+    var agentValidating: Set<String> = []
     private var activeJobs = Set<String>()
     var ideRequests = 0
     var languageSessions: [String:SwiftLanguageSession] = [:]
@@ -94,7 +97,8 @@ public actor WebDevelopment {
             return "\(p.module) / source \(URL(fileURLWithPath: p.source).lastPathComponent) / files \(p.root == nil ? "single" : "project") / auto-publish \(p.autoPublish) / \(p.publicOrigin) / Swift views: \(try project(p.module).sdk.nativeViews == true) / HTML templates: \(try project(p.module).sdk.htmlTemplates == true)"
         }.joined(separator: "\n")
     }
-    private func snapshot(module: String, change: String? = nil) throws -> (WebFiles, String) {
+    private func snapshot(module: String, change: String? = nil, worker: String? = nil, owner: String? = nil) throws -> (WebFiles, String) {
+        if let worker, let owner { return (try agentSnapshot(module:module,worker:worker,owner:owner), "agent-" + worker) }
         if let change {
             let (folder, record) = try retained(module, id: change)
             let files = try WebFiles.retained(at: folder)
@@ -103,14 +107,14 @@ public actor WebDevelopment {
         }
         return (try WebFiles.read(project(module).configuration), "workspace")
     }
-    public func tree(module: String, change: String? = nil) throws -> String {
-        let (snapshot, version) = try snapshot(module: module, change: change)
+    public func tree(module: String, change: String? = nil, worker: String? = nil, owner: String? = nil) throws -> String {
+        let (snapshot, version) = try snapshot(module: module, change: change, worker:worker,owner:owner)
         let rows: [[String:Any]] = snapshot.files.keys.sorted().map { ["path":$0,"bytes":snapshot.files[$0]!.count,"sha256":WebIsolation.digest(snapshot.files[$0]!)] }
         return String(decoding: try JSONSerialization.data(withJSONObject: ["version":version,"editable":change == nil && project(module).configuration.autoPublish,"projectRoot":project(module).configuration.root != nil,"files":rows], options: [.sortedKeys]), as: UTF8.self)
     }
-    public func file(module: String, path: String, change: String? = nil, offset: Int? = nil) throws -> String {
+    public func file(module: String, path: String, change: String? = nil, offset: Int? = nil, worker: String? = nil, owner: String? = nil) throws -> String {
         guard WebFiles.validPath(path) else { throw KilnError.message("Invalid project file path") }
-        let (snapshot, version) = try snapshot(module: module, change: change)
+        let (snapshot, version) = try snapshot(module: module, change: change, worker:worker,owner:owner)
         guard let bytes = snapshot.files[path], let text = String(data: bytes, encoding: .utf8) else { throw KilnError.message("Unknown project file") }
         let start = offset ?? 0
         guard start >= 0, start <= text.count else { throw KilnError.message("Invalid source offset") }
@@ -125,8 +129,8 @@ public actor WebDevelopment {
     }
     /// Proposed source for the IDE only. Uses the exact edit/hash/path checks of
     /// publication, without changing disk or the running release.
-    public func previewEdits(module: String, edits: String, limit: Int) throws -> [AISourcePreview] {
-        let registered = try project(module), before = try WebFiles.read(registered.configuration)
+    public func previewEdits(module: String, edits: String, limit: Int, worker: String? = nil, owner: String? = nil) throws -> [AISourcePreview] {
+        let registered = try project(module), before = try snapshot(module:module,worker:worker,owner:owner).0
         let after = try before.applying(edits,multiFile:registered.configuration.root != nil,limit:limit)
         return Set(before.files.keys).union(after.files.keys).sorted().compactMap { path in
             guard before.files[path] != after.files[path] else { return nil }
@@ -248,7 +252,7 @@ public actor WebDevelopment {
         }
     }
     public func change(module: String, owner: String, edits: String, target: ApplicationManifest,
-                       publish: Bool = true, operationLimit: Int = 8, refactorScope: WebRefactor? = nil, restoring: [String: Data]? = nil, progress: @escaping @Sendable (String) -> Void,
+                       publish: Bool = true, operationLimit: Int = 8, refactorScope: WebRefactor? = nil, restoring: [String: Data]? = nil, expectedSource: String? = nil, progress: @escaping @Sendable (String) -> Void,
                        validate: @escaping @Sendable () throws -> Void,
                        deploy: @escaping @Sendable (String) async throws -> String) async throws -> String {
         guard WebIsolation.supported else { throw KilnError.message("Web coding currently requires macOS isolation") }
@@ -259,6 +263,7 @@ public actor WebDevelopment {
         guard config.autoPublish, target.id == module, target.ingressPort == config.ingressPort, (target.secrets ?? [:]).isEmpty else { throw KilnError.message("This module has no automatic development-publish grant") }
         let registrations = try bounded(projectFile(module), limit: 1_048_576)
         let before = try WebFiles.read(config)
+        if let expectedSource, try before.digest != expectedSource { throw KilnError.message("Source changed before integration; retained agent proposal was not published") }
         let after = try restoring.map { WebFiles(files: $0) } ?? before.applying(edits, multiFile: config.root != nil, limit: operationLimit)
         if after.files.keys.contains(where: { $0.hasPrefix("Views/") && $0.hasSuffix(".html") }), registered.sdk.htmlTemplates != true { throw KilnError.message("Registered SDK does not support HTML templates; an administrator must export and register an updated SDK") }
         try after.validate()

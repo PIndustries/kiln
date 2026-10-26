@@ -17,6 +17,14 @@ import KilnSSH
     let assistant = KilnAssistant(streamingCompletion: { _, _, messages, _, emit in
         let prompt = messages.last(where: { $0.role == "user" })?.content ?? ""
         try KilnStateFile.write(Data(prompt.utf8),to:root.appendingPathComponent("last-prompt"))
+        if prompt.hasPrefix("Publish isolated branch proof") {
+            let previous = Set(messages.flatMap { $0.tool_calls ?? [] }.filter { $0.id.hasPrefix("branch-") }.map { $0.function.name })
+            let name = !previous.contains("read_web_file") ? "read_web_file" : !previous.contains("validate_web_source") ? "validate_web_source" : "update_web_source"
+            let edits = "[{\"before\":\"Your application.\",\"after\":\"Isolated agent publication.\"}]"
+            let args = name == "read_web_file" ? ["module":"draft/site","path":"App.swift","offset":"0"] : ["module":"draft/site","edits":edits]
+            let call: [String:Any] = ["id":"branch-"+name,"type":"function","function":["name":name,"arguments":String(decoding:try JSONEncoder().encode(args),as:UTF8.self)]]
+            return AIMessage(role:"assistant",content:nil,tool_calls:[try JSONDecoder().decode(AIToolCall.self,from:JSONSerialization.data(withJSONObject:call))])
+        }
         let firstPrompt = messages.last(where: { $0.role == "user" && $0.content?.hasPrefix("Keep the green theme") != true })?.content ?? prompt
         let label = String(firstPrompt.split(separator:"\n").first ?? "unknown")
         if messages.contains(where: { $0.role == "user" && $0.content?.hasPrefix("Keep the green theme") == true }) {

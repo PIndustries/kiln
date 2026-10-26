@@ -812,7 +812,7 @@ extension KilnCommands {
             webChange = { module, edits in
                 if let editorContext { try await validateEditorWrite(editorContext, module: module) }
                 if let webRefactor { try await webDevelopment.verifyRefactor(webRefactor, module: module) }
-                return try await publishWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, progress: progress)
+                return try await publishWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, worker:workerID, progress: progress)
             }
         } else { webChange = nil }
         let webValidation: (@Sendable (String, String) async throws -> String)?
@@ -821,9 +821,9 @@ extension KilnCommands {
                 if let editorContext, module != editorContext["module"] { throw AIError.message("Validation is limited to the active application") }
                 if let webRefactor { try await webDevelopment.verifyRefactor(webRefactor, module: module) }
                 if workerID != nil {
-                    for file in try await webDevelopment.previewEdits(module:module,edits:edits,limit:webRefactor == nil ? 8 : 32) { progress(.source(file)) }
+                    for file in try await webDevelopment.previewEdits(module:module,edits:edits,limit:webRefactor == nil ? 8 : 32,worker:workerID,owner:expectedOwner) { progress(.source(file)) }
                 }
-                return try await validateWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, progress: progress)
+                return try await validateWebChange(module: module, edits: edits, expectedOwner: expectedOwner, expectedContext: configuration.contextID, operationLimit: webRefactor == nil ? 8 : 32, refactorScope: webRefactor, worker:workerID, progress: progress)
             }
         } else { webValidation = nil }
         let text = try await assistant.ask(prompt, session: sessionID, configuration: configuration, key: key,
@@ -848,11 +848,11 @@ extension KilnCommands {
                     try authorizeAdmin()
                     let args = try JSONDecoder().decode([String:String].self, from: Data((module ?? "").utf8))
                     guard let target = args["module"] else { throw AIError.message("Missing web project") }
-                    if name == "list_web_files" { return try await webDevelopment.tree(module: target) }
+                    if name == "list_web_files" { return try await webDevelopment.tree(module: target,worker:workerID,owner:expectedOwner) }
                     guard let path = args["path"], let offset = args["offset"].flatMap(Int.init) else { throw AIError.message("Invalid file arguments") }
-                    let value = try await webDevelopment.file(module: target, path: path, offset: offset)
+                    let value = try await webDevelopment.file(module: target, path: path, offset: offset,worker:workerID,owner:expectedOwner)
                     if workerID != nil {
-                        let full = try await webDevelopment.file(module:target,path:path)
+                        let full = try await webDevelopment.file(module:target,path:path,worker:workerID,owner:expectedOwner)
                         if let object = try JSONSerialization.jsonObject(with:Data(full.utf8)) as? [String:Any], let text = object["source"] as? String {
                             progress(.source(AISourcePreview(module:target,path:path,source:text,draft:false)))
                         }
@@ -862,7 +862,7 @@ extension KilnCommands {
                     try authorizeAdmin()
                     let args = try JSONDecoder().decode([String: String].self, from: Data(module!.utf8))
                     guard let name = args["module"], let offset = args["offset"].flatMap(Int.init) else { throw AIError.message("Invalid source arguments") }
-                    return try await webDevelopment.source(module: name, offset: offset)
+                    return try await webDevelopment.file(module:name,path:"App.swift",offset:offset,worker:workerID,owner:expectedOwner)
                 case "read_web_changes", "inspect_web_preview", "read_web_history", "read_web_diff":
                     try authorizeAdmin()
                     let args = try JSONDecoder().decode([String: String].self, from: Data((module ?? "").utf8))

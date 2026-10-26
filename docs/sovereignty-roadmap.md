@@ -83,11 +83,22 @@ or IDE maturity claim is based on unit-test count alone.
 ## Current local evidence
 
 The owned workspace checkpoint/recovery path and ordered background-agent journal
-are implemented. See [workspace recovery](workspace-recovery.md) and
-[agent events](agent-events.md) for their actual behavior, guards and limitations.
-The agent-event iteration passes 328 local tests, real SSH code/chat recovery and
-steering, and a forced process-kill/new-process recovery harness without replay.
-These are foundation milestones, not acceptance of all eight areas above. Hosted
-validation, live-provider publication after the event update, operation-aware
-reconciliation UX and the remaining Swift/coordination/framework work are still
-separate gates.
+are implemented. See [workspace recovery](workspace-recovery.md),
+[agent events](agent-events.md) and [Swift IDE](swift-ide.md) for actual behavior,
+guards and limitations. Swift tooling now reuses isolated SourceKit sessions and
+uses the installed compiler's symbol index for project-wide references and draft
+rename. The native index reader adds no package dependency.
+
+Background coding workers now retain owner/app-scoped source snapshots and exact
+validated proposals. A per-app integration queue combines independent-file edits,
+retains conflicts, recompiles merged source, and checks source/release generations.
+Cancelled or interrupted integrations never replay automatically. Local acceptance
+includes real SSH worker read/validate/publish and a changed healthy HTTP release,
+plus reconnect/steering and retained proposal diff inspection. The provider in that
+acceptance is a deterministic fixture; live-provider behavior remains a separate gate.
+
+These are concrete parts of milestones 1–4, not acceptance of all eight areas.
+Task dependencies, conflict-resolution UI, formatting/code actions, LLDB and Swift
+test navigation, behavior-driven browser tools, live component lifecycle and the
+persisted proving application remain open. Hosted validation and clean-machine
+reproducibility remain separate gates. Portable bundles are still deferred.

@@ -88,3 +88,30 @@ diagnostics, references and rename proposals while source remains untouched.
 `scripts/swift-ide-acceptance.py` exercises the actual SSH UI against disposable
 source and runtime state, including compiler errors, wrap and deployed-run
 controls. Neither test uses model accounts or mutates the user's development app.
+
+### Agent source isolation and integration
+
+Background coding workers read a private immutable snapshot of each registered
+application. Snapshots are scoped to the worker, application and current identity;
+they contain registered text source only. Tool reads and the proposed source shown
+in the workspace use that snapshot. Other workers publishing cannot silently
+change the files beneath an agent's plan.
+
+An agent must compile its exact proposal before entering the per-application FIFO
+integration queue. Integration compares the base, proposal and current source.
+Changes in different files combine; competing edits to the same file are retained
+as conflicts, including competing file creations or deletions. The merged source
+is compiled again, and source/registration/release checks still run before
+activation. A concurrent manual write between merge and build rejects the proposal.
+This is conservative file-level merging, not semantic merging or automatic rebasing.
+
+Inspect retained work with `web agents APP/MODULE`, `web agent-diff APP/MODULE
+WORKER-ID`, `web agent-base APP/MODULE WORKER-ID`, and `web agent-proposal
+APP/MODULE WORKER-ID`. Proposals survive disconnects and restart. Interrupted,
+cancelled, conflicting or uncertain integrations never replay automatically; an
+operator must inspect the retained source and active release before starting fresh
+work. The queue holds up to 64 pending integrations and the store retains up to
+512 scoped snapshots; reaching capacity fails explicitly without deleting history.
+The existing 48-worker inference capacity remains separate from serialized writes
+to an application. No new package, database, workflow service or hosted Git server
+is required.
