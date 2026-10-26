@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
                 ready,_,_=select.select([master],[],[],.05)
                 if ready:
                     chunk=os.read(master,65536); wire.extend(chunk); stream.feed(chunk); quiet=time.monotonic()
-        expect('7 AI Chat'); send(b'\r'); expect('Codebase / files')
+        expect('7 AI Chat'); expect('draft/site'); send(b'\r'); expect('Codebase / files')
         for _ in range(8):send(b'\x1b[B')
         send(b'\r'); expect('Codebase / draft/site / workspace'); expect('KILN AI CHAT')
         expect('App: draft/site | App.swift')
@@ -140,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         master, slave = pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,150,0,0))
         client = subprocess.Popen(base[:-1]+['-tt','-e','none',base[-1]],stdin=slave,stdout=slave,stderr=slave,env={**os.environ,'TERM':'xterm-256color'}); os.close(slave)
         screen = pyte.Screen(150,45); stream = pyte.ByteStream(screen)
-        expect('7 AI Chat'); send(b'\r'); expect('Codebase / files')
+        expect('7 AI Chat'); expect('draft/site'); send(b'\r'); expect('Codebase / files')
         for _ in range(8):send(b'\x1b[B')
         send(b'\r'); expect('local draft'); expect('Streaming: Explain this code')
         expect_divider(90)

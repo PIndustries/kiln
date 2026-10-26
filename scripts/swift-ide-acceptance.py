@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
             while time.monotonic()<end and time.monotonic()-quiet<.3:
                 ready,_,_=select.select([master],[],[],.05)
                 if ready:stream.feed(os.read(master,65536));quiet=time.monotonic()
-        expect('7 AI Chat'); send(b'\r'); expect('Codebase / files')
+        expect('7 AI Chat'); expect('draft/site'); send(b'\r'); expect('Codebase / files')
         for _ in range(8):send(b'\x1b[B')
         send(b'\r'); expect('Codebase / draft/site / workspace'); expect('[Build] [Run] [Def]')
         send(b'\x1b[23~'); expect('Build passed.'); send(b'\x1b'); drain()
