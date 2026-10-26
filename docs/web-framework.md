@@ -602,7 +602,10 @@ optional branches, loops and composed custom views. `HTML` also conforms to View
 so existing typed markup remains usable. CSS classes, IDs and styles stay under
 application control. Semantic HTML elements keep existing CSS selectors working;
 `VStack`/`HStack` add flex layout, while `.style` provides a CSS escape hatch for
-trusted application styles. Use CSS variables for customer colors, with Kiln's
+trusted application styles. Modifiers produce authenticated same-origin linked
+stylesheets, so static and live components work without inline-style CSP exceptions
+or application JavaScript. Each modifier rule is limited to 4 KiB; larger rules
+belong in the application stylesheet. Use CSS variables for customer colors, with Kiln's
 black-and-green defaults. Dynamic data belongs in text or validated attributes,
 not constructed CSS, scripts or unvalidated URL schemes.
 
@@ -649,3 +652,7 @@ and template support. For large local patch imports, administrator-only
 `web apply-file APP/MODULE /absolute/owned-patch.json` uses the same hash checks,
 isolated build and atomic publication as the editor. AI tools cannot read this
 host path; they continue using registered project tools.
+
+Browser form pages use `Referrer-Policy: same-origin`: ordinary same-origin POSTs
+retain their Origin header, and cross-origin destinations receive no referrer.
+The server still rejects missing/null/foreign origins and invalid CSRF tokens.

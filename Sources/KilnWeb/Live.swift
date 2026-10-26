@@ -169,6 +169,10 @@ public final class WebApplication: Sendable {
             if developmentReload, path == "/__kiln/development.js", ["GET", "HEAD"].contains(method), query.isEmpty {
                 return WebResponse(contentType: "text/javascript; charset=utf-8", body: Data(developmentClient.utf8))
             }
+            if path.hasPrefix("/__kiln/style/") {
+                guard ["GET", "HEAD"].contains(method), query.isEmpty, let css = ViewStyles.stylesheet(path) else { throw WebError(404) }
+                return WebResponse(contentType:"text/css; charset=utf-8",body:Data(css.utf8))
+            }
             if path == "/__kiln/live.js", ["GET", "HEAD"].contains(method) {
                 return WebResponse(contentType: "text/javascript; charset=utf-8", body: Data(Self.browserClient.utf8))
             }

@@ -45,8 +45,14 @@ public struct Element: View {
         self.tag = tag; self.content = content(); self.attributes = [:]
     }
     public var body: HTML {
+        var attributes = attributes, stylesheet = ""
+        if let style = attributes.removeValue(forKey:"style") {
+            let resource = ViewStyles.resource(style)
+            attributes["class"] = [attributes["class"],resource.name].compactMap{$0}.joined(separator:" ")
+            stylesheet = "<link rel=\"stylesheet\" href=\""+resource.path+"\">"
+        }
         let attrs = attributes.keys.sorted().map { " \($0)=\"\(HTML.escape(attributes[$0]!))\"" }.joined()
-        return HTML(stringLiteral:"<\(tag.rawValue)\(attrs)>"+(tag.isVoid ? "" : content.rendered+"</\(tag.rawValue)>"))
+        return HTML(stringLiteral:stylesheet+"<\(tag.rawValue)\(attrs)>"+(tag.isVoid ? "" : content.rendered+"</\(tag.rawValue)>"))
     }
     public func attribute(_ name: Attribute, _ value: String) -> Self {
         var copy = self; copy.attributes[name.rawValue] = value; return copy
@@ -55,9 +61,11 @@ public struct Element: View {
     public func cssClass(_ value: String) -> Self {
         var copy = self; copy.attributes["class"] = [copy.attributes["class"],value].compactMap{$0}.joined(separator:" "); return copy
     }
-    /// CSS is application-controlled, as with an external stylesheet. Values are
-    /// escaped for the attribute context; never construct CSS from untrusted data.
+    /// CSS is application-controlled, as with an external stylesheet. Native
+    /// rules are linked as authenticated same-origin CSS; never build CSS from
+    /// untrusted data. Modifiers also work in newly mounted live fragments.
     public func style(_ value: String) -> Self {
+        guard !value.isEmpty else { return self }
         var copy = self; copy.attributes["style"] = (copy.attributes["style"].map{$0+";"} ?? "")+value; return copy
     }
     public func padding(_ pixels: Int) -> Self { style("padding:\(pixels)px") }

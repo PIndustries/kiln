@@ -112,7 +112,10 @@ private final class WebHTTPHandler: ChannelInboundHandler, RemovableChannelHandl
         headers.replaceOrAdd(name: "connection", value: "close")
         headers.replaceOrAdd(name: "cache-control", value: "no-store")
         headers.replaceOrAdd(name: "x-content-type-options", value: "nosniff")
-        headers.replaceOrAdd(name: "referrer-policy", value: "no-referrer")
+        // no-referrer makes browser form POSTs send Origin: null. Preserve the
+        // same-origin Origin required by CSRF checks without sharing referrers
+        // with other origins.
+        headers.replaceOrAdd(name: "referrer-policy", value: "same-origin")
         let socketOrigin = application.origin.replacingOccurrences(of: "https://", with: "wss://").replacingOccurrences(of: "http://", with: "ws://")
         headers.replaceOrAdd(name: "content-security-policy", value: "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' \(socketOrigin); img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
         context.write(wrapOutboundOut(.head(.init(version: head?.version ?? .http1_1, status: .init(statusCode: result.status), headers: headers))), promise: nil)

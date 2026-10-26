@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-import KilnWeb
+@testable import KilnWeb
 import KilnKit
 import KilnRuntime
 import KilnCommands
@@ -29,7 +29,12 @@ private struct WelcomeView: View {
     #expect(html.contains("&lt;img src=x onerror=alert(1)&gt;"))
     #expect(!html.contains("<img"))
     #expect(html.contains("<p>A&amp;B</p><p>&lt;second&gt;</p>"))
-    #expect(html.contains("class=\"page\"")); #expect(html.contains("background:var(--bg)"))
+    #expect(html.contains("class=\"page kiln-style-"))
+    let stylePattern = try NSRegularExpression(pattern:#"href="(/__kiln/style/[^" ]+)""#)
+    let styleMatch = try #require(stylePattern.firstMatch(in:html,range:NSRange(html.startIndex...,in:html)))
+    let stylePath = String(html[Range(styleMatch.range(at:1),in:html)!])
+    #expect(ViewStyles.stylesheet(stylePath)?.contains("padding:12px;background:var(--bg)") == true)
+    #expect(ViewStyles.stylesheet(stylePath.replacingOccurrences(of:".css",with:"a.css")) == nil)
     #expect(html.contains("href=\"/?q=&quot;&amp;\""))
     #expect(html.contains("data-kiln-click=\"rename\""))
     #expect(!html.contains("</input>"))

@@ -46,12 +46,21 @@ with tempfile.TemporaryDirectory(prefix='kiln-native-mvc-') as td:
             deadline = time.monotonic()+20
             while True:
                 try:
-                    with client.open(origin+'/',timeout=2) as response: home = response.read().decode()
+                    with client.open(origin+'/',timeout=2) as response:
+                        home = response.read().decode()
+                        assert response.headers.get('Referrer-Policy') == 'same-origin'
                     break
                 except (OSError,urllib.error.URLError):
                     assert time.monotonic()<deadline,'MVC sample server failed to start'
                     time.sleep(.1)
             assert 'Hello from P.Industries' in home and 'sidenav' in home
+            stylepath = re.search(r'href="(/__kiln/style/[^"]+)"',home).group(1)
+            with client.open(origin+stylepath) as response:
+                assert response.headers.get_content_type() == 'text/css'
+                assert 'scroll-margin-top:24px' in response.read().decode()
+            forged = stylepath.replace('.css','a.css')
+            try: client.open(origin+forged); raise AssertionError('Unsigned CSS was accepted')
+            except urllib.error.HTTPError as error: assert error.code == 404
             token = re.search(r'name="_csrf"[^>]*value="([^"]+)"',home).group(1)
             form = urllib.parse.urlencode({'_csrf':token,'name':'<b>A&B</b>'}).encode()
             request = urllib.request.Request(origin+'/greet',data=form,headers={'Origin':origin,'Content-Type':'application/x-www-form-urlencoded'})
