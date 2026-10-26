@@ -30,12 +30,12 @@ private func helpChat() -> KilnTerminal {
         #expect(terminal.chatVisible && !terminal.busy)
         #expect(terminal.render().contains("Usage: " + command))
         _ = terminal.handle(.text("ordinary follow-up"))
-        #expect(terminal.handle(.enter) == [.command("ai ask \"ordinary follow-up\"")])
+        #expect(terminal.handle(.enter) == [.command("ai work start \"ordinary follow-up\"")])
     }
 }
 
 @Test func chatCommandGuardPreservesArgumentsAndPathPrompts() {
-    for (input, expected) in [("/approve proposal-1", "ai approve proposal-1"), ("/task inspect worker", "ai task new \"inspect worker\""), ("/tmp/example.swift needs review", "ai ask \"/tmp/example.swift needs review\""), ("/helper example", "ai ask \"/helper example\"")] {
+    for (input, expected) in [("/approve proposal-1", "ai approve proposal-1"), ("/task inspect worker", "ai task new \"inspect worker\""), ("/tmp/example.swift needs review", "ai work start \"/tmp/example.swift needs review\""), ("/helper example", "ai work start \"/helper example\"")] {
         var terminal = helpChat()
         _ = terminal.handle(.text(input))
         #expect(terminal.handle(.enter) == [.command(expected)])

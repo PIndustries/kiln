@@ -1,5 +1,8 @@
 # Kiln AI — native provider integration
 
+Background chat agents have [owned ordered event history](agent-events.md),
+including context acknowledgements and restart reconciliation without replay.
+
 Kiln AI is a Swift library and SSH chat interface with six native provider adapters: Erebine, OpenAI, Anthropic Claude, xAI Grok, DeepSeek and local Ollama. Requests use Foundation HTTP directly; hosted API access does not require a provider CLI. The module implements conversation history, a bounded tool loop, local operation proposals, Vault-backed credentials and versioned operator knowledge.
 
 For investigations that need a restart and proof of recovery, use the [durable recovery workflow](ai-recovery.md). These approvals survive reconnects for the same administrator identity; ordinary conversation proposals remain session-bound.

@@ -173,7 +173,7 @@ struct AnthropicStreamDecoder {
                 answer += text; emit(.answer(text))
             } else if block.type == "tool_use", delta["type"] as? String == "input_json_delta", let fragment = delta["partial_json"] as? String {
                 block.arguments += fragment
-                guard block.arguments.utf8.count <= 4096 else { throw invalid() }
+                guard block.arguments.utf8.count <= ToolInputLimits.argumentBytes(for: block.name) else { throw invalid() }
             } else { throw invalid() }
             blocks[index] = block
         case "content_block_stop":

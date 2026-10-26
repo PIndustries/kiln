@@ -69,7 +69,7 @@ if args.snapshot_dir:
     inputs = {remap(v) for v in inputs}
     read_roots = [remap(v) for v in read_roots]
     builder, launcher = remap(builder), remap(launcher)
-metadata = dict(schemaVersion=1, projectFiles=True, compiler=str(compiler), arguments=arguments, objects=objects,
+metadata = dict(nativeViews=True, htmlTemplates=True, schemaVersion=1, projectFiles=True, compiler=str(compiler), arguments=arguments, objects=objects,
                 readRoots=read_roots, runtimeLibraries=libraries, builder=builder, launcher=launcher,
                 inputDigests={path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in sorted(inputs)})
 for name in ['builder', 'launcher']:

@@ -43,6 +43,8 @@ jobs:
             echo 'Deterministic local fixtures only; no live AI provider credentials.'
             echo 'Hard cgroup enforcement is covered separately by linux-resources.'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify owned dependency policy without network
+        run: python3 scripts/check-dependencies.py
       - name: Unit and policy tests with locked dependencies
         run: KILN_TEST_GROK_SANDBOX=1 swift test --jobs 2 --force-resolved-versions
       - name: Verify real non-root permission denial
@@ -56,6 +58,8 @@ jobs:
         run: python3 scripts/integration.py
       - name: Server-rendered web framework and live-view acceptance
         run: python3 scripts/web-framework-integration.py
+      - name: Native Swift MVC views and HTML template acceptance
+        run: python3 scripts/native-mvc-acceptance.py
       - name: Isolated AI source editing and automatic development preview
         run: |
           python3 scripts/web-sandbox-integration.py
@@ -78,8 +82,12 @@ jobs:
           "$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/vault-integration.py
       - name: Offline AI streaming, approvals and reconnect through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/offline-ai-terminal-integration.py'
+      - name: Swift IDE compiler and terminal acceptance
+        run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/swift-ide-acceptance.py'
       - name: Editor draft recovery after failed compilation
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/editor-draft-acceptance.py'
+      - name: Side-by-side code and AI context through OpenSSH
+        run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/code-chat-acceptance.py'
       - name: Task sidebar refresh during Erebine retry through OpenSSH
         run: '"$RUNNER_TEMP/kiln-terminal-tests/bin/python" scripts/ssh-retry-acceptance.py'
       - name: Explicit node adoption and durable peer operations

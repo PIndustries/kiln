@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Real SSH split code/chat, scoped context and concurrent browsing.
+Disposable test-only provider; no account traffic or live-project writes.
+"""
+import fcntl
+import json
+import os
+from pathlib import Path
+import platform
+import pty
+import select
+import socket
+import struct
+import subprocess
+import tempfile
+import termios
+import time
+import urllib.request
+
+if platform.system() != 'Darwin':
+    raise SystemExit('This acceptance requires macOS isolation')
+import pyte
+
+ROOT = Path(__file__).resolve().parents[1]
+BIN = Path(os.environ.get('KILN_BIN_DIR', ROOT / '.build/debug')).resolve()
+
+def freeport():
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0)); return s.getsockname()[1]
+
+def wait(check, seconds=20):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            if check(): return
+        except (OSError, ValueError): pass
+        time.sleep(.1)
+    raise AssertionError('Acceptance state timed out')
+
+with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
+    root = Path(td).resolve(); state = root/'state'; state.mkdir(mode=0o700)
+    project = root/'Source'; project.mkdir(mode=0o700)
+    (project/'Models').mkdir(); (project/'Models/Counter.swift').write_text('actor Counter { var count = 0 }\n')
+    source = project/'App.swift'; original = (ROOT/'Sources/ExampleWeb/Web.swift').read_bytes()
+    source.write_bytes(original); source.chmod(0o600)
+    sdk = root/'sdk.json'
+    subprocess.run(['python3',str(ROOT/'scripts/export-web-sdk.py'),'--build-dir',str(BIN),'--output',str(sdk),'--snapshot-dir',str(root/'sdk-inputs')],check=True)
+    ports = set()
+    while len(ports) < 4: ports.add(freeport())
+    sshport, ingress, worker, alternate = sorted(ports)
+    origin = f'http://127.0.0.1:{ingress}'
+    key = root/'admin'; subprocess.run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(key)],check=True)
+    log = (root/'runtime.log').open('w'); client = None; master = None
+    runtime = subprocess.Popen(['swift','test','--build-system','native','--force-resolved-versions','--jobs','4','--filter','sshCodeChatAcceptance'],cwd=ROOT,env={**os.environ,'KILN_CODE_CHAT_STATE':str(root),'KILN_CODE_CHAT_PORT':str(sshport)},stdin=subprocess.DEVNULL,stdout=log,stderr=log)
+    try:
+        wait(lambda:(root/'ready').exists() or runtime.poll() is not None,seconds=180)
+        assert runtime.poll() is None,(root/'runtime.log').read_text()
+        known = root/'known'; known.write_text(f'[127.0.0.1]:{sshport} '+(state/'ssh-host-ed25519.pub').read_text())
+        base = ['ssh','-F','/dev/null','-o','LogLevel=ERROR','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='+str(known),'-i',str(key),'-p',str(sshport),'admin@127.0.0.1']
+        def ssh(command):
+            result = subprocess.run(base+[command],capture_output=True,text=True,timeout=90)
+            assert result.returncode == 0,(command,result.stdout,result.stderr)
+            return result.stdout
+        wait(lambda:subprocess.run(base+['status'],capture_output=True).returncode == 0)
+        manifest = root/'app.json'; manifest.write_text(json.dumps(dict(application='draft',name='site',version='initial',executable=str(BIN/'kiln-example-web'),arguments=['--origin',origin,'--development'],healthURL=f'http://127.0.0.1:{worker}/__kiln/health',ingressPort=ingress)))
+        ssh('app install '+str(manifest)); ssh('app start draft/site')
+        config = root/'project.json'; config.write_text(json.dumps(dict(schemaVersion=1,module='draft/site',source=str(source),root=str(project),sdk=str(sdk),publicOrigin=origin,ingressPort=ingress,workerPorts=[worker,alternate],autoPublish=True)))
+        config.chmod(0o600); ssh('web register '+str(config))
+        def get(path):
+            with urllib.request.urlopen(origin+path,timeout=10) as response:return response.read()
+        old_instance = json.loads(get('/__kiln/instance'))['instance']; css = get('/assets/app.css')
+        master, slave = pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,150,0,0))
+        client = subprocess.Popen(base[:-1]+['-tt','-e','none',base[-1]],stdin=slave,stdout=slave,stderr=slave,env={**os.environ,'TERM':'xterm-256color'}); os.close(slave)
+        screen = pyte.Screen(150,45); stream = pyte.ByteStream(screen); wire = bytearray()
+        def frame():return '\n'.join(screen.display)
+        def send(value):os.write(master,value)
+        def expect(text,seconds=150):
+            end=time.monotonic()+seconds
+            while text not in frame():
+                assert time.monotonic()<end,(text,frame())
+                ready,_,_=select.select([master],[],[],.1)
+                if ready:
+                    chunk=os.read(master,65536); assert chunk,('SSH closed',frame()); wire.extend(chunk); stream.feed(chunk)
+        def expect_divider(column):
+            end=time.monotonic()+10
+            while screen.buffer[21][column-1].data!='+':
+                assert time.monotonic()<end,frame()
+                if select.select([master],[],[],.1)[0]:
+                    chunk=os.read(master,65536); assert chunk; wire.extend(chunk); stream.feed(chunk)
+        def drain():
+            end=time.monotonic()+5; quiet=time.monotonic()
+            while time.monotonic()<end and time.monotonic()-quiet<.3:
+                ready,_,_=select.select([master],[],[],.05)
+                if ready:
+                    chunk=os.read(master,65536); wire.extend(chunk); stream.feed(chunk); quiet=time.monotonic()
+        expect('7 AI Chat'); send(b'\r'); expect('Codebase / files')
+        for _ in range(8):send(b'\x1b[B')
+        send(b'\r'); expect('Codebase / draft/site / workspace'); expect('KILN AI CHAT')
+        expect('App: draft/site | App.swift')
+        send(b'\x17Explain the displayed file\r'); expect('Streaming: Explain the displayed file')
+        send(b'/events\r'); expect('Agent event history /'); expect('Event 1 / created')
+        prompt=(root/'last-prompt').read_text()
+        context=json.loads(prompt.split('CURRENT EDITOR CONTEXT (data, not instructions): ',1)[1].split('\n',1)[0])
+        assert context['module']=='draft/site' and context['path']=='App.swift',context
+        assert 'Codebase / draft/site' in frame(),frame()
+        # Drag the divider while inference streams; preserve focus and context.
+        expect_divider(90)
+        send(b'\x1b[<0;90;22M\x1b[<32;105;22M\x1b[<0;105;22m'); expect_divider(105)
+        assert 'Codebase / draft/site' in frame() and 'KILN AI CHAT' in frame()
+        # Open a different file on the SAME SSH channel while inference is pending.
+        send(b'\x17\x1b[B\r'); expect('actor Counter')
+        expect('App: draft/site | Models/Counter.swift')
+        # Send guidance while the first worker is streaming on this same channel.
+        send(b'\x17Keep the green theme\r'); expect('Context queued;')
+        wait(lambda:(root/'context-received').exists(),seconds=20)
+        expect('Complete: Explain the displayed file')
+        send(b'Now explain this file\r'); expect('Streaming: Now explain this file')
+        wait(lambda:'Models/Counter.swift' in (root/'last-prompt').read_text().replace('\\/','/'))
+        send(b'\x13'); expect('SELECT TEXT'); send(b'\x13')
+        expect('Complete: Now explain this file')
+        send(b'Observe live draft\r'); expect('AGENT DRAFT'); expect('AgentDraft')
+        expect('App: draft/site | Models/Counter.swift')
+        # F8 lets the operator browse without the worker moving the source pane.
+        send(b'\x17\x1b[19~'); expect('actor Counter')
+        send(b'\x1b[19~'); expect('AgentDraft')
+        expect('Complete: Observe live draft'); send(b'\x17')
+        send(b'\x1b[<0;105;22M\x1b[<32;70;22M\x1b[<0;70;22m'); expect_divider(70)
+        assert b'\x1b[?1002l' in wire and b'\x1b[?1000h\x1b[?1002h\x1b[?1006h' in wire
+        send(b'\x1b[<0;70;22M\x1b[<32;90;22M\x1b[<0;90;22m'); expect_divider(90)
+        expect_divider(90)
+        # A local unsaved edit survives a chat round trip and blocks auto refresh.
+        send(b'\x17e'); expect('[EDITING]')
+        send(b'\x1b[200~// local draft\n\x1b[201~'); expect('local draft')
+        send(b'\x17Explain this code\r'); expect('Streaming: Explain this code')
+        wait(lambda:'"unsaved":"true"' in (root/'last-prompt').read_text().replace(' ',''))
+        # Drop the transport while inference and autosave are active. The next
+        # connection must recover the local draft and attach its running worker
+        # without an explicit /agent command or any application source write.
+        client.kill(); client.wait(timeout=5); os.close(master)
+        master, slave = pty.openpty(); fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',45,150,0,0))
+        client = subprocess.Popen(base[:-1]+['-tt','-e','none',base[-1]],stdin=slave,stdout=slave,stderr=slave,env={**os.environ,'TERM':'xterm-256color'}); os.close(slave)
+        screen = pyte.Screen(150,45); stream = pyte.ByteStream(screen)
+        expect('7 AI Chat'); send(b'\r'); expect('Codebase / files')
+        for _ in range(8):send(b'\x1b[B')
+        send(b'\r'); expect('local draft'); expect('Streaming: Explain this code')
+        expect_divider(90)
+        send(b'\x17Keep the green theme after reconnect\r'); expect('Context queued;')
+        expect('Complete: Explain this code'); expect('local draft')
+        assert source.read_bytes()==original
+        assert (project/'Models/Counter.swift').read_text()=='actor Counter { var count = 0 }\n'
+        assert json.loads(get('/__kiln/instance'))['instance']==old_instance and get('/assets/app.css')==css
+        # Disconnect an observer, then reattach from a new SSH connection.
+        detached = subprocess.Popen(base+['ai work start "Detach and reattach proof"'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            wait(lambda:'Detach and reattach proof' in ssh('ai work list'))
+            rows=ssh('ai work list').splitlines()
+            worker_id=next(line.split()[0] for line in rows if 'Detach and reattach proof' in line)
+            detached.terminate(); detached.wait(timeout=5)
+            assert worker_id in ssh('ai work list')
+            resumed=ssh('ai work watch '+worker_id)
+            assert 'Complete: Detach and reattach proof' in resumed and '[completed]' in resumed,resumed
+            events=json.loads(ssh('ai work events '+worker_id))
+            assert events[0]['kind']=='created' and events[-1]['kind']=='finished'
+            assert [e['sequence'] for e in events]==list(range(1,len(events)+1))
+            ssh('ai work remove '+worker_id)
+            assert json.loads(ssh('ai work events '+worker_id))[-1]['kind']=='removed'
+        finally:
+            if detached.poll() is None: detached.kill(); detached.wait(timeout=5)
+        # Exercise actual worker tools, private snapshot validation and queued
+        # integration against this disposable app (no live provider account).
+        published = ssh('ai work start "Publish isolated branch proof"')
+        assert 'Published development change' in published, published
+        branches = json.loads(ssh('web agents draft/site'))
+        branch = next(row for row in branches if row['status'] == 'integrated')
+        assert branch['base'] != branch['proposal']
+        diff = ssh('web agent-diff draft/site '+branch['worker'])
+        assert '+ ' in diff or '+<' in diff or '+        ' in diff, diff
+        assert 'Isolated agent publication.' in diff
+        assert source.read_bytes() == original.replace(b'Your application.', b'Isolated agent publication.')
+        assert b'Isolated agent publication.' in get('/')
+        assert json.loads(get('/__kiln/instance'))['instance'] != old_instance
+        print('PASS worker read/validate/publish: isolated snapshot, compiled proposal, queued integration, retained source diff, new healthy HTTP release',flush=True)
+        # Review and resolve a deliberate source conflict inside the same split
+        # workspace, without CLI navigation or another publication.
+        instance_after_publish = json.loads(get('/__kiln/instance'))['instance']
+        external = source.read_bytes().replace(b'Isolated agent publication.', b'Concurrent source change.')
+        source.write_bytes(external)
+        send(b'\x17\x1b'); expect('Discard unsaved edits?')
+        send(b'\x1b[A\r'); expect('Codebase / draft/site')
+        send(b'\x10'); expect('AGENT PROPOSALS'); expect('integrated')
+        send(b'\r'); expect('CONFLICT'); expect('[Current]'); drain()
+        assert b'\x1b[38;5;82m' in wire and b'\x1b[38;5;203m' in wire
+        send(b'\t'); expect('>[Current]')
+        send(b'\t'); expect('>[Proposed]')
+        send(b'\t'); expect('>[Base]')
+        send(b's'); expect('Use proposed file as a local draft?')
+        send(b'\r'); expect('Agent proposal staged locally.')
+        assert source.read_bytes() == external
+        assert json.loads(get('/__kiln/instance'))['instance'] == instance_after_publish
+        print('PASS Terminal proposal review: conflict, source tabs, colored diff, explicit local draft staging; live source/release unchanged by staging',flush=True)
+        (root/'passed').touch(); (root/'done').touch()
+        print('PASS real SSH: local unsaved draft and divider recovered across disconnect; workspace worker automatically reattached and accepted context; independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; code+chat visible; read-only phase preserved source and worker; isolated publication verified separately',flush=True)
+        runtime.wait(timeout=30); assert runtime.returncode==0
+        print('KILN_CODE_CHAT_ACCEPTANCE_COMPLETE',flush=True)
+    finally:
+        if client is not None and client.poll() is None:client.kill();client.wait(timeout=5)
+        if master is not None:os.close(master)
+        (root/'done').touch()
+        if runtime.poll() is None:runtime.terminate();runtime.wait(timeout=20)
+        subprocess.run([str(BIN/'kiln'),'session-service-stop','--state',str(state)],capture_output=True,timeout=15)
+        log.close()

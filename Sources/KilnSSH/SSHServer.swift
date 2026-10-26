@@ -97,6 +97,11 @@ private final class ShellHandler: ChannelInboundHandler {
     var pty = false
     var busy = false
     var commandTask: Task<Void, Never>?
+    var workspaceTask: Task<Void, Never>?
+    var completionDelay: Scheduled<Void>?
+    var workspaceSaveDelay: Scheduled<Void>?
+    var workspaceSaveTask: Task<Void,Never>?
+    var recoveryTerminal: KilnTerminal?
     var pending: [String] = []
     var lastCR = false
     var terminal: KilnTerminal?
@@ -128,7 +133,8 @@ private final class ShellHandler: ChannelInboundHandler {
         channel.setOption(ChannelOptions.allowRemoteHalfClosure, value: true).whenFailure { _ in channel.close(promise: nil) }
     }
     func channelInactive(context: ChannelHandlerContext) {
-        commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
+        workspaceSaveDelay?.cancel(); flushWorkspace(channel:context.channel)
+        completionDelay?.cancel(); workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         secretValue = ""; secretName = nil
         refreshTask?.cancel(); escapeTask?.cancel(); remoteTask?.cancel()
         releasePanes()
@@ -257,7 +263,11 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func apply(_ key: TerminalKey, channel: Channel) {
         guard commands.isAuthorized() else { channel.close(promise: nil); return }
-        if key == .interrupt, busy, secretName == nil, !secretSaving { commandTask?.cancel(); return }
+        if key == .interrupt, busy, secretName == nil, !secretSaving {
+            if let command = terminal?.workerCancelCommand { controlWorker(command,channel:channel) }
+            else { commandTask?.cancel() }
+            return
+        }
         if secretSaving { return }
         if let name = secretName {
             switch key {
@@ -292,16 +302,73 @@ private final class ShellHandler: ChannelInboundHandler {
         for effect in terminal?.handle(key) ?? [] {
             switch effect {
             case .command(let command): submit(command, channel: channel)
+            case .workspaceRead(let command): readWorkspace(command, channel: channel)
+            case .workspaceSave(let command): saveWorkspace(command,channel:channel)
+            case .workerControl(let command): controlWorker(command,channel:channel)
             case .disconnect: close(channel: channel, status: 0)
             case .selectText(let enabled):
                 selectingText = false; lastFrame = ""; paint(channel: channel)
                 selectingText = enabled
-                output(enabled ? "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l" : "\u{1b}[?1000h\u{1b}[?1006h", channel: channel)
+                output(enabled ? "\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l" : "\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h", channel: channel)
+            }
+        }
+        scheduleCompletion(channel:channel)
+        scheduleWorkspaceSave(channel:channel)
+    }
+    func scheduleWorkspaceSave(channel: Channel) {
+        workspaceSaveDelay?.cancel()
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
+        workspaceSaveDelay = channel.eventLoop.scheduleTask(in: .milliseconds(500)) { bound.value.flushWorkspace(channel:channel) }
+    }
+    func flushWorkspace(channel: Channel) {
+        guard workspaceSaveTask == nil else { return }
+        let effect = terminal != nil ? terminal?.checkpointCodeWorkspace() : recoveryTerminal?.checkpointCodeWorkspace()
+        if case .workspaceSave(let command) = effect { saveWorkspace(command,channel:channel) }
+        else if !channel.isActive { recoveryTerminal = nil }
+    }
+    func saveWorkspace(_ command: String, channel: Channel) {
+        guard workspaceSaveTask == nil else { return }
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), commands = commands, sessionID = owner.uuidString
+        workspaceSaveTask = Task {
+            // Recovery saves may finish after SSH disconnects. They only write
+            // owner-scoped editor state, never application source.
+            let result = await commands.execute(command,sessionID:sessionID)
+            channel.eventLoop.execute {
+                let shell = bound.value; shell.workspaceSaveTask = nil
+                shell.terminal?.finishWorkspaceSave(text:result.text,status:result.status)
+                shell.recoveryTerminal?.finishWorkspaceSave(text:result.text,status:result.status)
+                if !channel.isActive { shell.flushWorkspace(channel:channel) }
+                if channel.isActive { shell.paint(channel:channel); shell.scheduleWorkspaceSave(channel:channel) }
+            }
+        }
+    }
+    func controlWorker(_ command: String, channel: Channel) {
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop), commands = commands, sessionID = owner.uuidString
+        Task {
+            let result = await commands.execute(command,sessionID:sessionID)
+            channel.eventLoop.execute {
+                guard channel.isActive else { return }
+                bound.value.terminal?.finishWorkerControl(text:result.text,status:result.status)
+                bound.value.paint(channel:channel)
+            }
+        }
+    }
+    func scheduleCompletion(channel: Channel) {
+        completionDelay?.cancel()
+        let bound = NIOLoopBound(self,eventLoop:channel.eventLoop)
+        completionDelay = channel.eventLoop.scheduleTask(in: .milliseconds(250)) {
+            let shell = bound.value
+            guard channel.isActive, !shell.selectingText, shell.workspaceTask == nil else { return }
+            if case .workspaceRead(let command) = shell.terminal?.completeCodeAfterTyping() {
+                shell.readWorkspace(command,channel:channel)
+            } else if case .workspaceRead(let command) = shell.terminal?.diagnoseCodeAfterTyping() {
+                shell.readWorkspace(command,channel:channel)
             }
         }
     }
     func close(channel: Channel, status: Int) {
-        commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
+        workspaceSaveDelay?.cancel(); flushWorkspace(channel:channel); recoveryTerminal = terminal
+        completionDelay?.cancel(); workspaceTask?.cancel(); commandTask?.cancel(); progressPaint?.cancel(); chatAnimation?.cancel()
         remoteTask?.cancel(); releasePanes()
         refreshTask?.cancel(); escapeTask?.cancel()
         if terminal != nil { output(KilnTerminal.leaveScreen, channel: channel); terminal = nil }
@@ -346,6 +413,39 @@ private final class ShellHandler: ChannelInboundHandler {
                 input.append(byte)
                 if pty { output(String(decoding: [byte], as: UTF8.self), channel: context.channel) }
             default: break
+            }
+        }
+    }
+    private var deferredWorkspaceRead: String?
+    func readWorkspace(_ line: String, channel: Channel) {
+        // A separate lane is deliberately restricted to registered source reads.
+        guard let parts = try? KilnCommands.tokenize(line), workspaceReadAllowed(parts) else { return }
+        // A bounded latest-view slot keeps a file navigation request while a
+        // language read is active. The UI blocks additional file opens while waiting.
+        guard workspaceTask == nil else { deferredWorkspaceRead = line; return }
+        let targetModule = parts[2]
+        let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
+        let commands = self.commands, sessionID = owner.uuidString
+        workspaceTask = Task {
+            let result = await commands.execute(line, sessionID: sessionID)
+            channel.eventLoop.execute {
+                let shell = bound.value
+                shell.workspaceTask = nil
+                guard channel.isActive else { return }
+                if (try? commands.authorizeAdmin()) != nil {
+                    shell.terminal?.finishWorkspace(text: result.text, status: result.status, module:targetModule)
+                } else {
+                    shell.terminal?.updateAIWorkspace(AIWorkspaceSnapshot(error: "Identity revoked or unauthorized"))
+                }
+                if let next = shell.deferredWorkspaceRead {
+                    shell.deferredWorkspaceRead = nil; shell.readWorkspace(next,channel:channel)
+                } else if case .workspaceRead(let next) = shell.terminal?.takeDeferredWorkspaceRead() {
+                    shell.readWorkspace(next,channel:channel)
+                }
+                if case .command(let command) = shell.terminal?.takeWorkspaceAttachment(), !shell.busy { shell.submit(command,channel:channel) }
+                shell.paint(channel: channel)
+                shell.scheduleCompletion(channel:channel)
+                shell.scheduleWorkspaceSave(channel:channel)
             }
         }
     }
@@ -411,6 +511,7 @@ private final class ShellHandler: ChannelInboundHandler {
                     shell.terminal?.update(modules)
                     if let theme = result.terminalTheme { shell.terminal?.applyTheme(theme) }
                     shell.terminal?.finish(text: result.text, status: result.status)
+                    if case .workspaceRead(let read) = shell.terminal?.refreshCodeWorkspace() { shell.readWorkspace(read, channel: channel) }
                     if let conversation = result.conversation { shell.terminal?.restoreConversation(conversation) }
                     if result.disconnect { shell.close(channel: channel, status: result.status) }
                     else { shell.paint(channel: channel) }

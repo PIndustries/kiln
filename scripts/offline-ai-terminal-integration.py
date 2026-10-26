@@ -181,6 +181,15 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
                 pump()
                 assert time.monotonic() < end, (text, frame())
 
+        def ready(seconds=15):
+            # Provider readiness is independent of an active background worker.
+            # Wait for the controller's activity row before the next UI action.
+            end = time.monotonic() + seconds
+            pump()
+            while "Ready" not in screen.display[-5]:
+                pump()
+                assert time.monotonic() < end, ("Controller not ready", frame())
+
         def send(data):
             os.write(master, data)
             pump()
@@ -203,18 +212,18 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             count = Fixture.request_count
         send(b"/help\r")
         expect("Help makes no provider request.")
-        expect("[ready]")
+        ready()
         send(b"/provider\r")
         expect("Provider: ollama / profile offline")
-        expect("[ready]")
+        ready()
         send(b"/providers\r")
         expect("Switch: /provider NAME --new-context")
-        expect("[ready]")
+        ready()
         selected_before_check = (state / "ai.json").read_bytes()
         send(b"/check\r")
         expect("Local setup checks passed.")
         expect("No credentials were renewed")
-        expect("[ready]")
+        ready()
         assert (state / "ai.json").read_bytes() == selected_before_check
         for shortcut in [b"/task", b"/watch", b"/cancel", b"/recover", b"/approve", b"/deny"]:
             send(shortcut + b"\r")
@@ -223,7 +232,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             assert Fixture.request_count == count, "Local chat controls called the provider"
         send(b"/context\r")
         expect("Completed turns: 0")
-        expect("[ready]")
+        ready()
         with Fixture.requests_lock:
             assert Fixture.request_count == count, "Context command called the provider"
         send(b"unsent AI draft")
@@ -262,16 +271,16 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         send(b"\x13")
         expect("frame-08")
         send(b"\x03")
-        expect("[ready]")
+        ready()
         send(b"fixture follow-up\r")
         expect("Fixture follow-up completed.")
-        expect("[ready]")
+        ready()
         print("PASS offline SSH: incremental frames, frozen selection during streaming, cancellation and successful follow-up", flush=True)
 
         before = pid()
         send(b"fixture restart\r")
         expect("APPROVAL / restart")
-        expect("[ready]")
+        ready()
         click("APPROVAL / restart")
         expect("REVIEW OPERATION")
         click("Deny")
@@ -280,45 +289,46 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         assert pid() == before
         send(b"fixture restart again\r")
         expect("APPROVAL / restart")
-        expect("[ready]")
-        send(b"\t\r")
+        ready()
+        send(b"\t\x1b[H\r")
         expect("REVIEW OPERATION")
         send(b"\r")
         expect("0 approvals")
-        expect("[ready]")
+        ready()
         assert pid() != before
         receipts = [json.loads(path.read_text()) for path in (state / "operations").glob("*.json")]
         assert len(receipts) == 1 and receipts[0]["operation"] == "restart" and receipts[0]["state"] == "succeeded", receipts
         assert receipts[0]["module"] == "fixture/worker"
         print("PASS offline SSH: mouse denial leaves PID unchanged; keyboard approval restarts once and consumes proposal", flush=True)
 
-        # A foreground proposal must not become actionable in a new SSH session.
+        # A session-bound proposal must not become actionable in a new SSH session.
+        # Retained background tasks remain visible independently of chat history.
         send(b"fixture restart pending\r")
         expect("APPROVAL / restart")
-        expect("[ready]")
+        ready()
         send(b"fixture slow\r")
         expect("frame-02")
         client.kill()
         client.wait(timeout=5)
         connect()
-        expect("0 approvals / 0 tasks")
+        expect("0 approvals /")
         assert "frame-02" not in frame()
         assert len(list((state / "operations").glob("*.json"))) == 1, "Reconnect repeated an operation"
         send(b"fixture inspect\r")
         expect("Fixture tool result received.")
-        expect("[ready]")
+        ready()
         metrics = command("ai metrics")
         assert "ollama: usage supplied for" in metrics and "total=unavailable" in metrics, metrics
-        print("PASS offline SSH: disconnect during foreground stream; reconnect has no stale proposal/history; fresh read tool and usage report work", flush=True)
+        print("PASS offline SSH: disconnect during a stream; reconnect retains task inventory without reviving session proposals or chat history; fresh read tool and usage report work", flush=True)
         # Query metadata and cross the history limit in one real SSH connection.
         # Distinct replies prevent an old answer from satisfying a later wait.
         send(b"/reset\r")
         expect("AI conversation and pending proposals cleared")
-        expect("[ready]")
+        ready()
         for index in range(22):
             send(f"fixture context turn {index}\r".encode())
             expect(f"Context turn {index} completed.")
-            expect("[ready]")
+            ready()
         expect("Context trimmed:")
         with Fixture.requests_lock:
             users = [m["content"] for m in Fixture.last_messages if m["role"] == "user"]
@@ -328,7 +338,7 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         expect("Completed turns: 21")
         expect("42 messages / 40 limit")
         expect("oldest complete turns will be omitted")
-        expect("[ready]")
+        ready()
         with Fixture.requests_lock:
             assert Fixture.request_count == count, "Context command called the provider"
         print("PASS offline SSH: context metadata makes no provider request; 22 turns retain recent context and show trimming", flush=True)
@@ -342,11 +352,11 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         with Fixture.requests_lock:
             assert Fixture.last_model == "fixture-model", "In-flight wire model changed"
         expect("frame-39")
-        expect("[ready]")
+        ready()
         expect("KILN / Ollama / offline / fixture-model")
         send(b"fixture attributed follow-up\r")
         expect("Alternate source answer complete.")
-        expect("[ready]")
+        ready()
         expect("KILN / Ollama / alternate / fixture-other")
         expect("KILN / Ollama / offline / fixture-model")
         with Fixture.requests_lock:
@@ -359,29 +369,29 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         expect("Model: fixture-other")
         send(b"/provider offline --new-context\r")
         expect("Selected offline.")
-        expect("[ready]")
+        ready()
         expect("Model: fixture-model")
         send(b"/context\r")
         expect("Completed turns: 0")
-        expect("[ready]")
+        ready()
         with Fixture.requests_lock:
             assert Fixture.request_count == count, "Profile selection called the provider"
         send(b"fixture context turn 999\r")
         expect("Context turn 999 completed.")
-        expect("[ready]")
+        ready()
         with Fixture.requests_lock:
             assert Fixture.last_model == "fixture-model"
             assert not any(m.get("content") == "fixture attributed follow-up" for m in Fixture.last_messages)
         print("PASS offline SSH: provider inspection and explicit chat selection make no model request; next turn uses a fresh context and selected model", flush=True)
         send(b"/conversation new durable-acceptance\r")
         expect("Saved: durable-acceptance")
-        expect("[ready]")
+        ready()
         send(b"\x14")  # Expand retained thinking for this explicit transcript test.
         send(b"fixture saved remember\r")
         expect("Visible investigation row 00")
         expect("Visible investigation row 11")
         expect("Saved checkpoint token MARBLE.")
-        expect("[ready]")
+        ready()
         saved = json.loads(command("ai conversation show durable-acceptance"))
         cursor = saved["latestCursor"]
         assert saved["schemaVersion"] == 1 and not saved["gap"]
@@ -398,16 +408,16 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
         expect("Saved: durable-acceptance")
         expect("Visible investigation row 00")
         expect("Saved checkpoint token MARBLE.")
-        expect("[ready]")
+        ready()
         with Fixture.requests_lock:
             assert Fixture.request_count == count, "Restoring transcript called provider"
         send(b"fixture saved continue\r")
-        expect("Saved context resumed."); expect("[ready]")
+        expect("Saved context resumed."); ready()
         with Fixture.requests_lock:
             assert any(m.get("content") == "fixture saved remember" for m in Fixture.last_messages)
             assert not any("Visible investigation row" in m.get("content", "") or m.get("content") == "fixture context turn 999" for m in Fixture.last_messages)
         send(b"fixture restart saved pending\r")
-        expect("APPROVAL / restart"); expect("[ready]")
+        expect("APPROVAL / restart"); ready()
         saved = json.loads(command("ai conversation show durable-acceptance"))
         import re
         proposal = next(re.search(r"Approve: /approve ([a-zA-Z0-9-]+)", e["text"]).group(1) for e in reversed(saved["events"]) if "Approve: /approve " in e["text"])
@@ -422,14 +432,14 @@ with tempfile.TemporaryDirectory(prefix="kiln-offline-ai-") as directory:
             time.sleep(0.1)
         connect()
         send(b"/conversation use durable-acceptance\r")
-        expect("Saved: durable-acceptance"); expect("[ready]")
-        expect("0 approvals / 0 tasks")
+        expect("Saved: durable-acceptance"); ready()
+        expect("0 approvals /")
         before = pid()
         send(f"/approve {proposal}\r".encode())
-        expect("Unknown proposal"); expect("[ready]")
+        expect("Unknown proposal"); ready()
         assert pid() == before and len(list((state / "operations").glob("*.json"))) == 1
         send(b"fixture saved after restart\r")
-        expect("Saved after cold restart."); expect("[ready]")
+        expect("Saved after cold restart."); ready()
         with Fixture.requests_lock:
             assert any(m.get("content") == "fixture saved continue" for m in Fixture.last_messages)
         events = json.loads(command(f"ai conversation show durable-acceptance {cursor}"))

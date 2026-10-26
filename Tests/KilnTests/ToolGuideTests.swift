@@ -26,7 +26,12 @@ private func guideCall(_ name: String, _ args: [String:String]) throws -> AIMess
 private actor ValidationGuideCounter {
     var validations = 0
     var publishes = 0
-    func validate() -> String { validations += 1; return validations == 1 ? "Validation failed: fix syntax" : "Isolated compile passed; source unchanged" }
+    func validate() throws -> String {
+        validations += 1
+        if validations == 1 { throw AIError.message("Validation failed: fix syntax") }
+        return "Isolated compile passed; source unchanged"
+    }
+    func passedValidation() -> String { validations += 1; return "Isolated compile passed" }
     func publish() -> String { publishes += 1; return "Published controller receipt" }
 }
 @Test func aiCanLearnFrameworkCorrectValidationAndPublishOnceWithoutDelegatingToUser() async throws {
@@ -42,8 +47,59 @@ private actor ValidationGuideCounter {
         #expect(last.content?.contains("Isolated compile passed") == true)
         return try guideCall("update_web_source", ["module":"demo/web","edits":"corrected proposal"])
     }
-    let result = try await ai.ask("Change this site", session: "admin", configuration: AIConfiguration(baseURL: "http://127.0.0.1:11434", model: "fixture", secret: "", provider: .ollama), key: "", modules: [ModuleSnapshot(application: "demo", name: "web", version: "1", state: "running", pid: 42)], context: "", knowledge: nil, webChange: { _, _ in await count.publish() }, webValidation: { _, _ in await count.validate() }) { _, _ in "" }
+    let result = try await ai.ask("Change this site", session: "admin", configuration: AIConfiguration(baseURL: "http://127.0.0.1:11434", model: "fixture", secret: "", provider: .ollama), key: "", modules: [ModuleSnapshot(application: "demo", name: "web", version: "1", state: "running", pid: 42)], context: "", knowledge: nil, webChange: { _, _ in await count.publish() }, webValidation: { _, _ in try await count.validate() }) { _, _ in "" }
     #expect(result == "Published controller receipt")
     #expect(await count.validations == 2)
+    #expect(await count.publishes == 1)
+}
+
+@Test func changedPublicationProposalMustPassItsOwnValidationBeforeAnyWrite() async throws {
+    let count = ValidationGuideCounter()
+    let ai = KilnAssistant { _,_,messages,_ in
+        let turns = messages.filter { $0.role == "tool" }.count
+        switch turns {
+        case 0: return try guideCall("validate_web_source",["module":"demo/web","edits":"first proposal"])
+        case 1: return try guideCall("update_web_source",["module":"demo/web","edits":"changed proposal"])
+        case 2:
+            #expect(messages.last?.content?.contains("No write was attempted") == true)
+            return try guideCall("validate_web_source",["module":"demo/web","edits":"changed proposal"])
+        default: return try guideCall("update_web_source",["module":"demo/web","edits":"changed proposal"])
+        }
+    }
+    let result = try await ai.ask("Refactor",session:"validate-exact",configuration:AIConfiguration(baseURL:"http://127.0.0.1:11434",model:"fixture",secret:"",provider:.ollama),key:"",modules:[ModuleSnapshot(application:"demo",name:"web",version:"1",state:"running",pid:42)],context:"",knowledge:nil,webChange:{ _,edits in
+        #expect(edits == "changed proposal")
+        #expect(await count.validations == 2)
+        return await count.publish()
+    },webValidation:{ _,_ in
+        await count.passedValidation()
+    }) { _,_ in "" }
+    #expect(result == "Published controller receipt")
+    #expect(await count.publishes == 1)
+}
+
+@Test func failedValidationCannotAuthorizePublication() async throws {
+    let count = ValidationGuideCounter()
+    let ai = KilnAssistant { _,_,messages,_ in
+        let turns = messages.filter { $0.role == "tool" }.count
+        if turns == 0 { return try guideCall("validate_web_source",["module":"demo/web","edits":"broken"] ) }
+        if turns == 1 { return try guideCall("update_web_source",["module":"demo/web","edits":"broken"] ) }
+        #expect(messages.last?.content?.contains("No write was attempted") == true)
+        return AIMessage(role:"assistant",content:"No publication")
+    }
+    _ = try await ai.ask("Refactor",session:"failed-validation",configuration:AIConfiguration(baseURL:"http://127.0.0.1:11434",model:"fixture",secret:"",provider:.ollama),key:"",modules:[ModuleSnapshot(application:"demo",name:"web",version:"1",state:"running",pid:42)],context:"",knowledge:nil,webChange:{ _,_ in
+        Issue.record("Failed validation authorized a write"); return await count.publish()
+    },webValidation:{ _,_ in try await count.validate() }) { _,_ in "" }
+    #expect(await count.publishes == 0)
+}
+
+@Test func validationAllowsJSONFormattingChangesWithoutChangingSourceStrings() async throws {
+    let count = ValidationGuideCounter()
+    let ai = KilnAssistant { _,_,messages,_ in
+        let validated = messages.contains { $0.role == "tool" }
+        return try guideCall(validated ? "update_web_source" : "validate_web_source",["module":"demo/web","edits":validated ? #"[ { "after": "new", "before": "old" } ]"# : #"[{"before":"old","after":"new"}]"#])
+    }
+    let result = try await ai.ask("Edit",session:"formatting",configuration:AIConfiguration(baseURL:"http://127.0.0.1:11434",model:"fixture",secret:"",provider:.ollama),key:"",modules:[ModuleSnapshot(application:"demo",name:"web",version:"1",state:"running",pid:42)],context:"",knowledge:nil,webChange:{ _,_ in await count.publish() },webValidation:{ _,_ in await count.passedValidation() }) { _,_ in "" }
+    #expect(result == "Published controller receipt")
+    #expect(await count.validations == 1)
     #expect(await count.publishes == 1)
 }

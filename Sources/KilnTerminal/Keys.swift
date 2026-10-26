@@ -1,8 +1,11 @@
 import Foundation
 
 public enum TerminalKey: Equatable {
+    case agentReview
+    case followAgent
+    case references, rename, diagnostics
     case text(String), up, down, left, right, home, end, delete, backspace, enter, escape, tab
-    case selectText, toggleThinking, pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
+    case selectText, toggleThinking, focusWorkspace, complete, definition, build, run, wrap, vim, redo, panLeft, panRight, pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
     case paste(String)
     case mouse(button: Int, column: Int, row: Int, released: Bool)
 }
@@ -59,6 +62,17 @@ public struct TerminalKeys {
                     case "[H", "OH", "[1~", "[7~": .home
                     case "[F", "OF", "[4~", "[8~": .end
                     case "[3~": .delete
+                    case "[15~": .run
+                    case "[17~": .wrap
+                    case "[18~": .vim
+                    case "[19~": .followAgent
+                    case "[20~": .references
+                    case "[21~": .rename
+                    case "[14~": .diagnostics
+                    case "[1;2D": .panLeft
+                    case "[1;2C": .panRight
+                    case "[23~": .build
+                    case "[24~": .definition
                     case "[5~": .pageUp
                     case "[6~": .pageDown
                     default: nil
@@ -73,8 +87,12 @@ public struct TerminalKeys {
             if byte == 10 && lastCR { lastCR = false; continue }
             lastCR = byte == 13
             switch byte {
+            case 0: keys.append(.complete)
+            case 16: keys.append(.agentReview)
+            case 18: keys.append(.redo)
             case 19: keys.append(.selectText)
             case 20: keys.append(.toggleThinking)
+            case 23: keys.append(.focusWorkspace)
             case 10,13: keys.append(.enter)
             case 127,8: keys.append(.backspace)
             case 9: keys.append(.tab)
@@ -93,5 +111,18 @@ public struct TerminalKeys {
             }
         }
         return keys
+    }
+}
+
+extension TerminalKey {
+    var swiftLanguageAction: String? {
+        switch self {
+        case .build: "build"
+        case .diagnostics: "diagnostics"
+        case .definition: "definition"
+        case .references: "references"
+        case .complete: "complete"
+        default: nil
+        }
     }
 }

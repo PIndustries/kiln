@@ -170,3 +170,55 @@ private actor WorkerGate {
     ui.finish(text: "**First**\nSecond", status: 0)
     #expect(ui.render().contains("[ready]"))
 }
+
+@Test func erebineLetsTheServedModelDetermineItsAvailableResponseBudget() throws {
+    let config = AIConfiguration(baseURL:"https://example.com/v1",model:"fixture",secret:"reference")
+    for streaming in [true,false] {
+        let request = try ErebineClient.request(configuration:config,key:"fixture",messages:[AIMessage(role:"user",content:"Explain")],tools:[],streaming:streaming)
+        let bytes = try #require(request.httpBody)
+        let object = try JSONSerialization.jsonObject(with:bytes)
+        let body = try #require(object as? [String:Any])
+        #expect(body["max_completion_tokens"] == nil)
+        #expect(body["max_tokens"] == nil)
+        #expect(body["reasoning"] == nil)
+        #expect(body["store"] as? Bool == false)
+        #expect(body["stream"] as? Bool == streaming)
+        #expect(body["parallel_tool_calls"] as? Bool == streaming)
+        #expect(request.value(forHTTPHeaderField:"X-Erebine-Augment-Max-Output-Tokens-Clamp") == nil)
+        #expect(body["reasoning_effort"] == nil) // preserve provider/model reasoning defaults
+    }
+}
+@Test func largerReasoningStreamStillRequiresACompleteBoundedToolCall() throws {
+    var decoder = ErebineStreamDecoder()
+    func event(_ choice: [String:Any]) throws -> Data {
+        Data("data: ".utf8) + (try JSONSerialization.data(withJSONObject:["choices":[choice]])) + Data("\n\n".utf8)
+    }
+    try decoder.feed(event(["delta":["reasoning_content":String(repeating:"reasoning ",count:8000)]])) { _ in }
+    try decoder.feed(event(["delta":["tool_calls":[["index":0,"id":"complete","function":["name":"system_status","arguments":"{}"]]]],"finish_reason":"tool_calls"])) { _ in }
+    try decoder.feed(Data("data: [DONE]\n\n".utf8)) { _ in }
+    #expect(try decoder.message().tool_calls?.first?.function.name == "system_status")
+    #expect(try decoder.message().reasoning_content?.utf8.count == 80000)
+    var truncated = ErebineStreamDecoder()
+    do {
+        try truncated.feed(event(["delta":[:],"finish_reason":"length"])) { _ in }
+        Issue.record("Truncated generation accepted")
+    } catch { #expect(String(describing:error).contains("response token limit")) }
+    #expect(throws:(any Error).self) { try truncated.message() }
+    var bounded = ErebineStreamDecoder()
+    #expect(throws:(any Error).self) {
+        try bounded.feed(event(["delta":["reasoning_content":String(repeating:"x",count:ErebineClient.messageByteLimit+1)]])) { _ in }
+    }
+}
+
+@Test func streamedToolInputGuardsDistinguishSourceEditsFromSmallControlTools() throws {
+    func message(name: String, count: Int) throws -> AIMessage {
+        var decoder = ErebineStreamDecoder()
+        let args = "{\"value\":\""+String(repeating:"x",count:count)+"\"}"
+        let object: [String:Any] = ["choices":[["delta":["tool_calls":[["index":0,"id":"fixture","function":["name":name,"arguments":args]]]],"finish_reason":"tool_calls"]]]
+        try decoder.feed(Data("data: ".utf8)+(try JSONSerialization.data(withJSONObject:object))+Data("\n\ndata: [DONE]\n\n".utf8)) { _ in }
+        return try decoder.message()
+    }
+    #expect(try message(name:"validate_web_source",count:60000).tool_calls?.first?.function.arguments.utf8.count == 60012)
+    #expect(throws:AIError.self) { try message(name:"system_status",count:4097) }
+    #expect(throws:AIError.self) { try message(name:"update_web_source",count:ToolInputLimits.maximumArgumentBytes+1) }
+}

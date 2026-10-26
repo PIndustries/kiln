@@ -1,18 +1,125 @@
 import Foundation
 import KilnKit
 
-public enum TerminalEffect: Equatable { case command(String), disconnect, selectText(Bool) }
+public enum TerminalEffect: Equatable { case command(String), workspaceRead(String), workspaceSave(String), workerControl(String), disconnect, selectText(Bool) }
 
 /// Pure session model. No networking, subprocess execution or shared mutable UI state.
 public struct KilnTerminal {
-    public static let enterScreen = "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?2004h\u{1b}[?25l\u{1b}[2J"
-    public static let leaveScreen = "\u{1b}[0m\u{1b}[?1000l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[?25h\u{1b}[?1049l"
+    public static let enterScreen = "\u{1b}[?1049h\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h\u{1b}[?2004h\u{1b}[?25l\u{1b}[2J"
+    public static let leaveScreen = "\u{1b}[0m\u{1b}[?1000l\u{1b}[?1002l\u{1b}[?1006l\u{1b}[?2004l\u{1b}[?25h\u{1b}[?1049l"
     public private(set) var modules: [ModuleSnapshot] = []
     public private(set) var drawer = false
     public private(set) var input = ""
     public private(set) var selected = 0
     public private(set) var busy = false
     private var management = ManagementUI()
+    public private(set) var activeWorkerID: String?
+    public var workerCancelCommand: String? { activeWorkerID.map { "ai work cancel " + Self.quote($0) } }
+    public mutating func finishWorkerControl(text: String, status: Int) {
+        messages.append(ChatMessage(role:"Kiln",text:text)); messages = Array(messages.suffix(40))
+    }
+    private var codeWorkspace: WorkspaceUI?
+    // Keep the final discard/close state until any earlier save is acknowledged.
+    // Otherwise a late acknowledgement can resurrect a deliberately discarded draft.
+    private var closedWorkspaces: [WorkspaceUI] = []
+    private var codeFocus = true
+    private var codeCommand = false
+    private var codeShare = 6000
+    private var draggingDivider = false
+    private var splitWidth: Int { min(max(50, width * codeShare / 10000), max(50, width-40)) }
+    private mutating func moveDivider(to column: Int) {
+        let bounded = min(width-40, max(50,column))
+        codeShare = (bounded * 10000 + width-1) / width
+    }
+    private var workspaceVisible: Bool { codeWorkspace != nil && chatVisible }
+    public mutating func finishWorkspace(text: String, status: Int, module: String? = nil) {
+        guard module == nil || module == codeWorkspace?.module else { return }
+        codeWorkspace?.finish(text: text, status: status)
+        if let share = codeWorkspace?.takeRestoredDivider() { codeShare = share }
+    }
+    public mutating func takeDeferredWorkspaceRead() -> TerminalEffect? {
+        codeWorkspace?.takeDeferredLanguageRead().map { .workspaceRead($0) }
+    }
+    public mutating func checkpointCodeWorkspace() -> TerminalEffect? {
+        guard !closedWorkspaces.contains(where: { $0.checkpointPending }), codeWorkspace?.checkpointPending != true else { return nil }
+        while !closedWorkspaces.isEmpty {
+            if let command = closedWorkspaces[0].checkpoint(dividerShare:codeShare) { return .workspaceSave(command) }
+            closedWorkspaces.removeFirst()
+        }
+        return codeWorkspace?.checkpoint(dividerShare:codeShare).map { .workspaceSave($0) }
+    }
+    public mutating func finishWorkspaceSave(text: String, status: Int) {
+        if let index = closedWorkspaces.firstIndex(where: { $0.checkpointPending }) {
+            closedWorkspaces[index].finishCheckpoint(text:text,status:status)
+            if status != 0 { messages.append(ChatMessage(role:"Kiln",text:"Workspace recovery save failed: "+text)) }
+        } else { codeWorkspace?.finishCheckpoint(text:text,status:status) }
+    }
+    public mutating func takeWorkspaceAttachment() -> TerminalEffect? {
+        guard !busy, let worker = codeWorkspace?.takeWorkerToAttach() else { return nil }
+        return execute("ai work watch " + Self.quote(worker.id),display:"You: "+worker.prompt).first
+    }
+    public mutating func refreshCodeWorkspace() -> TerminalEffect? {
+        codeWorkspace?.refresh().map { .workspaceRead($0) }
+    }
+    public mutating func completeCodeAfterTyping() -> TerminalEffect? {
+        guard codeFocus, !busy, !selectingText else { return nil }
+        return codeWorkspace?.completeAfterTyping().map { .workspaceRead($0) }
+    }
+    public mutating func diagnoseCodeAfterTyping() -> TerminalEffect? {
+        guard !selectingText else { return nil }
+        return codeWorkspace?.diagnoseAfterTyping().map { .workspaceRead($0) }
+    }
+    private mutating func openCodeWorkspace(_ module: String) -> [TerminalEffect] {
+        openAIChat(); management.close(); draggingDivider = false
+        codeWorkspace = WorkspaceUI(module: module); codeFocus = true
+        return [.workspaceRead(codeWorkspace!.load())]
+    }
+    private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
+        // A single foreground write/inference can run; read-only browsing is independent.
+        if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
+        if busy, codeWorkspace?.reviewingAgent != true, ![.agentReview,.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
+            if case .mouse = key {} else { return [] }
+        }
+        if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
+        let paneWidth = width >= 110 ? splitWidth : width
+        guard let command = codeWorkspace?.handle(key, width: paneWidth, height: height) else {
+            if codeWorkspace?.active == false {
+                if let workspace = codeWorkspace { closedWorkspaces.append(workspace) }
+                codeWorkspace = nil
+                let save = checkpointCodeWorkspace()
+                return save.map { [$0] } ?? []
+            }
+            return []
+        }
+        if command.hasPrefix("'web' 'agents' ") || command.hasPrefix("'web' 'agent-review' ") || command.hasPrefix("'web' 'agent-stage' ") || command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") || command.hasPrefix("'web' 'ide' ") {
+            return [.workspaceRead(command)]
+        }
+        guard !busy else { return [] }
+        codeCommand = true
+        let effects = execute(command)
+        commandInChat = false
+        return effects
+    }
+    private func codeWorkspaceLayout() -> String {
+        guard let workspace = codeWorkspace else { return "" }
+        var chat = self
+        if width < 110 {
+            if codeFocus { return "\u{1b}[?25l\u{1b}[H\u{1b}[2J\u{1b}[1;3H" + theme.accentCode + "Ctrl-W: chat | " + Self.safe(workspace.module) + workspace.render(width: width, height: height, theme: theme) }
+            return chat.chatLayout(embedded: true).0
+        }
+        chat.width = width-splitWidth
+        let code = workspace.render(width: splitWidth, height: height, theme: theme)
+        let right = Self.positionPane(chat.chatLayout(embedded: true).0, column: splitWidth)
+        let label = "\u{1b}[\(height);3H" + theme.accentCode + "CODE " + (codeFocus ? "[focus]" : "") + " | Ctrl-W: code/chat | Drag |"
+        let cursorPattern = try! NSRegularExpression(pattern: "\\u001B\\[\\d+;\\d+H\\u001B\\[\\?25h$")
+        let cursorRange = cursorPattern.firstMatch(in: code, range: NSRange(code.startIndex..., in: code)).flatMap { Range($0.range, in: code) }
+        let codeCursor = cursorRange.map { String(code[$0]) } ?? "\u{1b}[?25l"
+        let chatCursorRange = cursorPattern.firstMatch(in: right, range: NSRange(right.startIndex..., in: right)).flatMap { Range($0.range, in: right) }
+        let chatCursor = chatCursorRange.map { String(right[$0]) } ?? "\u{1b}[?25l"
+        let divider = (1...height).map { "\u{1b}[\($0);\(splitWidth)H" + theme.accentCode + ($0 == height/2 ? "+" : "|") }.joined()
+        return "\u{1b}[?25l\u{1b}[H\u{1b}[2J" + code + label + right + divider
+            + (codeFocus ? "\u{1b}[2 q"+codeCursor : "\u{1b}[6 q"+chatCursor)
+    }
     public private(set) var theme = TerminalTheme()
     public mutating func applyTheme(_ theme: TerminalTheme) { self.theme = theme }
     private var accessLabel: String?
@@ -24,6 +131,7 @@ public struct KilnTerminal {
     public mutating func updateAIWorkspace(_ snapshot: AIWorkspaceSnapshot) {
         let selectedID = workspaceItems.indices.contains(sidebarSelected) ? workspaceItems[sidebarSelected].id : nil
         let scopeChanged = aiWorkspace.contextScope != nil && snapshot.contextScope != nil && aiWorkspace.contextScope != snapshot.contextScope
+        if snapshot.error == "Identity revoked or unauthorized" { codeWorkspace = nil }
         if scopeChanged || snapshot.error == "Identity revoked or unauthorized" || (conversationName != nil && snapshot.conversation == nil) {
             messages = []; liveReasoning = ""; liveAnswer = ""; liveStatus = ""; reviewID = nil; input = ""; cursor = 0; scroll = 0
         }
@@ -42,7 +150,7 @@ public struct KilnTerminal {
         let item = workspaceItems[index]
         if item.approval { reviewID = item.id; reviewButton = 0; sidebarFocus = false; return [] }
         sidebarFocus = false; reviewID = nil
-        return execute("ai task show " + Self.quote(item.id))
+        return execute(item.id.hasPrefix("work:") ? "ai work watch " + Self.quote(String(item.id.dropFirst(5))) : "ai task show " + Self.quote(item.id))
     }
     private mutating func reviewAction(_ action: Int) -> [TerminalEffect] {
         guard !busy, let id = reviewID else { return [] }
@@ -61,6 +169,7 @@ public struct KilnTerminal {
     public mutating func updateManagement(_ snapshot: ManagementSnapshot) {
         accessLabel = snapshot.access
         if let error = snapshot.error {
+            if error == "Identity revoked or unauthorized" || error.hasSuffix("requires administrator access.") { codeWorkspace = nil }
             // Permission revocation must also remove stale management inventory.
             updateSessions([]); updateServers([], keys: [])
             if page == 4 || page == 5 { notice = error }
@@ -92,13 +201,29 @@ public struct KilnTerminal {
     private var liveReasoning = ""
     private var liveStatus = ""
     private var responseProvider: AIProviderSnapshot?
-    private var chatColumns: Int { max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3) }
+    private var chatColumns: Int {
+        if workspaceVisible { return max(1, (width >= 110 ? width-splitWidth : width)-5) }
+        return max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3)
+    }
     private var thinkingTruncated = false
     private var showThinking = false
     public mutating func progress(_ event: AIProgress) {
         let previousLines = scroll > 0 ? chatBody(columns: chatColumns).count : 0
         defer { if scroll > 0 { scroll = max(0, scroll + chatBody(columns: chatColumns).count - previousLines) } }
         switch event {
+        case .source(let file): codeWorkspace?.showAgentFile(file)
+        case .work(let work):
+            if activeWorkerID != work.id {
+                for text in work.contextMessages ?? [] { messages.append(ChatMessage(role:"Earlier context",text:text)) }
+            }
+            activeWorkerID = work.id
+            responseProvider = work.provider; liveAnswer = work.answer; liveReasoning = work.reasoning
+            liveStatus = "Agent " + String(work.id.prefix(8)) + " / " + work.state
+            if work.queuedContext > 0 { liveStatus += " / \(work.queuedContext) context queued" }
+            if let consumed = work.consumedContext, consumed > 0 { liveStatus += " / \(consumed) context consumed" }
+            if work.activity.hasPrefix("Provider busy;") { liveStatus = work.activity + " / " + liveStatus }
+            else if !work.activity.isEmpty { liveStatus += " / " + work.activity }
+            if let file = work.file { codeWorkspace?.showAgentFile(file) } else { codeWorkspace?.clearAgentFile() }
         case .provider(let provider):
             if busy && commandInChat && responseProvider == nil { responseProvider = provider }
         case .answer(let text): liveAnswer = String((liveAnswer + text).suffix(24000))
@@ -153,6 +278,7 @@ public struct KilnTerminal {
         let rows = height > 0 ? height : self.height
         // Bound total work for untrusted SSH requests, not ordinary viewport dimensions.
         guard columns <= 1_000_000 / rows else { return }
+        draggingDivider = false
         self.width = columns
         self.height = rows
     }
@@ -179,7 +305,9 @@ public struct KilnTerminal {
         }
         commandInChat = false; responseProvider = nil
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
-        busy = false; management.finish(text:text,status:status)
+        busy = false; activeWorkerID = nil; codeWorkspace?.endAgent()
+        if codeCommand { codeWorkspace?.finish(text:text,status:status); codeCommand = false }
+        else { management.finish(text:text,status:status) }
         let lines = text.components(separatedBy: "\n")
         transcript += lines
         transcript = Array(transcript.suffix(300))
@@ -188,7 +316,7 @@ public struct KilnTerminal {
     }
     private mutating func execute(_ command: String, display: String? = nil) -> [TerminalEffect] {
         guard !busy else { return [] }
-        commandInChat = chatVisible; responseProvider = nil
+        commandInChat = chatVisible && !codeCommand; responseProvider = nil
         busy = true; scroll = 0; transcript.append(display ?? ("> " + command))
         started = Date(); animation = 0; toolCount = 0
         liveAnswer = ""; liveReasoning = ""; liveStatus = ""; thinkingTruncated = false
@@ -199,10 +327,40 @@ public struct KilnTerminal {
     public mutating func handle(_ key: TerminalKey) -> [TerminalEffect] {
         if key == .toggleThinking, chatVisible, !selectingText { showThinking.toggle(); scroll = 0; return [] }
         if key == .selectText {
-            selectingText.toggle()
+            selectingText.toggle(); draggingDivider = false
             return [.selectText(selectingText)]
         }
         if selectingText { return [] }
+        if workspaceVisible {
+            if key == .focusWorkspace { codeFocus.toggle(); return [] }
+            if key == .interrupt, busy { return [] } // SSH owns cancellation.
+            if case let .mouse(button,column,row,released) = key {
+                if width >= 110 {
+                    if draggingDivider {
+                        if released || (button & 32 != 0 && button & 3 == 0) { moveDivider(to: column) }
+                        if released { draggingDivider = false }
+                        return []
+                    }
+                    if !released, button == 0, abs(column-splitWidth) <= 1, (1...height).contains(row) {
+                        draggingDivider = true
+                        return []
+                    }
+                }
+                // Motion/release outside the handle must never activate code controls.
+                if released || button & 32 != 0 { return [] }
+                if width < 110 { if codeFocus { return handleCode(key) } }
+                else if column <= splitWidth { codeFocus = true; return handleCode(key) }
+                else {
+                    if !released, button == 0 { codeFocus = false }
+                    if button == 64 || button == 65 { return edit(button == 64 ? .pageUp : .pageDown) }
+                    return []
+                }
+            }
+            if codeFocus { return handleCode(key) }
+            if key == .escape { codeFocus = true; return [] }
+            if key == .tab { return [] }
+            return edit(key)
+        }
         if management.active {
             if let command = management.handle(key,width:width,height:height) { return execute(command) }
             return []
@@ -252,6 +410,8 @@ public struct KilnTerminal {
                 switch key {
                 case .escape: sidebarFocus = false
                 case .interrupt: sidebarFocus = false; return edit(key)
+                case .home: sidebarSelected = 0
+                case .end: sidebarSelected = max(0,workspaceItems.count-1)
                 case .up: sidebarSelected = max(0, sidebarSelected - 1)
                 case .down: sidebarSelected = min(max(0, workspaceItems.count - 1), sidebarSelected + 1)
                 case .enter: return chooseWorkspace(sidebarSelected)
@@ -284,7 +444,7 @@ public struct KilnTerminal {
                 case 4: menu = nil; drawer = true; return execute("app logs " + id)
                 case 5: menu = nil; return execute(management.result(title: "Releases / " + id, command: ["app", "releases", id]))
                 case 6: menu = nil; return execute(management.changeHistory(id))
-                case 8: menu = nil; return execute(management.codebase(id))
+                case 8: menu = nil; return openCodeWorkspace(id)
                 case 7: confirmation = "app rollback " + id
                 default: menu = nil
                 }
@@ -360,7 +520,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .selectText, .toggleThinking: break
+        case .agentReview, .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }
@@ -411,13 +571,33 @@ public struct KilnTerminal {
                 if common.count > input.count { input = common; cursor = input.count }
                 else { transcript += matches; transcript = Array(transcript.suffix(300)) }
             }
-        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: max(1, width - (width >= 110 ? min(42, width / 3) + 3 : 2) - 3)).count : transcript.count) - 1), scroll + 5)
+        case .pageUp: scroll = min(max(0, (aiMode ? chatBody(columns: chatColumns).count : transcript.count) - 1), scroll + 5)
         case .pageDown: scroll = max(0, scroll - 5)
         case .mouse: break
         case .enter:
-            guard !busy else { return [] }
+            guard !busy || (aiMode && activeWorkerID != nil) else { return [] }
             let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !command.isEmpty else { return [] }
+            let eventArguments = command.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if aiMode, eventArguments.first == "/events" {
+                let id = eventArguments.count > 1 ? eventArguments[1] : activeWorkerID
+                guard eventArguments.count <= 3, let id,
+                      eventArguments.count < 3 || Int(eventArguments[2]).map({ $0 >= 0 }) == true else {
+                    messages.append(ChatMessage(role:"Kiln",text:"Use /events [WORKER-ID] [AFTER-SEQUENCE]. Start or attach an agent first to omit its ID.")); return []
+                }
+                input = ""; cursor = 0; scroll = 0
+                return [.workerControl("ai work timeline "+Self.quote(id)+" "+(eventArguments.count == 3 ? eventArguments[2] : "0"))]
+            }
+            if busy, let worker = activeWorkerID {
+                if command.hasPrefix("/") {
+                    messages.append(ChatMessage(role:"Kiln",text:"Send plain context while this agent works. Ctrl-C cancels; use another chat for separate work.")); return []
+                }
+                let context = codeWorkspace?.contextJSON(width:width >= 110 ? splitWidth : width)
+                let payload = command + (context.map { "\nCURRENT EDITOR CONTEXT (reference only; does not expand the active app grant): " + $0 } ?? "")
+                messages.append(ChatMessage(role:"You",text:command+" [queued context]"))
+                input = ""; cursor = 0; scroll = 0
+                return [.workerControl("ai work input " + Self.quote(worker) + " " + Self.quote(payload))]
+            }
             if history.last != command { history.append(command); history = Array(history.suffix(100)) }
             input = ""; cursor = 0; historyPosition = nil
             if (!aiMode && (command == "theme" || command.hasPrefix("theme "))) ||
@@ -437,6 +617,11 @@ public struct KilnTerminal {
             }
             if aiMode {
                 if command == "/thinking" { showThinking.toggle(); scroll = 0; return [] }
+                if command == "/code" {
+                    if codeWorkspace != nil { codeFocus = true; return [] }
+                    guard modules.indices.contains(selected) else { return [] }
+                    return openCodeWorkspace(modules[selected].id)
+                }
                 if command == "/help" { return execute("ai chat-help") }
                 if command == "/conversations" { return execute("ai conversation list") }
                 if command.split(whereSeparator: { $0.isWhitespace }).first == "/conversation" {
@@ -465,6 +650,8 @@ public struct KilnTerminal {
                 if command == "/exit" { setAIChatMode(false); transcript.append("Left AI chat."); return [] }
                 if command.hasPrefix("/recover ") { return execute("ai recovery new " + Self.quote(String(command.dropFirst(9)))) }
                 if command == "/context" { return execute("ai context") }
+                if command == "/agents" { return execute("ai work list") }
+                if command.hasPrefix("/agent ") { return execute("ai work watch " + Self.quote(String(command.dropFirst(7)))) }
                 if command == "/tasks" { return execute("ai task list") }
                 if command.hasPrefix("/task ") { return execute("ai task new " + Self.quote(String(command.dropFirst(6)))) }
                 if command.hasPrefix("/watch ") { return execute("ai task watch " + Self.quote(String(command.dropFirst(7)))) }
@@ -472,7 +659,15 @@ public struct KilnTerminal {
                 if command == "/reset" { messages = []; transcript = []; return execute("ai reset") }
                 if command.hasPrefix("/approve ") || command.hasPrefix("/deny ") { return execute("ai " + command.dropFirst()) }
                 let quoted = "\"" + command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
-                return execute("ai ask " + quoted, display: "You: " + command)
+                if let workspace = codeWorkspace {
+                    guard let context = workspace.contextJSON(width: width >= 110 ? splitWidth : width) else {
+                        messages.append(ChatMessage(role: "Kiln", text: "Wait for the file to load, or return from the result view before sending a contextual message."))
+                        input = command; cursor = command.count
+                        return []
+                    }
+                    return execute("ai work start --workspace " + Self.quote(context) + " " + quoted, display: "You: " + command)
+                }
+                return execute("ai work start " + quoted, display: "You: " + command)
             }
             return execute(command)
         }
@@ -535,8 +730,8 @@ public struct KilnTerminal {
         if body.isEmpty { body = ["What would you like to do?", "", "Inspect your services, investigate a problem, or create a task.", "", "Try: Show me what is running and check its health.", "", "Read tools and registered dev publishing run automatically; production operations need approval.", "Prompts and tool results go to the selected provider; keep credentials in Vault."] }
         return body
     }
-    private func chatLayout() -> (String, [Hit]) {
-        let panelWidth = width >= 110 ? min(42, width / 3) : 0
+    private func chatLayout(embedded: Bool = false) -> (String, [Hit]) {
+        let panelWidth = !embedded && width >= 110 ? min(42, width / 3) : 0
         let panelOnly = panelWidth == 0 && sidebarFocus && reviewID == nil
         let left = panelWidth > 0 ? panelWidth + 3 : 2
         let columns = width - left - 3
@@ -571,11 +766,11 @@ public struct KilnTerminal {
         func row(_ value: String = "", _ color: String = "") -> String {
             let sidebar = panelWidth > 0 ? " " + String(Self.safe(panel[min(rowIndex, height - 1)]).prefix(panelWidth - 2)).padding(toLength: panelWidth - 1, withPad: " ", startingAt: 0) + " | " : "  "
             rowIndex += 1
-            let text = String((sidebar + Self.safe(value)).prefix(width - 1))
+            let text = String((sidebar + Self.safe(value).prefix(max(0,columns))).prefix(width - 1))
             return "\u{1b}[0m" + theme.backgroundCode + (color.isEmpty ? normal : color) + text.padding(toLength: width - 1, withPad: " ", startingAt: 0) + "\u{1b}[0m"
         }
         let state = selectingText ? "[SELECT TEXT]" : busy ? "[streaming]" : "[ready]"
-        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row((conversationName.map { "Saved: " + $0 + " / " } ?? "") + (aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured"), muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
+        var lines = [row("KILN AI CHAT / selected: " + (aiWorkspace.provider?.displayName ?? "not configured") + " " + state, accent), row(embedded ? (codeWorkspace.map { "App: " + $0.module + " | " + $0.filePath + ($0.hasUnsavedEdits ? " [unsaved]" : "") } ?? "No file context") : (conversationName.map { "Saved: " + $0 + " / " } ?? "") + (aiWorkspace.provider.map { $0.billingLabel + " / " + $0.label } ?? "AI: not configured"), muted), row(String(repeating: "-", count: columns), muted), row(aiWorkspace.provider.map { "Model: " + $0.model } ?? "")]
         if let id = reviewID {
             let proposal = aiWorkspace.proposals.first { $0.id == id }
             let valid = proposal.map { $0.expires > Date() } ?? false
@@ -610,12 +805,13 @@ public struct KilnTerminal {
         let room = columns - 3, offset = max(0, cursor - room + 1)
         lines.append(row("> " + String(input.dropFirst(offset).prefix(room)), accent))
         lines.append(row("Enter send  Ctrl-C stop  Ctrl-S copy  Ctrl-T thinking", muted))
-        lines.append(row(scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /help", muted))
+        lines.append(row(embedded ? "Ctrl-W code/chat | Ctrl-S copy | /help" : scroll > 0 ? "Scrolled up / PgDn to return to live output" : "Esc dashboard | Tab tasks | /code | /help", muted))
         return ("\u{1b}[?25l\u{1b}[H" + lines.joined(separator: "\r\n") + "\u{1b}[\(height-2);\(left+3+cursor-offset)H\u{1b}[?25h", hits + [Hit(row: height-2, column: left+3, width: room, click: .cursor(offset))])
     }
 
     public func render() -> String { layout().0 }
     private func layout() -> (String, [Hit]) {
+        if workspaceVisible, width >= 50, height >= 16 { return (codeWorkspaceLayout(), []) }
         if chatVisible && width >= 50 && height >= 16 { return chatLayout() }
         var hits: [Hit] = []
         let w = width - 1

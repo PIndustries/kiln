@@ -413,8 +413,11 @@ reads the registered workspace. The AI has `list_web_files` and paginated
 Create refuses an existing path. Delete is
 `{"path":"Views/Header.swift","action":"delete","sha256":"HASH_FROM_READ"}`.
 Full replace uses `action: replace`, the matching `sha256` and `content`.
-Legacy `{before,after}` edits still target App.swift. The existing 4096-byte AI
-argument limit and one publish attempt per turn remain in force. Tools cannot
+Legacy `{before,after}` edits still target App.swift. Validate/update tools accept up to 256 KiB of JSON arguments in both ordinary
+chat and refactor turns. Other tools retain a 4 KiB input guard. These are local
+resource guards, separate from provider generation limits. When validate tools are available, only an unchanged proposal that passed validation
+in the same turn can publish; a different proposal is rejected before any write and
+can be validated safely. One publish attempt per turn remains in force. Tools cannot
 expand the root grant, read host filesystem files or change SDK configuration.
 
 
@@ -431,13 +434,16 @@ Cancel is selected initially. The action uses the selected provider and the
 existing development autoPublish grant. It binds the displayed file hash and
 registration, narrows the AI turn to project tools, reads the affected source,
 validates the proposed group and publishes once after compilation and health
-checks. Provider failures remain visible in the result view; no success is
-claimed and uncertain writes are not retried. Historical code is read-only;
+checks. Refactors use full-file replace operations bound to the file hashes returned by
+inspection, plus create operations for extracted components. On refactor failure
+(including failure receipt text from a completed command) the tree and code stay visible at the same position, with
+a failure notice. V opens the complete diagnostic result; Enter/Esc returns to
+code. No success is claimed and uncertain writes are not retried. Historical code is read-only;
 W opens the current workspace before refactoring.
 
 An explicit refactor turn can propose up to 32 operations with 256 KiB of tool
 arguments, still bounded by the 32-file/256-KiB project snapshot. Ordinary AI edits
-retain their 8-operation/4096-byte limits. The source/registration guards run again
+retain their 8-operation limit with the same 256 KiB validate/update argument guard. The source/registration guards run again
 inside the build coordinator, before it snapshots files. All extracted functions
 must compile together, and the complete refactor remains one retained change
 with a diff and whole-project rollback. Initializers, stored properties, overrides
@@ -466,3 +472,221 @@ Draft recovery is connection-local editor state, rather than a saved draft on di
 The OpenSSH acceptance script `editor-draft-acceptance.py` exercises failed compile,
 recovery, default Cancel and an explicitly corrected healthy publish in a disposable
 project without provider access or user credentials.
+
+### Code and AI workspace
+
+Services → Codebase / files opens the registered file tree, syntax-highlighted
+source and AI chat together. `/code` in chat opens the selected service. At 110
+columns or wider both panes remain visible; smaller terminals show the focused
+pane. Drag the green center divider to change code/chat widths; the chosen
+proportion adapts to terminal resizing and stays for this connection. Code keeps
+at least 50 columns and chat 40. Ctrl-W switches between code and chat. Click either pane to focus it;
+Tab switches the file tree and source within the code pane. Wheel and page keys
+scroll the focused pane independently. Ctrl-S freezes painting and releases mouse
+capture for native terminal selection/copy; Ctrl-S resumes.
+
+Each ordinary chat message carries the displayed application, file, source hash,
+revision, first visible line and unsaved-buffer flag. The chat header shows its
+app/file context. Context is captured when sending; browsing another file while
+inference runs does not retarget that turn. Registered file reads run separately
+from inference, so navigating and scrolling remain available while it responds.
+After a turn, clean code views refresh without moving the scroll position.
+Unsaved local buffers remain in the connection and are not sent to the provider;
+AI publishing is rejected while that turn's context contains unsaved edits, a
+retained revision or a stale displayed hash. Save/discard and reload before asking
+for another edit. AI changes remain limited to the active registered application,
+with the existing build validation, auto-publish grant and retained history.
+This workspace does not upload arbitrary filesystem content or provide code-range
+selection to the model. Manual editor publishes still require confirmation.
+
+Erebine requests omit both `max_tokens` and `max_completion_tokens`, allowing the
+actual served model and its remaining context window to determine generation
+capacity. Kiln does not impose a fixed generation budget or override reasoning
+effort. This follows the [Erebine API contract](https://erebine.ai/docs/api-reference#max_tokens-and-the-context-window),
+including routed endpoints where the served model can differ from the model name
+in the request. No token-clamp augmentation is needed without a client ceiling.
+
+Separate local resource guards remain: response messages are bounded to 256 KiB,
+transport buffering/timeouts are bounded, conversation history has its existing
+limits, and tool arguments are validated. Those protect Kiln's memory, connection
+lifecycle and write integrity; they are not advertised as Erebine model limits.
+Incomplete tool calls never execute, and a failed turn is never automatically
+replayed. Reasoning remains visible/retained under the existing transcript limits.
+
+### Swift IDE workspace
+
+Registered Swift applications use the installed SourceKit-LSP beside their pinned
+SDK compiler. Kiln creates a private snapshot and compilation database from the
+registered compiler flags and all project Swift files, including open drafts.
+It never runs Package.swift, package plugins, a user shell or dependency downloads.
+The language process uses the existing file/network sandbox, with the installed
+SourceKit XPC service name read from that toolchain's metadata and explicitly
+allowed for semantic requests. Language processes and snapshots are bounded and
+cleaned up; permissions are checked again before returning results.
+
+The code toolbar provides **Build**, **Run**, **Def**, **Wrap** and **Complete**:
+
+- **Complete / Ctrl-Space:** compiler-backed Swift suggestions at the caret. Typing
+  an identifier or a dot requests suggestions after a 250 ms typing pause, in both
+  standard editing and Vim INSERT mode. The compact menu keeps code visible.
+  Arrows select; Tab or Enter inserts the returned
+  edit, Esc closes. Typing while a request runs preserves input and discards a
+  reply that belongs to an older buffer.
+- **Def / F12:** click a symbol in source, request its definition, and click or
+  press Enter on the returned project location. Unsaved buffers survive navigation
+  and reappear when returning through the tree. SDK definitions outside the
+  registered project are reported without opening arbitrary filesystem paths.
+- **Build / F11:** compile a private snapshot of the current application and open
+  buffers. Compiler errors/warnings show file, line and column; click or Enter
+  opens that location. Failed builds preserve buffers and the running application.
+- **Run / F5:** restart the selected application's deployed release through Kiln's
+  existing supervisor and readiness check. Publish pending drafts with Ctrl-D
+  first; Run never silently discards or deploys unsaved text. Manual publication
+  commits pending file buffers together through the existing validated history
+  path, with explicit confirmation.
+- **Wrap / F6:** toggle visual source wrapping. The default is **Wrap OFF**, with
+  horizontal scrolling through Left/Right in browse mode, Shift-wheel/horizontal
+  wheel, or the `[<]`/`[>]` controls. In edit mode Left/Right move the caret and
+  horizontal scrolling follows it. Wrapping changes the view, never source text.
+
+Use the toolbar if macOS reserves a function key or Ctrl-Space. Ctrl-W still
+switches code/chat; dragging the center divider resizes both panes. This milestone
+covers registered Kiln Swift applications, not arbitrary SwiftPM/Xcode workspaces.
+Debugging, rename/find-references and general package/project import are future
+work; the current language service does not pretend those capabilities exist.
+
+### Modal editor and horizontal navigation
+
+F7 or the toolbar's **Vim** button toggles an optional normal/insert editing mode
+for this connection. Normal mode supports `hjkl`, `w/b`, `0/$`, `gg/G`, `i/a/I/A`,
+`o/O`, `x/dd`, undo `u`, and redo Ctrl-R. Escape returns to normal mode without
+throwing away the draft. Tab moves between the file tree and source; pending
+buffers survive file navigation. `:w` opens the existing compile/publish confirmation
+with Cancel selected. `:q` closes only when there are no pending changes.
+`:set wrap`, `:set nowrap`, and `:set novim` are also supported. This is a basic
+Vim editing mode, not an embedded Vim installation with plugins or every command.
+
+The source pane displays a highlighted caret line, a block cursor and an explicit
+line/column position. ViewCol identifies the horizontal viewport rather than the
+caret. `<` in the number gutter means content is hidden on the left; `>` replaces
+the right border on lines that continue beyond the viewport. Shorter rows are
+padded on every repaint. Horizontal SGR wheel events from a trackpad pan the code,
+as does Shift-wheel. Shift-Left/Right and the footer's arrow buttons provide
+fallbacks when the terminal does not forward sideways gestures. No-wrap remains
+the default; Wrap/F6 is available independently of Vim mode.
+
+### Native Swift views and MVC
+
+KilnWeb provides a server-side `View` protocol and `@ViewBuilder`, inspired by
+SwiftUI's composition syntax. This renders web HTML; it does not import Apple's
+SwiftUI or run Swift in the browser. The application remains Swift, with the
+existing small framework browser client handling live events and reloads.
+
+```swift
+import KilnWeb
+
+struct HomePage: View {
+    let name: String
+    var body: some View {
+        VStack(spacing: 16) {
+            H1("Hello, \(name)")
+            Paragraph("Rendered by Swift").cssClass("intro")
+            Link("Live demo", href: "/counter")
+        }.cssClass("home").padding(24).background("var(--bg)")
+    }
+}
+// Inside a controller action:
+// return .view(HomePage(name: request.parameters["name"] ?? "friend"))
+```
+
+`Text` and text constructors escape values. ViewBuilder supports conditions,
+optional branches, loops and composed custom views. `HTML` also conforms to View,
+so existing typed markup remains usable. CSS classes, IDs and styles stay under
+application control. Semantic HTML elements keep existing CSS selectors working;
+`VStack`/`HStack` add flex layout, while `.style` provides a CSS escape hatch for
+trusted application styles. Modifiers produce authenticated same-origin linked
+stylesheets, so static and live components work without inline-style CSP exceptions
+or application JavaScript. Each modifier rule is limited to 4 KiB; larger rules
+belong in the application stylesheet. Use CSS variables for customer colors, with Kiln's
+black-and-green defaults. Dynamic data belongs in text or validated attributes,
+not constructed CSS, scripts or unvalidated URL schemes.
+
+The runnable source example is `examples/native-mvc`: `App.swift` boots the
+server, `Routes.swift` registers actions, `Models` owns state, `Controllers`
+handles requests/live events, and `Views` holds pure value views and layouts.
+The live controller implements LiveView, reads its actor model, renders a native
+view, and changes the model only in event handlers. Views do not send requests.
+There are no SwiftUI property wrappers, browser-side state or client build step.
+
+### HTML templates alongside native views
+
+With a newly exported SDK, registered `Views/**/*.html` files are embedded in
+the isolated build. No template file is read from the host filesystem at runtime.
+Template names are relative to `Views/`, without the `.html` extension:
+
+```html
+<!-- Views/Home/greeting.html -->
+<h1>Hello, {{name}}</h1>
+<div>{{content}}</div>
+```
+
+```swift
+let html = try AppTemplates.render("Home/greeting", values: [
+    "name": .text(name),
+    "content": .view(HomePage(name: name).render())
+])
+return .view(html)
+```
+
+`.text` escapes data by default. `.view` explicitly supplies typed HTML from a
+native component; it is refused in attribute slots. Slots must be identifiers;
+attribute slots must be quoted, and script/style/event-handler slots are refused.
+All required values must be present; unknown templates and missing values throw.
+This initial template syntax provides named slots, not executable template code,
+loops or inheritance. Compose layouts/partials with native Swift and typed slots.
+Templates participate in source history, diffs, builds, publication and rollback.
+SourceKit sees the generated template API for completion in Swift controllers;
+template parsing is checked during builds. Rebuild/publish to change a template.
+
+An administrator must export and register an updated immutable SDK to enable
+these APIs; older registered SDKs stay pinned. `web projects` reports native-view
+and template support. For large local patch imports, administrator-only
+`web apply-file APP/MODULE /absolute/owned-patch.json` uses the same hash checks,
+isolated build and atomic publication as the editor. AI tools cannot read this
+host path; they continue using registered project tools.
+
+Browser form pages use `Referrer-Policy: same-origin`: ordinary same-origin POSTs
+retain their Origin header, and cross-origin destinations receive no referrer.
+The server still rejects missing/null/foreign origins and invalid CSRF tokens.
+
+### Background chat agents and the live code pane
+
+Plain chat messages start a runtime-owned worker. The terminal observes the worker;
+closing SSH detaches that observer and leaves the work running. `/agents` lists
+only your identity's work, and `/agent ID` reattaches. Ctrl-C explicitly cancels
+an observed worker. Cancellation cannot undo a publication that already committed;
+inspect the source history and release receipt when an outcome is uncertain.
+Runtime restart marks active jobs interrupted and never automatically replays them.
+Completed work and accepted context are saved privately in `ai-work.json`.
+
+Up to 48 chat workers can run concurrently across chats. Other AI investigations
+share the assistant's inference capacity. Each chat has one active worker, and
+source publication retains its existing per-application serialization, snapshot
+hash checks, isolated build and healthy-worker promotion.
+
+While an agent runs, type a plain message and press Enter. It enters that worker's
+context inbox without waiting for the active command to finish. Kiln picks it up
+at the next provider/tool boundary, discards a stale pending tool plan and clears
+its old validation grant. It never interrupts a half-completed file operation.
+Messages that arrive after the last safe step remain recorded as unconsumed, with
+an explicit notice in the final receipt. Additional context cannot widen the
+original app, identity or development grant.
+
+In the code pane, **F8** toggles following the agent. Inspected files and complete
+proposed edits appear as controller events arrive. Drafts are labeled **AGENT
+DRAFT — not published** and stay separate from local editor buffers and saved
+source. They are complete proposals, not partially executed tool JSON. Navigation
+takes over from follow mode; F8 resumes following. Local unsaved buffers take
+priority and are never replaced by agent activity. The chat continues showing
+provider-visible thinking and factual tool/build activity; Ctrl-T expands the
+thinking supplied by the provider.

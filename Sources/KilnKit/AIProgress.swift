@@ -6,4 +6,6 @@ public enum AIProgress: Sendable {
     case reasoning(String)
     case status(String)
     case snapshot(String)
+    case source(AISourcePreview)
+    case work(AIWorkSnapshot)
 }

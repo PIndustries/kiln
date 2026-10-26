@@ -43,6 +43,9 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         Fixture.redirect_requests += 1
         self.send_response(500); self.end_headers()
     def log_message(self, *_): pass
+    def respond(self, message):
+        data = (json.dumps(dict(message=message, done=True, done_reason='stop'))+'\n').encode()
+        self.send_response(200); self.send_header('Content-Type', 'application/x-ndjson'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         assert self.path == '/api/chat'
@@ -99,14 +102,19 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             assert source['file'] == 'App.swift' and source['sha256']
             if not source['complete']:
                 name, args = 'read_web_source', dict(module='dev/site', offset=str(source['nextOffset']))
-            elif 'broken' in prompt:
+            elif 'unvalidated' in prompt:
                 name, args = 'update_web_source', dict(module='dev/site', edits=json.dumps([dict(before='import Foundation', after='THIS IS NOT SWIFT')]))
+            elif 'broken' in prompt:
+                name, args = 'validate_web_source', dict(module='dev/site', edits=json.dumps([dict(before='import Foundation', after='THIS IS NOT SWIFT')]))
             else:
                 # First try a broken proposal in the build-only lane. The AI
                 # fixture must receive diagnostics and repair it before publish.
                 name, args = 'validate_web_source', dict(module='dev/site', edits=json.dumps([dict(before='import Foundation', after='THIS IS NOT SWIFT')]))
         elif tool_results[-1]['tool_name'] == 'validate_web_source':
             content = tool_results[-1]['content']
+            if 'broken' in prompt:
+                assert 'Validation failed' in content and 'Compiler diagnostics' in content,content
+                self.respond(dict(role='assistant',content=content)); return
             assert Fixture.source_path.read_bytes() == Fixture.original_source
             before, after = ('Built through Kiln AI.', 'Second retained version.') if 'second' in prompt else ('Server-rendered.<br>Live by default.', 'Built through Kiln AI.')
             good = dict(module='dev/site', edits=json.dumps([dict(before=before, after=after)]))
@@ -116,10 +124,13 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             else:
                 assert 'Isolated compile passed' in content and 'not changed' in content
                 name, args = 'update_web_source', good
+        elif tool_results[-1]['tool_name'] == 'update_web_source' and 'unvalidated' in prompt:
+            content = tool_results[-1]['content']
+            assert 'Not published' in content and 'No write was attempted' in content,content
+            self.respond(dict(role='assistant',content=content)); return
         else:
             raise AssertionError('Unexpected fixture tool phase')
-        data = (json.dumps(dict(message=dict(role='assistant', content='', tool_calls=[dict(function=dict(name=name, arguments=args))]), done=True, done_reason='stop'))+'\n').encode()
-        self.send_response(200); self.send_header('Content-Type', 'application/x-ndjson'); self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
+        self.respond(dict(role='assistant', content='', tool_calls=[dict(function=dict(name=name, arguments=args))]))
 
 with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
     root = Path(td).resolve(); state = root/'state'; state.mkdir(mode=0o700)
@@ -214,6 +225,9 @@ with tempfile.TemporaryDirectory(prefix='kiln-web-development-') as td:
         assert next(row for row in history if row['id']==first['id'])['commit']==first['commit']
         print('PASS: Git-linked history + source diff / source-and-release rollback both ways / older version restored as a new release / local edits protected',flush=True)
         before=source.read_bytes(); release=ssh('app list'); instance=json.loads(get('/__kiln/instance'))['instance']
+        unvalidated=ssh('ai ask Make an unvalidated development edit')
+        assert 'Not published' in unvalidated and 'No write was attempted' in unvalidated,unvalidated
+        assert source.read_bytes()==before and ssh('app list')==release
         broken=ssh('ai ask Make a broken development edit')
         assert 'before deployment' in broken and 'Compiler diagnostics' in broken,broken
         assert source.read_bytes()==before and ssh('app list')==release

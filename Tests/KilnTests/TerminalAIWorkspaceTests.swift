@@ -119,3 +119,15 @@ private func click(_ column: Int, _ row: Int) -> TerminalKey { .mouse(button: 0,
     #expect(ui.render().contains("Selected AI: not configured"))
     #expect(!ui.render().contains("Erebine"))
 }
+
+@Test func sidebarHomeSelectsApprovalAfterBackgroundTasksPreserveTheirSelection() {
+    var ui = sidebarUI(width:80)
+    _ = ui.handle(.tab); _ = ui.handle(.end)
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(tasks:sidebarSnapshot().tasks))
+    ui.updateAIWorkspace(sidebarSnapshot())
+    _ = ui.handle(.home)
+    #expect(ui.handle(.enter).isEmpty)
+    #expect(ui.render().contains("REVIEW OPERATION"))
+    #expect(ui.render().contains(approvalID))
+    #expect(!ui.busy)
+}

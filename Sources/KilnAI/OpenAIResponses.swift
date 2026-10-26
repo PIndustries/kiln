@@ -98,7 +98,7 @@ struct OpenAIResponsesDecoder {
                     guard item["namespace"] == nil || item["namespace"] is NSNull || item["namespace"] as? String == "kiln" else { throw AIError.message("Unsupported Responses tool namespace") }
                     guard let id = item["call_id"] as? String, !id.isEmpty, id.utf8.count <= 256, ids.insert(id).inserted,
                           let name = item["name"] as? String, !name.isEmpty, name.utf8.count <= 128,
-                          let arguments = item["arguments"] as? String, arguments.utf8.count <= 4096,
+                          let arguments = item["arguments"] as? String, arguments.utf8.count <= ToolInputLimits.argumentBytes(for: name),
                           let argumentData = arguments.data(using: .utf8),
                           (try? JSONSerialization.jsonObject(with: argumentData)) is [String: Any], calls.count < 6 else {
                         throw AIError.message("Invalid Responses function call")

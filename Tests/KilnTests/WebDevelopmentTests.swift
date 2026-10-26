@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import KilnKit
-import KilnAI
+@testable import KilnAI
 import KilnRuntime
 @testable import KilnDevelopment
 @testable import KilnCommands
@@ -120,4 +120,52 @@ private func webDevFixture(_ root: URL, auto: Bool = true) throws -> (Data, Appl
     config["autoPublish"] = false
     _ = try await dev.register(data:JSONSerialization.data(withJSONObject:config),target:target)
     await #expect(throws:(any Error).self) { try await dev.verifyRefactor(request,module:"demo/web") }
+}
+
+private actor EditorPromptCapture {
+    var value = ""
+    func set(_ text: String) { value = text }
+    func get() -> String { value }
+}
+@Test func editorChatContextResolvesRegisteredFilesAndRejectsEscapesBeforeInference() async throws {
+    guard WebIsolation.supported else { return }
+    let root = try webDevRoot(); defer { try? FileManager.default.removeItem(at:root) }
+    let (config,target) = try webDevFixture(root)
+    let runtime = try KilnRuntime(stateDirectory:root.appendingPathComponent("state"))
+    let capture = EditorPromptCapture()
+    let assistant = KilnAssistant(completion: { _,_,messages,_ in
+        await capture.set(messages.last(where: { $0.role == "user" })?.content ?? "")
+        return AIMessage(role:"assistant",content:"Inspected current context")
+    })
+    let commands = KilnCommands(runtime:runtime,assistant:assistant)
+    _ = try await commands.webDevelopment.register(data:config,target:target)
+    let provider = AIConfiguration(baseURL:"http://127.0.0.1:11434",model:"fixture",secret:"",provider:.ollama)
+    try KilnStateFile.write(JSONEncoder().encode(provider),to:root.appendingPathComponent("state/ai.json"))
+    func request(path: String, module: String = "demo/web") throws -> String {
+        let context = ["module":module,"path":path,"sha256":WebIsolation.digest(Data("original heading".utf8)),"revision":"workspace","unsaved":"false","firstVisibleLine":"1"]
+        let json = String(decoding:try JSONEncoder().encode(context),as:UTF8.self)
+        return "ai ask --workspace '" + json + "' 'Explain this file'"
+    }
+    let valid = await commands.execute(try request(path:"App.swift"))
+    #expect(valid.status == 0)
+    #expect(await capture.get().contains("CURRENT EDITOR CONTEXT"))
+    #expect(await capture.get().contains("App.swift"))
+    var context = ["module":"demo/web","path":"App.swift","sha256":WebIsolation.digest(Data("original heading".utf8)),"revision":"workspace","unsaved":"false"]
+    try await commands.validateEditorWrite(context,module:"demo/web")
+    context["unsaved"] = "true"
+    await #expect(throws:(any Error).self) { try await commands.validateEditorWrite(context,module:"demo/web") }
+    context["unsaved"] = "false"; context["revision"] = "retained-change"
+    await #expect(throws:(any Error).self) { try await commands.validateEditorWrite(context,module:"demo/web") }
+    context["revision"] = "workspace"; context["sha256"] = String(repeating:"0",count:64)
+    await #expect(throws:(any Error).self) { try await commands.validateEditorWrite(context,module:"demo/web") }
+    await #expect(throws:(any Error).self) { try await commands.validateEditorWrite(context,module:"other/web") }
+    #expect(try String(contentsOf:root.appendingPathComponent("App.swift"),encoding:.utf8) == "original heading")
+    #expect(try await commands.webDevelopment.changes(module:"demo/web").isEmpty)
+    await capture.set("")
+    for (path,module) in [("../outside.swift","demo/web"),("App.swift","other/web"),("Missing.swift","demo/web")] {
+        let denied = await commands.execute(try request(path:path,module:module))
+        #expect(denied.status != 0)
+        #expect(await capture.get().isEmpty)
+    }
+    await runtime.shutdown()
 }

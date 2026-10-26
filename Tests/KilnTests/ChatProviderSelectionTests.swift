@@ -22,7 +22,7 @@ private let selectionKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAA
     }
     var ui = KilnTerminal(); _ = ui.handle(.text("7"))
     _ = ui.handle(.text("/provider/settings.json needs review"))
-    #expect(ui.handle(.enter) == [.command("ai ask \"/provider/settings.json needs review\"")])
+    #expect(ui.handle(.enter) == [.command("ai work start \"/provider/settings.json needs review\"")])
 }
 
 @Test func detailedProfileInventoryReadsOnlySafeMetadataAndPreservesSelection() async throws {

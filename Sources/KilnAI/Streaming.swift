@@ -41,6 +41,7 @@ struct ErebineStreamDecoder {
         if let reported = object["usage"] as? [String: Any] { usage = .chatCompletions(reported) }
         guard let choices = object["choices"] as? [[String: Any]], let first = choices.first else { return }
         if let finish = first["finish_reason"] as? String {
+            if finish == "length" { throw AIError.message("Provider reached its response token limit before completing this turn; no partial tool call executed. Ask for a smaller change.") }
             guard ["stop", "tool_calls"].contains(finish) else { throw AIError.message("Provider response was cut short; no partial tool call executed") }
             finished = true
         }
@@ -60,15 +61,16 @@ struct ErebineStreamDecoder {
                 call.name += function["name"] as? String ?? ""
                 call.arguments += function["arguments"] as? String ?? ""
             }
-            guard call.id.count <= 256, call.name.count <= 128, call.arguments.utf8.count <= 4096 else { throw AIError.message("Oversized streamed tool call") }
+            guard call.id.count <= 256, call.name.count <= 128, call.arguments.utf8.count <= ToolInputLimits.maximumArgumentBytes else { throw AIError.message("Streamed tool call exceeded Kiln’s local input guard; no partial tool call executed") }
             calls[index] = call
         }
-        guard answer.utf8.count + reasoning.utf8.count <= 65536 else { throw AIError.message("Provider message exceeded its limit") }
+        guard answer.utf8.count + reasoning.utf8.count <= ErebineClient.messageByteLimit else { throw AIError.message("Provider message exceeded its limit") }
     }
     func message() throws -> AIMessage {
         guard done, finished else { throw AIError.message("Provider stream interrupted; no partial tool call executed") }
         let tools = try calls.keys.sorted().map { index -> AIToolCall in
             let call = calls[index]!
+            guard call.arguments.utf8.count <= ToolInputLimits.argumentBytes(for: call.name) else { throw AIError.message("Tool arguments exceeded Kiln’s local input guard; no partial tool call executed") }
             guard !call.id.isEmpty, !call.name.isEmpty else { throw AIError.message("Incomplete streamed tool call") }
             return AIToolCall(id: call.id, type: "function", function: .init(name: call.name, arguments: call.arguments))
         }
@@ -131,20 +133,7 @@ final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Send
 extension ErebineClient {
     public func stream(configuration: AIConfiguration, key: String, messages: [AIMessage], tools: [AITool],
                        emit: @escaping @Sendable (AIProgress) -> Void) async throws -> AIMessage {
-        try configuration.validate()
-        struct Request: Encodable {
-            let model: String; let messages: [ErebineWireMessage]; let tools: [AITool]
-            let stream = true; let store = false; let max_completion_tokens = 4096
-            let parallel_tool_calls = true
-            var tool_choice: String { tools.isEmpty ? "none" : "auto" }
-        }
-        var request = URLRequest(url: URL(string: configuration.baseURL)!.appendingPathComponent("chat/completions"))
-        request.httpMethod = "POST"; request.timeoutInterval = 90
-        request.setValue("Bearer " + key, forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.httpBody = try JSONEncoder().encode(Request(model: configuration.model, messages: messages.map(ErebineWireMessage.init), tools: tools))
-        let preparedRequest = request
+        let preparedRequest = try Self.request(configuration: configuration, key: key, messages: messages, tools: tools, streaming: true)
         return try await ProviderRetry.run(metrics: metrics, emit: emit) {
             try await streamAttempt(request: preparedRequest, emit: emit)
         }
