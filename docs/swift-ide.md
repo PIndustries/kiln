@@ -13,6 +13,8 @@ language service or package dependency is required.
 | F12 / Def | Resolve a definition in registered project files |
 | F9 / Refs | Compiler-indexed project references; any document-only fallback is labelled |
 | F10 / Rename | Request a rename proposal, then Enter applies it to local drafts |
+| F2 / Fmt | Review document formatting, then apply it to local drafts |
+| F3 / Fix | Review compiler actions for the caret line, then apply supported draft edits |
 | F4 / Issues | Open clickable diagnostics for the current document |
 | F11 / Build | Compile all current buffers in isolation |
 | F5 / Run | Restart the deployed release after unsaved edits are resolved |
@@ -78,8 +80,8 @@ proposal, not proof of behavior equivalence; review it before publishing.
 The current index resource guards are 30 seconds of compilation, 64 KiB compiler
 diagnostics, 4,096 units/record dependencies, 200,000 raw occurrences, and 100,000
 deduplicated occurrences/16 MiB retained metadata per session. IndexStore UTF-8
-columns are converted to editor UTF-16 positions. Test navigation, formatting/code
-actions, deeper override/protocol refactoring and LLDB/DAP remain separate work.
+columns are converted to editor UTF-16 positions. Test navigation, deeper
+override/protocol refactoring and LLDB/DAP remain separate work.
 
 The real SourceKit test in `SwiftIDETests` is enabled with
 `KILN_SWIFT_IDE_SDK=/path/to/pinned-sdk.json`. It checks session reuse, document
