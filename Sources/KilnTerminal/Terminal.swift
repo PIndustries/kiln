@@ -405,6 +405,8 @@ public struct KilnTerminal {
                 switch key {
                 case .escape: sidebarFocus = false
                 case .interrupt: sidebarFocus = false; return edit(key)
+                case .home: sidebarSelected = 0
+                case .end: sidebarSelected = max(0,workspaceItems.count-1)
                 case .up: sidebarSelected = max(0, sidebarSelected - 1)
                 case .down: sidebarSelected = min(max(0, workspaceItems.count - 1), sidebarSelected + 1)
                 case .enter: return chooseWorkspace(sidebarSelected)
