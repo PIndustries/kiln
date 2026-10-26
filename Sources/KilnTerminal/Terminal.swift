@@ -61,6 +61,10 @@ public struct KilnTerminal {
         guard codeFocus, !busy, !selectingText else { return nil }
         return codeWorkspace?.completeAfterTyping().map { .workspaceRead($0) }
     }
+    public mutating func diagnoseCodeAfterTyping() -> TerminalEffect? {
+        guard !selectingText else { return nil }
+        return codeWorkspace?.diagnoseAfterTyping().map { .workspaceRead($0) }
+    }
     private mutating func openCodeWorkspace(_ module: String) -> [TerminalEffect] {
         openAIChat(); management.close(); draggingDivider = false
         codeWorkspace = WorkspaceUI(module: module); codeFocus = true
@@ -69,7 +73,7 @@ public struct KilnTerminal {
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
         if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
-        if busy, ![.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.build,.wrap].contains(key) {
+        if busy, ![.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
         if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
@@ -509,7 +513,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .followAgent, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
+        case .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }

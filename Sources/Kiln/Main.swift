@@ -77,8 +77,13 @@ struct Kiln {
             else if valueFlags.contains(flag), index + 1 < args.count { values[flag] = args[index + 1]; index += 2 }
             else { throw CLIError.invalid("Unknown option or missing value: \(flag)") }
         }
-        let state = URL(fileURLWithPath: values["--state"] ?? ".kiln", isDirectory: true).standardizedFileURL
-        try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let requestedState = URL(fileURLWithPath: values["--state"] ?? ".kiln", isDirectory: true).standardizedFileURL
+        try FileManager.default.createDirectory(at: requestedState, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        // Foundation may standardize /private/var to /var on macOS. All runtime
+        // modules need the actual filesystem path for their symlink checks.
+        guard let resolvedState = realpath(requestedState.path,nil) else { throw CLIError.invalid("State directory cannot be resolved") }
+        let state = URL(fileURLWithPath:String(cString:resolvedState),isDirectory:true)
+        free(resolvedState)
         let lockFD = open(state.appendingPathComponent("runtime.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw CLIError.invalid("State directory already in use or cannot be locked") }
         defer { close(lockFD) }

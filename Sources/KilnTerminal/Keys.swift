@@ -2,6 +2,7 @@ import Foundation
 
 public enum TerminalKey: Equatable {
     case followAgent
+    case references, rename, diagnostics
     case text(String), up, down, left, right, home, end, delete, backspace, enter, escape, tab
     case selectText, toggleThinking, focusWorkspace, complete, definition, build, run, wrap, vim, redo, panLeft, panRight, pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
     case paste(String)
@@ -64,6 +65,9 @@ public struct TerminalKeys {
                     case "[17~": .wrap
                     case "[18~": .vim
                     case "[19~": .followAgent
+                    case "[20~": .references
+                    case "[21~": .rename
+                    case "[14~": .diagnostics
                     case "[1;2D": .panLeft
                     case "[1;2C": .panRight
                     case "[23~": .build

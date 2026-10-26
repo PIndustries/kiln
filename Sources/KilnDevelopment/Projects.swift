@@ -38,6 +38,9 @@ public actor WebDevelopment {
     private var busy = Set<String>()
     private var activeJobs = Set<String>()
     var ideRequests = 0
+    var languageSessions: [String:SwiftLanguageSession] = [:]
+    var languageBusy: Set<String> = []
+    var languageExpiry: [String:Task<Void,Never>] = [:]
     public init(directory: URL) { self.directory = directory.appendingPathComponent("web-development") }
     private var projects: URL { directory.appendingPathComponent("projects") }
     private var jobs: URL { directory.appendingPathComponent("jobs") }

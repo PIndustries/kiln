@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
     root = Path(td).resolve(); state = root/'state'; state.mkdir(mode=0o700)
     project = root/'Source'; project.mkdir(mode=0o700)
     (project/'Models').mkdir(); (project/'Models/Jump.swift').write_text('struct JumpTarget { let value = 1 }\n'); (project/'Models/Jump.swift').chmod(0o600)
-    source = project/'App.swift'; original = (ROOT/'Sources/ExampleWeb/Web.swift').read_bytes()+b'\nfunc ideDefinitionProbe(_ value: JumpTarget) {}\n'
+    source = project/'App.swift'; original = (ROOT/'Sources/ExampleWeb/Web.swift').read_bytes()+b'\nfunc ideDefinitionProbe(_ value: JumpTarget) {}\nfunc ideRenameProbe() { let renameLocal = 1; print(renameLocal) }\n'
     source.write_bytes(original); source.chmod(0o600)
     sdk = root/'sdk.json'
     subprocess.run(['python3',str(ROOT/'scripts/export-web-sdk.py'),'--build-dir',str(BIN),'--output',str(sdk),'--snapshot-dir',str(root/'sdk-inputs')],check=True)
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         # Explicit completion at the draft caret, from the real Swift language server.
         send(b'e'); expect('[EDITING]')
         send(b'\x1b[200~func completionProbe() { let word = "hello"; word.\x1b[201~')
-        send(b'\x00'); expect('Swift completions'); send(b'\x1b'); drain()
+        send(b'\x00'); expect('Suggestions: Up/Down'); send(b'\x1b'); drain()
         send(b'\x1b'); expect('Discard unsaved edits?'); send(b'\x1b[B\r'); drain(); expect('[R Refactor]')
         # Default is unwrapped; the toolbar toggles visual wrapping without source edits.
         expect('Wrap OFF'); send(b'\x1b[17~'); expect('Wrap ON'); send(b'\x1b[17~'); expect('Wrap OFF')
@@ -110,6 +110,13 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         direct=json.loads(ssh('web ide draft/site definition App.swift '+str(cursor)))
         assert direct['locations'][0]['path']=='Models/Jump.swift'
         print('CLI definition verified',flush=True)
+        local=original.decode().index('renameLocal')+1
+        references=json.loads(ssh('web ide draft/site references App.swift '+str(local)))
+        assert len(references['locations'])>=2,references
+        proposal=json.loads(ssh('web ide draft/site rename App.swift '+str(local)+' renamedLocal'))
+        assert 'renamedLocal' in proposal['renameFiles']['App.swift']['text']
+        assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
+        print('CLI semantic references and rename proposal verified; source/release unchanged',flush=True)
         click_word('JumpTarget'); send(b'\x1b[24~'); expect('Swift definitions'); expect('Models/Jump.swift')
         send(b'\r'); expect('struct JumpTarget')
         # Return to App.swift through the tree.
@@ -119,13 +126,15 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\x1b[H'); send(b'\x1b[200~NOT_VALID_SWIFT\n\x1b[201~')
         send(b'\x1b[23~'); expect('Build failed.'); expect('error:')
         send(b'\x1b[<0;10;7M'); expect('NOT_VALID_SWIFT')
+        send(b'\x1b[14~'); expect('Swift diagnostics'); expect('error:')
+        send(b'\r'); expect('NOT_VALID_SWIFT')
         assert source.read_bytes()==original and json.loads(get('/__kiln/instance'))['instance']==old_instance
         send(b'\x1b'); expect('Discard unsaved edits?'); send(b'\x1b[B\r'); drain(); expect('[R Refactor]')
         # Run restarts the deployed release, not a discarded draft.
         send(b'\x1b[15~'); expect('Started draft/site'); send(b'\r'); expect('Codebase / draft/site')
         assert source.read_bytes()==original and get('/assets/app.css')==css
         assert json.loads(get('/__kiln/instance'))['instance']!=old_instance
-        print('PASS real SSH Swift IDE: compile clean draft, real SourceKit completion, cross-file definition, clickable compiler error preserves draft and release, wrap toggle, Run restarts deployed release, source/CSS unchanged',flush=True)
+        print('PASS real SSH Swift IDE: clean draft build, SourceKit completion, cross-file definition, semantic references, rename proposal without publication, clickable build and live diagnostics, wrap toggle, deployed Run, source/CSS unchanged',flush=True)
         print('KILN_SWIFT_IDE_ACCEPTANCE_COMPLETE',flush=True)
     finally:
         if client is not None and client.poll() is None:client.kill();client.wait(timeout=5)

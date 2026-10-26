@@ -27,6 +27,34 @@ import KilnKit
     let definitionCaret = app.distance(from:app.startIndex,to:app.range(of:"Probe()")!.lowerBound)+1
     let definition = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:app,cursor:definitionCaret))
     #expect(definition.locations.first?.path == "Models/Probe.swift")
+    #expect(completion.sessionID != nil && completion.sessionID == definition.sessionID)
+    #expect(completion.documentVersion == 1 && definition.documentVersion == 2)
+    let diagnostics = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"diagnostics",path:"App.swift",sha256:hash,text:app+"\nNOT_SWIFT\n",cursor:0))
+    #expect(diagnostics.locations.contains { $0.message.hasPrefix("error:") })
+    #expect(diagnostics.sessionID == definition.sessionID)
+    let localCaret = app.distance(from:app.startIndex,to:app.range(of:"value =")!.lowerBound)+1
+    let references = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"references",path:"App.swift",sha256:hash,text:app,cursor:localCaret))
+    #expect(references.locations.filter { $0.path == "App.swift" }.count >= 2)
+    let renamed = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"rename",path:"App.swift",sha256:hash,text:app,cursor:localCaret,newName:"renamedValue"))
+    #expect(renamed.renameFiles?["App.swift"]?.text.contains("let renamedValue =") == true)
+    #expect(renamed.renameFiles?["App.swift"]?.text.contains("renamedValue.greet()") == true)
+    #expect(try WebFiles.read(config) == snapshot)
+    let isolated = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:app,cursor:definitionCaret),scope:"other-editor")
+    #expect(isolated.sessionID != definition.sessionID)
+    let back = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:app,cursor:definitionCaret))
+    #expect(back.sessionID == definition.sessionID)
+    let sessions = await dev.languageSessions
+    let localKey = WebIsolation.digest(Data("local-console\nide/test".utf8))
+    let session = try #require(sessions[localKey])
+    await session.service.stop()
+    let restarted = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:app,cursor:definitionCaret))
+    #expect(restarted.sessionID != definition.sessionID)
+    #expect(restarted.locations.first?.path == "Models/Probe.swift")
+    let cancelled = Task { try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:app,cursor:definitionCaret)) }
+    cancelled.cancel()
+    do { _ = try await cancelled.value; Issue.record("Cancelled language request returned a stale result") } catch is CancellationError {} catch { Issue.record("Unexpected cancellation error: \(error)") }
+    let recovered = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:app,cursor:definitionCaret))
+    #expect(recovered.locations.first?.path == "Models/Probe.swift")
     let annotation = app+"\nfunc annotation(_ value: Probe) {}\n"
     let annotationCursor = annotation.distance(from:annotation.startIndex,to:annotation.range(of:"Probe)")!.lowerBound)+1
     let annotated = try await dev.ide(module:"ide/test",request:SwiftIDERequest(action:"definition",path:"App.swift",sha256:hash,text:annotation,cursor:annotationCursor))

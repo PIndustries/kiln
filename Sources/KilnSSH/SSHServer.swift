@@ -361,6 +361,8 @@ private final class ShellHandler: ChannelInboundHandler {
             guard channel.isActive, !shell.selectingText, shell.workspaceTask == nil else { return }
             if case .workspaceRead(let command) = shell.terminal?.completeCodeAfterTyping() {
                 shell.readWorkspace(command,channel:channel)
+            } else if case .workspaceRead(let command) = shell.terminal?.diagnoseCodeAfterTyping() {
+                shell.readWorkspace(command,channel:channel)
             }
         }
     }
