@@ -22,6 +22,7 @@ struct WorkspaceUI {
     private var sourceOffset = 0
     private var offset = 0, horizontal = 0, cursor = 0
     private var wrapping = false
+    private var vim = VimEditor()
     private var idePending: SwiftIDERequest?
     private var ideResult: SwiftIDEResult?
     private var ideIndex = 0
@@ -130,6 +131,7 @@ struct WorkspaceUI {
             let keepPosition = pending == "refresh" && path == file.file
             path = file.file; hash = file.sha256; source = file.source; version = file.version
             selected = entries.firstIndex(where: { $0.path == path }) ?? 0
+            vim.reset()
             mode = "browse"
             if !keepPosition { offset = 0; horizontal = 0; cursor = 0 }
             if let buffer = buffers.removeValue(forKey:path) {
@@ -138,6 +140,7 @@ struct WorkspaceUI {
                 offset = buffer.offset; horizontal = buffer.horizontal; isNew = buffer.isNew; mode = "edit"
                 if changed { error = "File changed on disk; original draft retained. Review before publishing." }
             }
+            if vim.enabled, editable, mode == "browse" { draft = source; mode = "edit"; isNew = false; treeFocus = false }
             if let location = jump { jump = nil; position(at:location) }
         } catch { self.error = "Invalid project browser response" }
     }
@@ -182,11 +185,24 @@ struct WorkspaceUI {
         }
     }
     private let scrollButtons = "[PgUp] [PgDn] [Top] [End] [<] [>]"
-    mutating func handle(_ key: TerminalKey, width: Int, height: Int) -> String? {
+    mutating func handle(_ input: TerminalKey, width: Int, height: Int) -> String? {
+        var key = input
         guard !waiting else { return nil }
         if case let .mouse(button,column,row,released) = key, !released, button == 0, row == 1 {
-            let action: TerminalKey? = (3...9).contains(column) ? .build : (11...15).contains(column) ? .run : (17...21).contains(column) ? .definition : (23...30).contains(column) ? .wrap : (32...41).contains(column) ? .complete : nil
+            let action: TerminalKey? = (3...9).contains(column) ? .build : (11...15).contains(column) ? .run : (17...21).contains(column) ? .definition : (23...30).contains(column) ? .wrap : (32...41).contains(column) ? .complete : (43...55).contains(column) ? .vim : nil
             if let action { ideResult = nil; return handle(action,width:width,height:height) }
+        }
+        if key == .vim, confirmation.isEmpty, ideResult == nil, mode == "browse" || mode == "edit" {
+            vim.enabled.toggle(); vim.reset()
+            if vim.enabled, editable {
+                if mode != "edit" { draft = source; isNew = false; mode = "edit" }
+                let before = String(draft.prefix(cursor))
+                position(at:SwiftIDELocation(path:path,line:before.components(separatedBy:"\n").count,column:(before.components(separatedBy:"\n").last?.utf16.count ?? 0)+1))
+            }
+            error = ""; return nil
+        }
+        if key == .panLeft || key == .panRight {
+            scroll(across:key == .panLeft ? -8 : 8,width:width,height:height); return nil
         }
         if [.build,.definition,.complete,.run].contains(key) { ideResult = nil }
         if key == .wrap {
@@ -298,7 +314,7 @@ struct WorkspaceUI {
                         }
                     }
                 }
-                else if mode == "browse", row >= 5, row < height-4 {
+                else if (mode == "browse" || vim.enabled && !vim.insert), row >= 5, row < height-4 {
                     treeFocus = true
                     let nodes = treeRows, selectedRow = nodes.firstIndex(where: { $0.1 == selected }) ?? 0
                     let index = max(0,selectedRow-max(1,height-10)+1)+row-5
@@ -354,9 +370,36 @@ struct WorkspaceUI {
             return nil
         }
         if mode == "edit" {
+            if vim.enabled, !vim.insert, vim.command == nil {
+                if key == .tab { treeFocus.toggle(); return nil }
+                if treeFocus {
+                    if key == .up || key == .text("k") { selected = max(0,selected-1) }
+                    if key == .down || key == .text("j") { selected = min(max(0,entries.count-1),selected+1) }
+                    if key == .enter, entries.indices.contains(selected) {
+                        if openNewBuffer(entries[selected].path) { treeFocus = false; return nil }
+                        retainBuffer(); return request("file",["web","file",module,entries[selected].path])
+                    }
+                    return nil
+                }
+            }
+            if vim.enabled {
+                switch vim.handle(key,text:&draft,cursor:&cursor) {
+                case .handled: return nil
+                case .notice(let notice): error = notice; return nil
+                case .key(let mapped): key = mapped; error = ""
+                case .write: key = .eof
+                case .quit:
+                    if hasUnsavedEdits { error = "Unsaved changes. :w publishes; F7 returns to standard editing." }
+                    else { active = false }
+                    return nil
+                case .wrap(let value): if value != wrapping { return handle(.wrap,width:width,height:height) }; return nil
+                case .disable: return handle(.vim,width:width,height:height)
+                }
+            }
             if key == .pageUp || key == .pageDown { scroll(key == .pageUp ? -max(1,height-8) : max(1,height-8),width:width,height:height); return nil }
             if key == .escape { confirmation = "discard"; accepted = false; return nil }
             if key == .eof { guard isNew || draft != source || !buffers.isEmpty else { error = "No changes to publish"; return nil }; confirmation = "publish"; accepted = false; return nil }
+            let previousDraft = draft, previousCursor = cursor
             var chars = Array(draft); cursor = min(cursor,chars.count)
             let lineStart = chars[..<cursor].lastIndex(of:"\n").map { $0+1 } ?? 0
             let lineEnd = chars[cursor...].firstIndex(of:"\n") ?? chars.count
@@ -379,6 +422,7 @@ struct WorkspaceUI {
                 if lineEnd < chars.count { let start = lineEnd+1, end = chars[start...].firstIndex(of:"\n") ?? chars.count; cursor = min(end,start+cursor-lineStart) }
             default: break
             }
+            if String(chars) != previousDraft { vim.record(previousDraft,previousCursor) }
             draft = String(chars)
             let before = Array(chars.prefix(cursor)), sourceLine = before.filter { $0 == "\n" }.count
             let visible = max(1,height-8)
@@ -448,6 +492,8 @@ struct WorkspaceUI {
         let w = width-4, h = height-2, left = 3, top = 2, treeWidth = min(32,max(18,w/4)), codeWidth = w-treeWidth-5
         let display = mode == "receipt" ? "" : mode == "edit" ? draft : source
         let lines = display.components(separatedBy:"\n")
+        let beforeCursor = String(display.prefix(cursor)), caretLine = beforeCursor.filter { $0 == "\n" }.count
+        let caretColumn = (beforeCursor.components(separatedBy:"\n").last ?? "").replacingOccurrences(of:"\t",with:"    ").count
         let visual = visualRows(width:width)
         let start = min(offset,max(0,visual.count-max(1,height-8)))
         var lexer = SourceSyntax(), syntax: [[Int?]] = []
@@ -458,7 +504,7 @@ struct WorkspaceUI {
         row(0,"+"+String(repeating:"-",count:w-2)+"+")
         row(1,"| "+fit("Codebase / \(module) / \(version)\(change == nil ? "" : " / read-only")",w-4)+" |")
         let refactorButton = mode == "browse" && editable && projectRoot && path.hasSuffix(".swift") ? " [R Refactor]" : ""
-        row(2,"| "+fit("FILES" + (treeFocus ? " [focus]" : ""),treeWidth)+"| "+fit(path + (mode == "edit" ? " [EDITING]" : !treeFocus ? " [focus]" : ""),codeWidth-refactorButton.count)+"\u{1b}[38;5;\(theme.accent)m"+refactorButton+"\u{1b}[38;5;\(theme.foreground)m|")
+        row(2,"| "+fit("FILES" + (treeFocus ? " [focus]" : ""),treeWidth)+"| "+fit(path + (mode == "edit" ? " [" + (vim.enabled ? vim.label : "EDITING") + "]" : !treeFocus ? " [focus]" : ""),codeWidth-refactorButton.count)+"\u{1b}[38;5;\(theme.accent)m"+refactorButton+"\u{1b}[38;5;\(theme.foreground)m|")
         if mode != "receipt" {
             let nodes = treeRows
             let selectedRow = nodes.firstIndex(where: { $0.1 == selected }) ?? 0
@@ -474,16 +520,18 @@ struct WorkspaceUI {
                 if index < lines.count {
                     let safe = KilnTerminal.safe(lines[index]).replacingOccurrences(of:"\t",with:"    ")
                     let content = String(safe.dropFirst(across).prefix(max(1,codeWidth-6)))
-                    body += "\u{1b}[38;5;244m"+String(format:"%5d ",index+1)+"\u{1b}[38;5;\(theme.foreground)m"+SourceSyntax.styled(fit(content,codeWidth-6),colors:Array(syntax[index].dropFirst(min(across,syntax[index].count))),base:theme.foreground)+"|"
+                    let active = !treeFocus && index == caretLine
+                    if active { body += "\u{1b}[48;5;234m" }
+                    body += "\u{1b}[38;5;244m"+String(format:"%5d",index+1)+(across > 0 && !safe.isEmpty ? "<" : active ? ">" : " ")+"\u{1b}[38;5;\(theme.foreground)m"+SourceSyntax.styled(fit(content,codeWidth-6),colors:Array(syntax[index].dropFirst(min(across,syntax[index].count))),base:theme.foreground)+"\u{1b}[48;5;\(theme.background)m"+(safe.count > across+codeWidth-6 ? ">" : "|")
                 } else { body += fit("",codeWidth)+"|" }
                 row(y,body)
             }
-            let footer = waiting ? "Working..." : !error.isEmpty ? error : mode == "edit" ? "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
+            let footer = waiting ? "Working..." : !error.isEmpty ? error : mode == "edit" ? vim.enabled ? vim.label+"  i insert  Esc normal  Tab files  :w publish  F7 standard" : "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
             row(h-3,"| "+fit(footer,w-4)+" |")
-            row(h-2,"| "+fit(scrollButtons+"  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)  Col \(horizontal+1)"+(wrapping ? "  Wrap ON" : "  Wrap OFF"),w-4)+" |")
+            row(h-2,"| "+fit(scrollButtons+"  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)  ViewCol \(horizontal+1)  Ln \(caretLine+1):\(caretColumn+1)"+(wrapping ? "  Wrap ON" : "  Wrap OFF"),w-4)+" |")
         }
         row(h-1,"+"+String(repeating:"-",count:w-2)+"+")
-        out += "\u{1b}[1;3H" + theme.accentCode + fit("[Build] [Run] [Def] [Wrap] [Complete]",width-5)
+        out += "\u{1b}[1;3H" + theme.accentCode + fit("[Build] [Run] [Def] [Wrap] [Complete] ["+vim.label+"]",width-5)
         if let result = ideResult {
             row(3,"| "+fit(result.message.components(separatedBy:"\n").first ?? "Swift tools",w-4)+" |")
             let labels = result.action == "complete" ? result.completions.map { $0.label+"  "+$0.detail } : result.locations.map { "\($0.path):\($0.line):\($0.column)  "+$0.message }
@@ -520,8 +568,8 @@ struct WorkspaceUI {
             row(5,"| "+fit(question,w-4)+" |")
             row(6,"| "+fit(accepted ? "  Cancel     > Confirm" : "> Cancel       Confirm",w-4)+" |")
             row(7,"| "+fit("Up/Down choose  Enter  Esc cancel",w-4)+" |")
-        } else if mode == "edit", ideResult == nil {
-            let before = String(draft.prefix(cursor)), line = before.filter { $0 == "\n" }.count
+        } else if (mode == "edit" || mode == "browse" && !treeFocus), ideResult == nil {
+            let before = String((mode == "edit" ? draft : source).prefix(cursor)), line = before.filter { $0 == "\n" }.count
             let rawColumn = KilnTerminal.safe(String(before.split(separator:"\n",omittingEmptySubsequences:false).last ?? "")).replacingOccurrences(of:"\t",with:"    ").count
             let visualIndex = wrapping ? visual.lastIndex(where: { $0.0 == line && $0.1 <= rawColumn }) ?? 0 : line
             let y = visualIndex-offset

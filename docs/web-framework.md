@@ -552,3 +552,23 @@ switches code/chat; dragging the center divider resizes both panes. This milesto
 covers registered Kiln Swift applications, not arbitrary SwiftPM/Xcode workspaces.
 Debugging, rename/find-references and general package/project import are future
 work; the current language service does not pretend those capabilities exist.
+
+### Modal editor and horizontal navigation
+
+F7 or the toolbar's **Vim** button toggles an optional normal/insert editing mode
+for this connection. Normal mode supports `hjkl`, `w/b`, `0/$`, `gg/G`, `i/a/I/A`,
+`o/O`, `x/dd`, undo `u`, and redo Ctrl-R. Escape returns to normal mode without
+throwing away the draft. Tab moves between the file tree and source; pending
+buffers survive file navigation. `:w` opens the existing compile/publish confirmation
+with Cancel selected. `:q` closes only when there are no pending changes.
+`:set wrap`, `:set nowrap`, and `:set novim` are also supported. This is a basic
+Vim editing mode, not an embedded Vim installation with plugins or every command.
+
+The source pane displays a highlighted caret line, a block cursor and an explicit
+line/column position. ViewCol identifies the horizontal viewport rather than the
+caret. `<` in the number gutter means content is hidden on the left; `>` replaces
+the right border on lines that continue beyond the viewport. Shorter rows are
+padded on every repaint. Horizontal SGR wheel events from a trackpad pan the code,
+as does Shift-wheel. Shift-Left/Right and the footer's arrow buttons provide
+fallbacks when the terminal does not forward sideways gestures. No-wrap remains
+the default; Wrap/F6 is available independently of Vim mode.

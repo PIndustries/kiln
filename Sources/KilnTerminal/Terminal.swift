@@ -74,7 +74,7 @@ public struct KilnTerminal {
         let chatCursor = chatCursorRange.map { String(right[$0]) } ?? "\u{1b}[?25l"
         let divider = (1...height).map { "\u{1b}[\($0);\(splitWidth)H" + theme.accentCode + ($0 == height/2 ? "+" : "|") }.joined()
         return "\u{1b}[?25l\u{1b}[H\u{1b}[2J" + code + label + right + divider
-            + (codeFocus ? codeCursor : chatCursor)
+            + (codeFocus ? "\u{1b}[2 q"+codeCursor : "\u{1b}[6 q"+chatCursor)
     }
     public private(set) var theme = TerminalTheme()
     public mutating func applyTheme(_ theme: TerminalTheme) { self.theme = theme }
@@ -461,7 +461,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap: break
+        case .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }

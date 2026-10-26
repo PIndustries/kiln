@@ -2,7 +2,7 @@ import Foundation
 
 public enum TerminalKey: Equatable {
     case text(String), up, down, left, right, home, end, delete, backspace, enter, escape, tab
-    case selectText, toggleThinking, focusWorkspace, complete, definition, build, run, wrap, pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
+    case selectText, toggleThinking, focusWorkspace, complete, definition, build, run, wrap, vim, redo, panLeft, panRight, pageUp, pageDown, interrupt, eof, clearBefore, clearAfter
     case paste(String)
     case mouse(button: Int, column: Int, row: Int, released: Bool)
 }
@@ -61,6 +61,9 @@ public struct TerminalKeys {
                     case "[3~": .delete
                     case "[15~": .run
                     case "[17~": .wrap
+                    case "[18~": .vim
+                    case "[1;2D": .panLeft
+                    case "[1;2C": .panRight
                     case "[23~": .build
                     case "[24~": .definition
                     case "[5~": .pageUp
@@ -78,6 +81,7 @@ public struct TerminalKeys {
             lastCR = byte == 13
             switch byte {
             case 0: keys.append(.complete)
+            case 18: keys.append(.redo)
             case 19: keys.append(.selectText)
             case 20: keys.append(.toggleThinking)
             case 23: keys.append(.focusWorkspace)
