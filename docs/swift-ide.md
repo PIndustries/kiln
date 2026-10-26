@@ -115,3 +115,23 @@ work. The queue holds up to 64 pending integrations and the store retains up to
 The existing 48-worker inference capacity remains separate from serialized writes
 to an application. No new package, database, workflow service or hosted Git server
 is required.
+
+In the split workspace, **Ctrl-P** opens the retained proposal list without
+closing chat. Enter a proposal to see its changed files, green/red diff and
+conflict marker. Tab switches between diff, current source, proposed source and
+the original base; click a file or use `[` / `]` to change files. Vertical and
+horizontal scrolling apply to the review pane. `R` refreshes the review.
+
+`S`, followed by Enter, stages the selected proposed file as a **local draft**
+against the current file hash. It does not publish or change the running app.
+Existing local edits must be saved or discarded first. If the source or retained
+proposal changed since inspection, staging rejects the stale review. Edit the
+staged file to resolve the conflict, build, then use the regular guarded publish
+control. Proposed deletions are inspected here but require the workspace's normal
+explicit Delete action. Staging an old proposal is an operator choice; it does
+not retry the original agent's publication.
+
+While reviewing a proposal, chat receives its worker and selected-file context.
+The AI can inspect that owned proposal through `read_web_diff` with
+`change: agent:WORKER-UUID`. Review context is explicitly read-only and is not
+reported as an unsaved local edit; staging is a separate operator action.

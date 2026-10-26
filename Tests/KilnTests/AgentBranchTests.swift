@@ -140,3 +140,26 @@ private extension WebDevelopment {
     let jobs = (try? FileManager.default.contentsOfDirectory(atPath:root.appendingPathComponent("web-development/jobs").path)) ?? []
     #expect(jobs.isEmpty)
 }
+
+@Test func agentReviewStagesAgainstFreshSourceWithoutWritingAndRejectsStaleReviewOrDeletion() async throws {
+    guard WebIsolation.supported else { return }
+    let root = try branchRoot(); defer { try? FileManager.default.removeItem(at:root) }
+    let (dev,config) = try await branchFixture(root), worker = UUID().uuidString.lowercased()
+    let edits = "[{\"before\":\"original\",\"after\":\"proposed\"}]"
+    _ = try await dev.prepareAgent(module:"demo/web",worker:worker,owner:"one",edits:edits,limit:8)
+    let first = try JSONDecoder().decode(AgentFileReview.self,from:Data(await dev.reviewAgent(module:"demo/web",worker:worker,owner:"one").utf8))
+    try KilnStateFile.write(Data("newer live source".utf8),to:URL(fileURLWithPath:config.source))
+    await #expect(throws:(any Error).self) { try await dev.stageAgentFile(module:"demo/web",worker:worker,owner:"one",path:"App.swift",currentSHA256:first.currentSHA256,proposalSHA256:first.proposalSHA256) }
+    let fresh = try JSONDecoder().decode(AgentFileReview.self,from:Data(await dev.reviewAgent(module:"demo/web",worker:worker,owner:"one").utf8))
+    #expect(fresh.conflict)
+    let draft = try JSONDecoder().decode(SwiftIDEResult.self,from:Data(await dev.stageAgentFile(module:"demo/web",worker:worker,owner:"one",path:"App.swift",currentSHA256:fresh.currentSHA256,proposalSHA256:fresh.proposalSHA256).utf8))
+    #expect(draft.renameFiles?["App.swift"]?.source == "newer live source")
+    #expect(draft.renameFiles?["App.swift"]?.text == "proposed")
+    #expect(try String(contentsOfFile:config.source,encoding:.utf8) == "newer live source")
+    let removal = UUID().uuidString.lowercased(), modelHash = WebIsolation.digest(Data("model".utf8))
+    _ = try await dev.prepareAgent(module:"demo/web",worker:removal,owner:"one",edits:"[{\"path\":\"Models/Value.swift\",\"action\":\"delete\",\"sha256\":\"\(modelHash)\"}]",limit:8)
+    let deletion = try JSONDecoder().decode(AgentFileReview.self,from:Data(await dev.reviewAgent(module:"demo/web",worker:removal,owner:"one").utf8))
+    #expect(deletion.proposed == nil)
+    await #expect(throws:(any Error).self) { try await dev.stageAgentFile(module:"demo/web",worker:removal,owner:"one",path:deletion.path,currentSHA256:deletion.currentSHA256,proposalSHA256:deletion.proposalSHA256) }
+    #expect(try WebFiles.read(config).files["Models/Value.swift"] != nil)
+}

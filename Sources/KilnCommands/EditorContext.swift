@@ -4,6 +4,7 @@ import KilnAI
 extension KilnCommands {
     /// UI context narrows an existing development grant; it never grants access.
     func validateEditorWrite(_ context: [String:String], module: String) async throws {
+        guard context["reviewWorker"] == nil else { throw AIError.message("This is a retained proposal review. Stage the proposed file as a local draft, then save or discard it before requesting AI publication.") }
         guard module == context["module"], context["unsaved"] == "false", context["revision"] == "workspace",
               let path = context["path"] else {
             throw AIError.message("Editor changes require the active application and a clean current workspace. Save/discard local edits before AI publishing.")

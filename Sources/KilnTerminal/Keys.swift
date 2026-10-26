@@ -1,6 +1,7 @@
 import Foundation
 
 public enum TerminalKey: Equatable {
+    case agentReview
     case followAgent
     case references, rename, diagnostics
     case text(String), up, down, left, right, home, end, delete, backspace, enter, escape, tab
@@ -87,6 +88,7 @@ public struct TerminalKeys {
             lastCR = byte == 13
             switch byte {
             case 0: keys.append(.complete)
+            case 16: keys.append(.agentReview)
             case 18: keys.append(.redo)
             case 19: keys.append(.selectText)
             case 20: keys.append(.toggleThinking)

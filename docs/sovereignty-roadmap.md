@@ -94,11 +94,13 @@ validated proposals. A per-app integration queue combines independent-file edits
 retains conflicts, recompiles merged source, and checks source/release generations.
 Cancelled or interrupted integrations never replay automatically. Local acceptance
 includes real SSH worker read/validate/publish and a changed healthy HTTP release,
-plus reconnect/steering and retained proposal diff inspection. The provider in that
+plus reconnect/steering and retained proposal diff inspection. The terminal workspace
+now has an independent Ctrl-P proposal review, current/base/proposed source tabs,
+colored per-file diffs, stale-review rejection and explicit local draft staging. The provider in that
 acceptance is a deterministic fixture; live-provider behavior remains a separate gate.
 
 These are concrete parts of milestones 1–4, not acceptance of all eight areas.
-Task dependencies, conflict-resolution UI, formatting/code actions, LLDB and Swift
+Task dependencies, multi-file conflict-resolution workflows, formatting/code actions, LLDB and Swift
 test navigation, behavior-driven browser tools, live component lifecycle and the
 persisted proving application remain open. Hosted validation and clean-machine
 reproducibility remain separate gates. Portable bundles are still deferred.

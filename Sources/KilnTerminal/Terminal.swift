@@ -73,7 +73,7 @@ public struct KilnTerminal {
     private mutating func handleCode(_ key: TerminalKey) -> [TerminalEffect] {
         // A single foreground write/inference can run; read-only browsing is independent.
         if busy, codeWorkspace?.canBrowseDuringTurn != true { return [] }
-        if busy, ![.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
+        if busy, codeWorkspace?.reviewingAgent != true, ![.agentReview,.followAgent,.up,.down,.left,.right,.pageUp,.pageDown,.home,.end,.tab,.enter,.escape,.definition,.references,.diagnostics,.build,.wrap].contains(key) {
             if case .mouse = key {} else { return [] }
         }
         if busy, case let .mouse(button,column,row,_) = key, button == 0, row == 1, (11...15).contains(column) { return [] }
@@ -87,7 +87,7 @@ public struct KilnTerminal {
             }
             return []
         }
-        if command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") || command.hasPrefix("'web' 'ide' ") {
+        if command.hasPrefix("'web' 'agents' ") || command.hasPrefix("'web' 'agent-review' ") || command.hasPrefix("'web' 'agent-stage' ") || command.hasPrefix("'web' 'browse' ") || command.hasPrefix("'web' 'file' ") || command.hasPrefix("'web' 'ide' ") {
             return [.workspaceRead(command)]
         }
         guard !busy else { return [] }
@@ -513,7 +513,7 @@ public struct KilnTerminal {
     private mutating func edit(_ key: TerminalKey) -> [TerminalEffect] {
         var characters = Array(input)
         switch key {
-        case .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
+        case .agentReview, .followAgent, .references, .rename, .diagnostics, .selectText, .toggleThinking, .focusWorkspace, .complete, .definition, .build, .run, .wrap, .vim, .redo, .panLeft, .panRight: break
         case .escape: drawer = false
         case .interrupt: input = ""; cursor = 0; historyPosition = nil
         case .eof: if input.isEmpty { drawer = false }

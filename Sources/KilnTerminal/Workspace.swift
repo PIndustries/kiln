@@ -6,6 +6,7 @@ struct WorkspaceUI {
     let module: String
     let change: String?
     var active = true
+    private var proposalReview: AgentReviewUI?
     private var agentFile: AISourcePreview?
     private var followingAgent = true
     private var agentOffset = 0, agentHorizontal = 0
@@ -43,7 +44,7 @@ struct WorkspaceUI {
     private var diagnostics: [SwiftIDELocation] = []
     private var renameName = ""
     private var toolbar: [(String,TerminalKey)] {
-        [("[Build]",.build),("[Run]",.run),("[Def]",.definition),("[Wrap]",.wrap),("[Complete]",.complete),("["+vim.label+"]",.vim),("[Refs F9]",.references),("[Rename F10]",.rename),("[Issues F4]",.diagnostics)]
+        [("[Build]",.build),("[Run]",.run),("[Def]",.definition),("[Wrap]",.wrap),("[Complete]",.complete),("["+vim.label+"]",.vim),("[Refs F9]",.references),("[Rename F10]",.rename),("[Issues F4]",.diagnostics),("[Proposals Ctrl-P]",.agentReview)]
     }
     private var ideIndex = 0
     private var jump: SwiftIDELocation?
@@ -154,12 +155,17 @@ struct WorkspaceUI {
     }
     init(module: String, change: String? = nil) { self.module = module; self.change = change }
     private func command(_ parts: [String]) -> String { parts.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ") }
-    var canBrowseDuringTurn: Bool { mode == "browse" && confirmation.isEmpty }
+    var reviewingAgent: Bool { proposalReview != nil }
+    var canBrowseDuringTurn: Bool { proposalReview != nil || (mode == "browse" && confirmation.isEmpty) }
     var filePath: String { followingAgent && !hasUnsavedEdits ? agentFile?.path ?? path : path }
     var hasUnsavedEdits: Bool { (["edit","rename"].contains(mode) && (isNew || draft != source)) || recoverableDraft || publishingDraft || buffers.values.contains { $0.isNew || $0.draft != $0.source } }
     var contextJSON: String? { contextJSON(width:120) }
     func contextJSON(width: Int) -> String? {
         guard !hash.isEmpty, !waiting, mode != "receipt", mode != "name" else { return nil }
+        if let review = proposalReview?.fileContext {
+            let context = ["module":module,"path":review.1 == "missing" ? path : review.0,"sha256":review.1 == "missing" ? hash : review.1,"revision":"workspace","unsaved":hasUnsavedEdits ? "true" : "false","firstVisibleLine":String(review.2),"reviewWorker":review.3]
+            return (try? JSONEncoder().encode(context)).map { String(decoding:$0,as:UTF8.self) }
+        }
         let shown = followingAgent && !hasUnsavedEdits ? agentFile : nil
         let context: [String: String] = ["module": module, "path": shown?.path ?? path, "sha256": shown == nil ? hash : "",
             "revision": change ?? "workspace", "unsaved": hasUnsavedEdits || shown?.draft == true ? "true" : "false",
@@ -168,12 +174,28 @@ struct WorkspaceUI {
         return String(data: data, encoding: .utf8)
     }
     mutating func refresh() -> String? {
-        guard !waiting, idePending == nil, ideResult == nil, !hasUnsavedEdits, mode == "browse" else { return nil }
+        guard proposalReview == nil, !waiting, idePending == nil, ideResult == nil, !hasUnsavedEdits, mode == "browse" else { return nil }
         return request("refresh", ["web", "browse", module, path] + (change.map { [$0] } ?? []))
     }
     func load() -> String { command(["web", change == nil ? "workspace" : "browse", module, "App.swift"] + (change.map { [$0] } ?? [])) }
     private mutating func request(_ name: String, _ parts: [String]) -> String { waiting = true; pending = name; error = ""; return command(parts) }
     mutating func finish(text: String, status: Int) {
+        if pending == "agent-review", proposalReview != nil {
+            proposalReview?.finish(text,status:status); return
+        }
+        if pending == "agent-stage", proposalReview != nil {
+            guard status == 0, !hasUnsavedEdits,
+                  let result = try? JSONDecoder().decode(SwiftIDEResult.self,from:Data(text.utf8)),
+                  let proposed = result.renameFiles, let filePath = proposed.keys.first, let file = proposed[filePath] else {
+                proposalReview?.failedStage(status == 0 ? "Existing local edits must be saved or discarded before staging" : text); return
+            }
+            proposalReview = nil; waiting = false; followingAgent = false
+            path = filePath; source = file.source; draft = file.text; hash = file.sha256
+            isNew = hash.isEmpty; mode = "edit"; treeFocus = false; cursor = 0; offset = 0; horizontal = 0
+            if !entries.contains(where: { $0.path == path }) { entries.append(Entry(path:path,sha256:hash,bytes:draft.utf8.count)); entries.sort { $0.path < $1.path } }
+            selected = entries.firstIndex(where: { $0.path == path }) ?? 0
+            error = "Agent proposal staged locally. Review/edit, Build, then Ctrl-D publish."; return
+        }
         let previousSource = source, previousPath = path
         defer { if source != previousSource || path != previousPath { diagnostics = []; diagnosticsReady = true } }
         if let query = idePending {
@@ -287,6 +309,21 @@ struct WorkspaceUI {
     }
     private let scrollButtons = "[PgUp] [PgDn] [Top] [End] [<] [>]"
     mutating func handle(_ input: TerminalKey, width: Int, height: Int) -> String? {
+        if proposalReview != nil {
+            if let action = proposalReview?.handle(input,width:width,height:height) {
+                switch action {
+                case .read(let parts): pending = "agent-review"; return command(parts)
+                case .stage(let parts): pending = "agent-stage"; return command(parts)
+                }
+            }
+            if proposalReview?.active == false { proposalReview = nil }
+            return nil
+        }
+        if input == .agentReview {
+            guard !waiting, idePending == nil, !hasUnsavedEdits else { error = "Save or discard local edits before reviewing proposals"; return nil }
+            followingAgent = false; proposalReview = AgentReviewUI(module:module); pending = "agent-review"
+            return command(["web","agents",module])
+        }
         let previousDraft = draft, previousPath = path
         defer { if draft != previousDraft || path != previousPath { diagnosticsReady = true; diagnostics = [] } }
         autoCompletionReady = false
@@ -645,6 +682,7 @@ struct WorkspaceUI {
     }
     func render(width: Int, height: Int, theme: TerminalTheme) -> String {
         guard width >= 50, height >= 16 else { return "" }
+        if let proposalReview { return proposalReview.render(width:width,height:height,theme:theme) }
         if followingAgent, let file = agentFile, !hasUnsavedEdits {
             var preview = self; preview.agentFile = nil; preview.path = file.path
             preview.source = file.source; preview.mode = "browse"; preview.editable = false
@@ -696,7 +734,7 @@ struct WorkspaceUI {
                 } else { body += fit("",codeWidth)+"|" }
                 row(y,body)
             }
-            let footer = waiting ? "Working..." : !recoveryFailure.isEmpty ? recoveryFailure : !error.isEmpty ? error : mode == "edit" ? vim.enabled ? vim.label+"  i insert  Esc normal  Tab files  :w publish  F7 standard" : "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
+            let footer = waiting ? "Working..." : !recoveryFailure.isEmpty ? recoveryFailure : !error.isEmpty ? error : mode == "edit" ? vim.enabled ? vim.label+"  i insert  Esc normal  Tab files  :w publish  F7 standard" : "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Ctrl-P proposals  Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
             row(h-3,"| "+fit(footer,w-4)+" |")
             let issueStatus = diagnostics.isEmpty ? "" : "\(diagnostics.count) issues [F4]  "
             row(h-2,"| "+fit(issueStatus+scrollButtons+"  "+(wrapping ? "Wrap ON" : "Wrap OFF")+"  Ln \(caretLine+1):\(caretColumn+1)  ViewCol \(horizontal+1)  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)",w-4)+" |")

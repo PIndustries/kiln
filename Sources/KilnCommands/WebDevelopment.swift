@@ -118,6 +118,14 @@ extension KilnCommands {
         case let p where p.count == 4 && p[1] == "preview":
             let text = try await webDevelopment.preview(module: p[2], path: p[3])
             try authorizeAdmin(); return CommandResult(text)
+        case let p where (p.count == 4 || p.count == 5) && p[1] == "agent-review":
+            let owner = try aiOwnerFingerprint(), text = try await webDevelopment.reviewAgent(module:p[2],worker:p[3],owner:owner,path:p.count == 5 ? p[4] : nil)
+            try authorizeAdmin(); guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Agent review authorization changed") }
+            return CommandResult(text)
+        case let p where p.count == 7 && p[1] == "agent-stage":
+            let owner = try aiOwnerFingerprint(), text = try await webDevelopment.stageAgentFile(module:p[2],worker:p[3],owner:owner,path:p[4],currentSHA256:p[5],proposalSHA256:p[6])
+            try authorizeAdmin(); guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Agent staging authorization changed") }
+            return CommandResult(text)
         case let p where p.count == 3 && p[1] == "agents":
             let owner = try aiOwnerFingerprint(), text = try await webDevelopment.agentHistory(module:p[2],owner:owner)
             try authorizeAdmin(); guard try aiOwnerFingerprint() == owner else { throw KilnError.message("Agent inspection authorization changed") }

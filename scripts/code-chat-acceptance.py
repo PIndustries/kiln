@@ -119,7 +119,7 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         send(b'\x13'); expect('SELECT TEXT'); send(b'\x13')
         expect('Complete: Now explain this file')
         send(b'Observe live draft\r'); expect('AGENT DRAFT'); expect('AgentDraft')
-        assert 'App: draft/site | Models/Counter.swift' in frame()
+        expect('App: draft/site | Models/Counter.swift')
         # F8 lets the operator browse without the worker moving the source pane.
         send(b'\x17\x1b[19~'); expect('actor Counter')
         send(b'\x1b[19~'); expect('AgentDraft')
@@ -180,6 +180,24 @@ with tempfile.TemporaryDirectory(prefix='kiln-editor-draft-') as td:
         assert b'Isolated agent publication.' in get('/')
         assert json.loads(get('/__kiln/instance'))['instance'] != old_instance
         print('PASS worker read/validate/publish: isolated snapshot, compiled proposal, queued integration, retained source diff, new healthy HTTP release',flush=True)
+        # Review and resolve a deliberate source conflict inside the same split
+        # workspace, without CLI navigation or another publication.
+        instance_after_publish = json.loads(get('/__kiln/instance'))['instance']
+        external = source.read_bytes().replace(b'Isolated agent publication.', b'Concurrent source change.')
+        source.write_bytes(external)
+        send(b'\x17\x1b'); expect('Discard unsaved edits?')
+        send(b'\x1b[A\r'); expect('Codebase / draft/site')
+        send(b'\x10'); expect('AGENT PROPOSALS'); expect('integrated')
+        send(b'\r'); expect('CONFLICT'); expect('[Current]'); drain()
+        assert b'\x1b[38;5;82m' in wire and b'\x1b[38;5;203m' in wire
+        send(b'\t'); expect('>[Current]')
+        send(b'\t'); expect('>[Proposed]')
+        send(b'\t'); expect('>[Base]')
+        send(b's'); expect('Use proposed file as a local draft?')
+        send(b'\r'); expect('Agent proposal staged locally.')
+        assert source.read_bytes() == external
+        assert json.loads(get('/__kiln/instance'))['instance'] == instance_after_publish
+        print('PASS Terminal proposal review: conflict, source tabs, colored diff, explicit local draft staging; live source/release unchanged by staging',flush=True)
         (root/'passed').touch(); (root/'done').touch()
         print('PASS real SSH: local unsaved draft and divider recovered across disconnect; workspace worker automatically reattached and accepted context; independent worker survives disconnect/reattach; live read-only agent draft and F8 follow; code+chat visible; read-only phase preserved source and worker; isolated publication verified separately',flush=True)
         runtime.wait(timeout=30); assert runtime.returncode==0

@@ -419,8 +419,7 @@ private final class ShellHandler: ChannelInboundHandler {
     func readWorkspace(_ line: String, channel: Channel) {
         guard workspaceTask == nil else { return }
         // A separate lane is deliberately restricted to registered source reads.
-        guard let parts = try? KilnCommands.tokenize(line), parts.count >= 4,
-              parts[0] == "web", ["browse", "file", "ide", "workspace"].contains(parts[1]) else { return }
+        guard let parts = try? KilnCommands.tokenize(line), workspaceReadAllowed(parts) else { return }
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands, sessionID = owner.uuidString
         workspaceTask = Task {

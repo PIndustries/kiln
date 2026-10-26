@@ -166,3 +166,32 @@ extension WebDevelopment {
         return String(decoding:try JSONEncoder().encode(files),as:UTF8.self)
     }
 }
+
+extension WebDevelopment {
+    public func reviewAgent(module: String, worker: String, owner: String, path: String? = nil) throws -> String {
+        let (folder,record,base) = try branch(module:module,worker:worker,owner:owner,create:false,checkRegistration:false)
+        guard record.proposal != nil else { throw KilnError.message("This worker has not saved a proposed change yet. Refresh after validation begins.") }
+        let proposal = try WebFiles.retained(at:folder), current = try WebFiles.read(project(module).configuration)
+        guard try proposal.digest == record.proposal else { throw KilnError.message("Agent proposal integrity failed") }
+        let changed = Set(base.files.keys).union(proposal.files.keys).filter { base.files[$0] != proposal.files[$0] }.sorted()
+        guard let selected = path ?? changed.first, changed.contains(selected) else { throw KilnError.message("No proposed change for this file") }
+        let before = base.files[selected], after = proposal.files[selected], live = current.files[selected]
+        let diff = try DevelopmentGit(directory:folder.appendingPathComponent("diff")).diff(before:before.map { [selected:$0] } ?? [:],after:after.map { [selected:$0] } ?? [:])
+        let status = ["queued","integrating"].contains(record.status) && !agentIntegrating.contains(folder.lastPathComponent) ? "interrupted-needs-inspection" : record.status
+        let view = AgentFileReview(worker:worker,status:status,files:changed,path:selected,base:before.map { String(decoding:$0,as:UTF8.self) },current:live.map { String(decoding:$0,as:UTF8.self) },proposed:after.map { String(decoding:$0,as:UTF8.self) },currentSHA256:live.map(WebIsolation.digest) ?? "missing",proposalSHA256:try proposal.digest,conflict:live != before && live != after,diff:diff)
+        return String(decoding:try JSONEncoder().encode(view),as:UTF8.self)
+    }
+    /// An explicit operator choice creates a local draft; this never publishes.
+    public func stageAgentFile(module: String, worker: String, owner: String, path: String, currentSHA256: String, proposalSHA256: String) throws -> String {
+        let (folder,record,_) = try branch(module:module,worker:worker,owner:owner,create:false)
+        guard !agentIntegrating.contains(folder.lastPathComponent) else { throw KilnError.message("Wait for integration to finish before staging a file") }
+        let proposal = try WebFiles.retained(at:folder), current = try WebFiles.read(project(module).configuration)
+        guard try proposal.digest == record.proposal, record.proposal == proposalSHA256,
+              (current.files[path].map(WebIsolation.digest) ?? "missing") == currentSHA256 else { throw KilnError.message("Source or proposal changed. Refresh the review before staging.") }
+        guard let after = proposal.files[path] else { throw KilnError.message("This proposal deletes the file. Inspect it, then use the workspace's explicit Delete action; nothing was staged.") }
+        let before = current.files[path] ?? Data()
+        var result = SwiftIDEResult(action:"agent-draft",message:"Agent file staged locally. Review/edit the draft and build before publishing.")
+        result.renameFiles = [path:SwiftIDERenameFile(source:String(decoding:before,as:UTF8.self),sha256:current.files[path].map(WebIsolation.digest) ?? "",text:String(decoding:after,as:UTF8.self))]
+        return String(decoding:try JSONEncoder().encode(result),as:UTF8.self)
+    }
+}
