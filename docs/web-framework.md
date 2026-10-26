@@ -572,3 +572,80 @@ padded on every repaint. Horizontal SGR wheel events from a trackpad pan the cod
 as does Shift-wheel. Shift-Left/Right and the footer's arrow buttons provide
 fallbacks when the terminal does not forward sideways gestures. No-wrap remains
 the default; Wrap/F6 is available independently of Vim mode.
+
+### Native Swift views and MVC
+
+KilnWeb provides a server-side `View` protocol and `@ViewBuilder`, inspired by
+SwiftUI's composition syntax. This renders web HTML; it does not import Apple's
+SwiftUI or run Swift in the browser. The application remains Swift, with the
+existing small framework browser client handling live events and reloads.
+
+```swift
+import KilnWeb
+
+struct HomePage: View {
+    let name: String
+    var body: some View {
+        VStack(spacing: 16) {
+            H1("Hello, \(name)")
+            Paragraph("Rendered by Swift").cssClass("intro")
+            Link("Live demo", href: "/counter")
+        }.cssClass("home").padding(24).background("var(--bg)")
+    }
+}
+// Inside a controller action:
+// return .view(HomePage(name: request.parameters["name"] ?? "friend"))
+```
+
+`Text` and text constructors escape values. ViewBuilder supports conditions,
+optional branches, loops and composed custom views. `HTML` also conforms to View,
+so existing typed markup remains usable. CSS classes, IDs and styles stay under
+application control. Semantic HTML elements keep existing CSS selectors working;
+`VStack`/`HStack` add flex layout, while `.style` provides a CSS escape hatch for
+trusted application styles. Use CSS variables for customer colors, with Kiln's
+black-and-green defaults. Dynamic data belongs in text or validated attributes,
+not constructed CSS, scripts or unvalidated URL schemes.
+
+The runnable source example is `examples/native-mvc`: `App.swift` boots the
+server, `Routes.swift` registers actions, `Models` owns state, `Controllers`
+handles requests/live events, and `Views` holds pure value views and layouts.
+The live controller implements LiveView, reads its actor model, renders a native
+view, and changes the model only in event handlers. Views do not send requests.
+There are no SwiftUI property wrappers, browser-side state or client build step.
+
+### HTML templates alongside native views
+
+With a newly exported SDK, registered `Views/**/*.html` files are embedded in
+the isolated build. No template file is read from the host filesystem at runtime.
+Template names are relative to `Views/`, without the `.html` extension:
+
+```html
+<!-- Views/Home/greeting.html -->
+<h1>Hello, {{name}}</h1>
+<div>{{content}}</div>
+```
+
+```swift
+let html = try AppTemplates.render("Home/greeting", values: [
+    "name": .text(name),
+    "content": .view(HomePage(name: name).render())
+])
+return .view(html)
+```
+
+`.text` escapes data by default. `.view` explicitly supplies typed HTML from a
+native component; it is refused in attribute slots. Slots must be identifiers;
+attribute slots must be quoted, and script/style/event-handler slots are refused.
+All required values must be present; unknown templates and missing values throw.
+This initial template syntax provides named slots, not executable template code,
+loops or inheritance. Compose layouts/partials with native Swift and typed slots.
+Templates participate in source history, diffs, builds, publication and rollback.
+SourceKit sees the generated template API for completion in Swift controllers;
+template parsing is checked during builds. Rebuild/publish to change a template.
+
+An administrator must export and register an updated immutable SDK to enable
+these APIs; older registered SDKs stay pinned. `web projects` reports native-view
+and template support. For large local patch imports, administrator-only
+`web apply-file APP/MODULE /absolute/owned-patch.json` uses the same hash checks,
+isolated build and atomic publication as the editor. AI tools cannot read this
+host path; they continue using registered project tools.

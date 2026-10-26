@@ -9,6 +9,8 @@ import Glibc
 
 public struct WebBuildSDK: Codable, Sendable {
     public var projectFiles: Bool? = nil
+    public var nativeViews: Bool? = nil
+    public var htmlTemplates: Bool? = nil
     public let schemaVersion: Int
     public let compiler: String
     public let arguments: [String]
@@ -106,7 +108,8 @@ public enum WebIsolation {
         let snapshot = try WebFiles.retained(at: root)
         let sources = snapshot.files.keys.filter { $0.hasSuffix(".swift") }.sorted()
         let sourceRoot = root.appendingPathComponent("Sources")
-        let paths = FileManager.default.fileExists(atPath: sourceRoot.path) ? sources.map { sourceRoot.appendingPathComponent($0).path } : [root.appendingPathComponent("App.swift").path]
+        var paths = FileManager.default.fileExists(atPath: sourceRoot.path) ? sources.map { sourceRoot.appendingPathComponent($0).path } : [root.appendingPathComponent("App.swift").path]
+        if let generated = try WebTemplateCompiler.write(snapshot.files,at:root) { paths.append(generated.path) }
         let args = ["/usr/bin/sandbox-exec", "-p", buildProfile(sdk: sdk, job: root.path), sdk.compiler] + sdk.arguments +
             ["-module-cache-path", root.appendingPathComponent("cache").path] + paths + sdk.objects +
             ["-o", root.appendingPathComponent("app").path]

@@ -44,7 +44,7 @@ struct WorkspaceUI {
         return true
     }
     private mutating func swiftTool(_ action: String) -> String? {
-        guard change == nil, path.hasSuffix(".swift"), !waiting, idePending == nil else { return nil }
+        guard change == nil, (path.hasSuffix(".swift") || action == "build"), !waiting, idePending == nil else { return nil }
         if action == "complete", mode != "edit" {
             guard editable else { return nil }; draft = source; isNew = false; mode = "edit"
             offset = min(offset, String(source.prefix(cursor)).filter { $0 == "\n" }.count)
@@ -528,7 +528,7 @@ struct WorkspaceUI {
             }
             let footer = waiting ? "Working..." : !error.isEmpty ? error : mode == "edit" ? vim.enabled ? vim.label+"  i insert  Esc normal  Tab files  :w publish  F7 standard" : "Ctrl-Space complete  F12 def  F11 build  Ctrl-D publish  Esc cancel" : (change == nil ? "Wheel scroll  Tab focus  Enter open  E edit  A add  X delete  R refactor  Esc back" : "Read-only revision  W workspace  Tab focus  Enter open  PgUp/Dn  Esc back")
             row(h-3,"| "+fit(footer,w-4)+" |")
-            row(h-2,"| "+fit(scrollButtons+"  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)  ViewCol \(horizontal+1)  Ln \(caretLine+1):\(caretColumn+1)"+(wrapping ? "  Wrap ON" : "  Wrap OFF"),w-4)+" |")
+            row(h-2,"| "+fit(scrollButtons+"  "+(wrapping ? "Wrap ON" : "Wrap OFF")+"  Ln \(caretLine+1):\(caretColumn+1)  ViewCol \(horizontal+1)  Lines \(visual.indices.contains(start) ? visual[start].0+1 : 1)-\(visual.isEmpty ? 1 : visual[min(visual.count-1,start+max(1,height-8)-1)].0+1)/\(lines.count)",w-4)+" |")
         }
         row(h-1,"+"+String(repeating:"-",count:w-2)+"+")
         out += "\u{1b}[1;3H" + theme.accentCode + fit("[Build] [Run] [Def] [Wrap] [Complete] ["+vim.label+"]",width-5)

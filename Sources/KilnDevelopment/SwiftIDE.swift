@@ -4,7 +4,7 @@ import KilnKit
 extension WebDevelopment {
     public func ide(module: String, request: SwiftIDERequest) async throws -> SwiftIDEResult {
         guard WebIsolation.supported, ideRequests < 4, ["complete","definition","build"].contains(request.action),
-              WebFiles.validPath(request.path), request.path.hasSuffix(".swift"), request.text.utf8.count <= 65536,
+              WebFiles.validPath(request.path), (request.path.hasSuffix(".swift") || request.action == "build"), request.text.utf8.count <= 65536,
               (0...request.text.count).contains(request.cursor) else { throw KilnError.message("Invalid Swift IDE request or language service busy") }
         let registered = try project(module)
         var snapshot = try WebFiles.read(registered.configuration)
@@ -48,6 +48,7 @@ extension WebDevelopment {
             return result
         }
         let swiftPaths = snapshot.files.keys.filter { $0.hasSuffix(".swift") }.sorted()
+        _ = try WebTemplateCompiler.write(snapshot.files,at:root)
         let reply = try await SwiftLanguage(sdk:registered.sdk,root:root,paths:swiftPaths,source:request.text,selected:request.path).query(action:request.action,cursor:request.cursor)
         let raw = (try JSONSerialization.jsonObject(with:reply) as? [String:Any])?["value"]
         var result = SwiftIDEResult(action:request.action,message:"SourceKit-LSP")

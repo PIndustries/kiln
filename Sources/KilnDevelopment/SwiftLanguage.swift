@@ -19,7 +19,9 @@ struct SwiftLanguage {
         let compiler = URL(fileURLWithPath:sdk.compiler)
         let executable = compiler.deletingLastPathComponent().appendingPathComponent("sourcekit-lsp")
         guard FileManager.default.isExecutableFile(atPath:executable.path) else { throw KilnError.message("SourceKit-LSP is missing from the registered Swift toolchain") }
-        let files = paths.map { root.appendingPathComponent("Sources/"+$0) }
+        var files = paths.map { root.appendingPathComponent("Sources/"+$0) }
+        let generated = root.appendingPathComponent("GeneratedKilnViews.swift")
+        if FileManager.default.fileExists(atPath:generated.path) { files.append(generated) }
         let database: [[String:Any]] = files.map { file in
             ["directory":root.path,"file":file.path,"arguments":[sdk.compiler]+sdk.arguments+["-typecheck",file.path]+files.filter { $0 != file }.map(\.path)]
         }

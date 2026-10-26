@@ -2,6 +2,11 @@ import Foundation
 import KilnKit
 import KilnAI
 import KilnDevelopment
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 extension KilnCommands {
     func webCommand(_ parts: [String], sessionID: String = "web-console", progress: @escaping @Sendable (AIProgress) -> Void) async throws -> CommandResult {
@@ -46,6 +51,17 @@ extension KilnCommands {
         case let p where p.count == 6 && p[1] == "refactor":
             let request = try await webDevelopment.refactor(module: p[2], path: p[3], sha256: p[4], style: p[5])
             return try await aiCommand(["ai", "ask", request.prompt], sessionID: sessionID, progress: progress, webRefactor: request)
+        case let p where p.count == 4 && p[1] == "apply-file":
+            // Administrator-only local patch import, parallel to web register.
+            // Providers have no tool that exposes this host-filesystem command.
+            let fd = open(p[3],O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+            guard fd >= 0 else { throw KilnError.message("Patch file unavailable or a symbolic link") }
+            let handle = FileHandle(fileDescriptor:fd,closeOnDealloc:true); defer { try? handle.close() }
+            var info = stat()
+            guard fstat(fd,&info) == 0, info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_mode & 0o022 == 0, info.st_size >= 0, info.st_size <= 262144 else { throw KilnError.message("Patch must be an owned regular file, not writable by other users, at most 256 KiB") }
+            let bytes = try handle.read(upToCount:262145) ?? Data()
+            guard bytes.count <= 262144, let edits = String(data:bytes,encoding:.utf8) else { throw KilnError.message("Patch file must contain at most 256 KiB of UTF-8 JSON") }
+            return try await webCommand(["web","apply",p[2],edits],sessionID:sessionID,progress:progress)
         case let p where p.count == 4 && p[1] == "apply":
             let target = try await runtime.developmentTarget(p[2]), owner = try aiOwnerFingerprint()
             let generation = await runtime.snapshot().first(where: { $0.id == p[2] })?.generationFingerprint
@@ -68,7 +84,7 @@ extension KilnCommands {
         case let p where p.count == 3 && p[1] == "changes":
             let text = try await webDevelopment.changes(module: p[2])
             try authorizeAdmin(); return CommandResult(text)
-        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web refactor APP/MODULE PATH SHA256 components|functions / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
+        default: return CommandResult("web register CONFIG.json / web projects / web source APP/MODULE [OFFSET] / web changes APP/MODULE / web history APP/MODULE / web tree APP/MODULE [CHANGE] / web file APP/MODULE PATH [CHANGE] / web apply APP/MODULE OPERATIONS-JSON / web apply-file APP/MODULE OWNED-PATCH.json / web refactor APP/MODULE PATH SHA256 components|functions / web code APP/MODULE CHANGE / web diff APP/MODULE CHANGE / web restore APP/MODULE CHANGE / web preview APP/MODULE /PATH\nCoding is off until an administrator registers one app source, trusted SDK and explicit autoPublish development grant. macOS isolation is required; no unrestricted shell or repository access.")
         }
     }
     func rollbackService(_ module: String, expectedGeneration: String? = nil) async throws -> String {

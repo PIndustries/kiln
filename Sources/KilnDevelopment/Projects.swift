@@ -88,7 +88,7 @@ public actor WebDevelopment {
         let names = try FileManager.default.contentsOfDirectory(at: projects, includingPropertiesForKeys: nil).filter { $0.pathExtension == "json" }
         return try names.prefix(8).map { url in
             let p = try JSONDecoder().decode(RegisteredProject.self, from: bounded(url, limit: 1_048_576)).configuration
-            return "\(p.module) / source \(URL(fileURLWithPath: p.source).lastPathComponent) / files \(p.root == nil ? "single" : "project") / auto-publish \(p.autoPublish) / \(p.publicOrigin)"
+            return "\(p.module) / source \(URL(fileURLWithPath: p.source).lastPathComponent) / files \(p.root == nil ? "single" : "project") / auto-publish \(p.autoPublish) / \(p.publicOrigin) / Swift views: \(try project(p.module).sdk.nativeViews == true) / HTML templates: \(try project(p.module).sdk.htmlTemplates == true)"
         }.joined(separator: "\n")
     }
     private func snapshot(module: String, change: String? = nil) throws -> (WebFiles, String) {
@@ -247,6 +247,7 @@ public actor WebDevelopment {
         let registrations = try bounded(projectFile(module), limit: 1_048_576)
         let before = try WebFiles.read(config)
         let after = try restoring.map { WebFiles(files: $0) } ?? before.applying(edits, multiFile: config.root != nil, limit: operationLimit)
+        if after.files.keys.contains(where: { $0.hasPrefix("Views/") && $0.hasSuffix(".html") }), registered.sdk.htmlTemplates != true { throw KilnError.message("Registered SDK does not support HTML templates; an administrator must export and register an updated SDK") }
         try after.validate()
         guard after != before, config.root != nil || after.files.count == 1 else { throw KilnError.message("Changed project requires an explicit root grant") }
         let entries = try FileManager.default.contentsOfDirectory(atPath: jobs.path)
