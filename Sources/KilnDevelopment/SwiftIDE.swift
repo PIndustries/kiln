@@ -56,15 +56,23 @@ extension WebDevelopment {
             let items = (raw as? [String:Any])?["items"] as? [[String:Any]] ?? raw as? [[String:Any]] ?? []
             // SourceKit may return an unfiltered list. Filter before limiting it,
             // otherwise common matches can fall beyond the first page of symbols.
-            let prefix = String(request.text.prefix(request.cursor).reversed().prefix {
+            let typedPrefix = String(request.text.prefix(request.cursor).reversed().prefix {
                 $0.isLetter || $0.isNumber || $0 == "_"
-            }.reversed()).lowercased()
+            }.reversed())
+            let prefix = typedPrefix.lowercased()
             let matches = items.filter { item in
                 guard !prefix.isEmpty else { return true }
                 let name = item["filterText"] as? String ?? item["label"] as? String ?? ""
                 return name.lowercased().hasPrefix(prefix)
             }
-            for item in matches.prefix(100) {
+            let ranked = matches.enumerated().sorted { lhs, rhs in
+                func exactCase(_ item: [String:Any]) -> Bool {
+                    (item["filterText"] as? String ?? item["label"] as? String ?? "").hasPrefix(typedPrefix)
+                }
+                let left = exactCase(lhs.element), right = exactCase(rhs.element)
+                return left == right ? lhs.offset < rhs.offset : left
+            }.map(\.element)
+            for item in ranked.prefix(100) {
                 guard let label = item["label"] as? String else { continue }
                 let edit = item["textEdit"] as? [String:Any], range = edit?["range"] as? [String:Any]
                 let start = (range?["start"] as? [String:Any]).flatMap { SwiftLanguage.offset($0,in:request.text) } ?? request.cursor
