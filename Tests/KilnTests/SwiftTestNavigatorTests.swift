@@ -157,3 +157,34 @@ private final class SwiftTestProgressRecorder: @unchecked Sendable {
     #expect(ui.render(width:140,height:35,theme:TerminalTheme()).contains("Discard unsaved edits?"))
     #expect(ui.hasUnsavedEdits)
 }
+
+@Test(arguments:[false,true]) func escapeCancelsQueuedIntentAndDiscardWhileDismissedCompletionIsPending(publish: Bool) throws {
+    var ui = try testNavigatorEditor()
+    _ = ui.handle(.text("e"),width:140,height:35); _ = ui.handle(.text("word"),width:140,height:35)
+    #expect(ui.completeAfterTyping() != nil)
+    _ = ui.handle(publish ? .eof : .build,width:140,height:35)
+    _ = ui.handle(.escape,width:140,height:35)
+    _ = ui.handle(.escape,width:140,height:35)
+    #expect(ui.render(width:140,height:35,theme:TerminalTheme()).contains("Discard unsaved edits?"))
+    _ = ui.handle(.escape,width:140,height:35)
+    #expect(!ui.render(width:140,height:35,theme:TerminalTheme()).contains("Discard unsaved edits?"))
+    ui.finish(text:String(decoding:try JSONEncoder().encode(SwiftIDEResult(action:"complete",message:"Late completion")),as:UTF8.self),status:0)
+    #expect(ui.takeDeferredLanguageRead() == nil)
+    #expect(!ui.render(width:140,height:35,theme:TerminalTheme()).contains("Compile and publish"))
+    #expect(ui.hasUnsavedEdits)
+}
+
+@Test func escapingPendingCompletionReturnsVimToNormalWithoutDiscardingDrafts() throws {
+    var ui = try testNavigatorEditor()
+    _ = ui.handle(.vim,width:140,height:35)
+    _ = ui.handle(.text("i"),width:140,height:35)
+    _ = ui.handle(.text("word"),width:140,height:35)
+    #expect(ui.completeAfterTyping() != nil)
+    _ = ui.handle(.escape,width:140,height:35)
+    #expect(ui.render(width:140,height:35,theme:TerminalTheme()).contains("Vim NORMAL"))
+    _ = ui.handle(.escape,width:140,height:35)
+    #expect(!ui.render(width:140,height:35,theme:TerminalTheme()).contains("Discard unsaved edits?"))
+    ui.finish(text:String(decoding:try JSONEncoder().encode(SwiftIDEResult(action:"complete",message:"Late completion")),as:UTF8.self),status:0)
+    #expect(ui.hasUnsavedEdits)
+    #expect(ui.render(width:140,height:35,theme:TerminalTheme()).contains("Vim NORMAL"))
+}

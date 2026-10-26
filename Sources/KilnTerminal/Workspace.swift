@@ -400,7 +400,8 @@ struct WorkspaceUI {
         autoCompletionReady = false
         if input == .escape, !completionDismissed, ideResult?.action == "complete" || idePending?.action == "complete" {
             completionDismissed = true; ideResult = nil
-            if queuedLanguageRead?.action == "complete" { queuedLanguageRead = nil }
+            queuedLanguageRead = nil; publishAfterLanguageRead = false
+            if vim.enabled { _ = vim.handle(.escape,text:&draft,cursor:&cursor) }
             return nil
         }
         if input == .followAgent { followingAgent.toggle(); return nil }
@@ -514,8 +515,9 @@ struct WorkspaceUI {
             }
             return nil
         }
-        if idePending != nil {
+        if idePending != nil, confirmation.isEmpty {
             if key == .escape, completionDismissed, idePending?.action == "complete", mode == "edit" {
+                if vim.enabled { _ = vim.handle(.escape,text:&draft,cursor:&cursor); return nil }
                 confirmation = "discard"; accepted = false; return nil
             }
             if key == .escape, publishAfterLanguageRead || queuedLanguageRead != nil { publishAfterLanguageRead = false; queuedLanguageRead = nil; error = ""; return nil }
@@ -867,9 +869,10 @@ struct WorkspaceUI {
             if result.tests != nil { row(4,"| "+fit(heading,w-4)+" |") }
             let labels: [String]
             if let tests = result.tests, !testFailureView {
-                labels = tests.map { test in
-                    let failure = test.failures.first.map { "  "+$0.path+":"+String($0.line)+" "+$0.message } ?? ""
-                    return "["+test.state+"] "+test.name+failure
+                labels = tests.map { test -> String in
+                    var label = "[\(test.state)] \(test.name)"
+                    if let issue = test.failures.first { label += "  \(issue.path):\(issue.line) \(issue.message)" }
+                    return label
                 }
             } else if result.action == "complete" { labels = result.completions.map { $0.label+"  "+$0.detail } }
             else if result.action == "codeActions" { labels = (result.codeActions ?? []).map { $0.title+($0.disabledReason.map { " [unavailable: "+$0+"]" } ?? "") } }
@@ -883,7 +886,11 @@ struct WorkspaceUI {
                     row(5+i,"| "+"\u{1b}[38;5;\(color)m"+fit((start+i == ideIndex ? "> " : "  ")+label,w-4)+" |")
                 }
             }
-            row(h-3,"| "+fit(result.tests != nil ? "A all  R selected  F failures/tests  D discover  Enter/click source  Esc code; F1 returns" : ["rename","format","codeActions"].contains(result.action) ? "Enter applies selected edits to drafts (no publish)  Esc discard" : "Arrows choose  Enter/click open or insert  Esc close",w-4)+" |")
+            let controls: String
+            if result.tests != nil { controls = "A all  R selected  F failures/tests  D discover  Enter/click source  Esc code; F1 returns" }
+            else if ["rename","format","codeActions"].contains(result.action) { controls = "Enter applies selected edits to drafts (no publish)  Esc discard" }
+            else { controls = "Arrows choose  Enter/click open or insert  Esc close" }
+            row(h-3,"| "+fit(controls,w-4)+" |")
         }
         if let began = languageStarted, idePending != nil, !automaticCompletion, !automaticDiagnostics {
             row(h-3,"| "+fit(languageStatus+" / "+String(Int(Date().timeIntervalSince(began)))+"s / Ctrl-C cancel",w-4)+" |")
