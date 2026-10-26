@@ -217,7 +217,8 @@ public struct KilnTerminal {
             liveStatus = "Agent " + String(work.id.prefix(8)) + " / " + work.state
             if work.queuedContext > 0 { liveStatus += " / \(work.queuedContext) context queued" }
             if let consumed = work.consumedContext, consumed > 0 { liveStatus += " / \(consumed) context consumed" }
-            if !work.activity.isEmpty { liveStatus += " / " + work.activity }
+            if work.activity.hasPrefix("Provider busy;") { liveStatus = work.activity + " / " + liveStatus }
+            else if !work.activity.isEmpty { liveStatus += " / " + work.activity }
             if let file = work.file { codeWorkspace?.showAgentFile(file) } else { codeWorkspace?.clearAgentFile() }
         case .provider(let provider):
             if busy && commandInChat && responseProvider == nil { responseProvider = provider }

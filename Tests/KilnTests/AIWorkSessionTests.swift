@@ -149,3 +149,17 @@ private func workerCall(_ name: String) throws -> AIMessage {
     #expect(view.state == "cancelled")
     #expect(view.answer.contains("already committed"))
 }
+
+@Test func backgroundRetryCountdownRemainsVisibleWhileReasoningAndTaskInventoryUpdate() {
+    var ui = KilnTerminal(); ui.resize(width:120,height:38)
+    _ = ui.handle(.text("`")); _ = ui.handle(.text("ai")); _ = ui.handle(.enter)
+    _ = ui.handle(.text("retry request")); _ = ui.handle(.enter)
+    var worker = AIWorkSnapshot(id:"12345678-0000-0000-0000-000000000000",prompt:"retry request",state:"running")
+    worker.reasoning = "Earlier provider output"
+    worker.activity = "Provider busy; retry 1/2 in 5s"
+    ui.progress(.work(worker))
+    ui.updateAIWorkspace(AIWorkspaceSnapshot(tasks:[AITaskSnapshot(id:"task",prompt:"Inspect worker",status:"completed")]))
+    #expect(ui.render().contains("Provider busy; retry 1/2 in 5s"))
+    #expect(ui.render().contains("TASK / completed"))
+    #expect(ui.busy)
+}
