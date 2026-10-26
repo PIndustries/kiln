@@ -35,6 +35,7 @@ struct WorkspaceUI {
     private var offset = 0, horizontal = 0, cursor = 0
     private var wrapping = false
     private var vim = VimEditor()
+    private var queuedLanguageRead: SwiftIDERequest?
     private var publishAfterLanguageRead = false
     private var idePending: SwiftIDERequest?
     private var ideResult: SwiftIDEResult?
@@ -117,15 +118,28 @@ struct WorkspaceUI {
             guard editable else { return nil }; draft = source; isNew = false; mode = "edit"
             offset = min(offset, String(source.prefix(cursor)).filter { $0 == "\n" }.count)
         }
-        let value = SwiftIDERequest(action:action,path:path,sha256:isNew && mode == "edit" ? "" : hash,text:mode == "edit" ? draft : source,cursor:cursor,buffers:buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) },newName:action == "rename" ? renameName : nil)
+        let value = languageRequest(action)
         guard let data = try? JSONEncoder().encode(value), let json = String(data:data,encoding:.utf8) else { return nil }
         idePending = value
         if !background { ideResult = nil; error = "Swift "+action+"..." }
         return command(["web","ide",module,json])
     }
+    private func languageRequest(_ action: String, at position: Int? = nil) -> SwiftIDERequest {
+        SwiftIDERequest(action:action,path:path,sha256:isNew && mode == "edit" ? "" : hash,text:mode == "edit" ? draft : source,cursor:position ?? cursor,buffers:buffers.mapValues { SwiftIDEBuffer(sha256:$0.isNew ? "" : $0.hash,text:$0.draft) },newName:action == "rename" ? renameName : nil)
+    }
+    mutating func takeDeferredLanguageRead() -> String? {
+        guard let queued = queuedLanguageRead, idePending == nil, !waiting, confirmation.isEmpty else { return nil }
+        queuedLanguageRead = nil
+        let current = languageRequest(queued.action,at:["build","diagnostics","format"].contains(queued.action) ? queued.cursor : nil)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard (try? encoder.encode(queued)) == (try? encoder.encode(current)) else {
+            error = "Queued Swift request cancelled because the editor changed; request it again."; return nil
+        }
+        return swiftTool(queued.action)
+    }
     /// Called after a short idle period, never once per keystroke.
     mutating func completeAfterTyping() -> String? {
-        guard autoCompletionReady, mode == "edit", !treeFocus, confirmation.isEmpty,
+        guard !waiting, autoCompletionReady, mode == "edit", !treeFocus, confirmation.isEmpty,
               !vim.enabled || vim.insert, idePending == nil, ideResult == nil else { return nil }
         autoCompletionReady = false
         let command = swiftTool("complete"); automaticCompletion = command != nil; return command
@@ -179,7 +193,10 @@ struct WorkspaceUI {
         return request("refresh", ["web", "browse", module, path] + (change.map { [$0] } ?? []))
     }
     func load() -> String { command(["web", change == nil ? "workspace" : "browse", module, "App.swift"] + (change.map { [$0] } ?? [])) }
-    private mutating func request(_ name: String, _ parts: [String]) -> String { waiting = true; pending = name; error = ""; return command(parts) }
+    private mutating func request(_ name: String, _ parts: [String]) -> String {
+        if ["file","browse","refresh"].contains(name) { queuedLanguageRead = nil; publishAfterLanguageRead = false; if confirmation == "publish" { confirmation = "" } }
+        waiting = true; pending = name; error = ""; return command(parts)
+    }
     mutating func finish(text: String, status: Int) {
         if pending == "agent-review", proposalReview != nil {
             proposalReview?.finish(text,status:status); return
@@ -436,9 +453,13 @@ struct WorkspaceUI {
             return nil
         }
         if idePending != nil {
-            if key == .escape, publishAfterLanguageRead { publishAfterLanguageRead = false; error = ""; return nil }
+            if key == .escape, publishAfterLanguageRead || queuedLanguageRead != nil { publishAfterLanguageRead = false; queuedLanguageRead = nil; error = ""; return nil }
+            if let action = key.swiftLanguageAction {
+                publishAfterLanguageRead = false; queuedLanguageRead = languageRequest(action)
+                error = "Queued Swift "+action+" until the current request finishes; Esc cancels"; return nil
+            }
             if key == .eof, mode == "edit", editable {
-                publishAfterLanguageRead = true; error = "Waiting for Swift tools before publication review; Esc cancels"; return nil
+                queuedLanguageRead = nil; publishAfterLanguageRead = true; error = "Waiting for Swift tools before publication review; Esc cancels"; return nil
             }
             switch key {
             case .up, .down, .left, .right, .home, .end, .pageUp, .pageDown: break

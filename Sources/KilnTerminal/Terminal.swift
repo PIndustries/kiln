@@ -32,9 +32,13 @@ public struct KilnTerminal {
         codeShare = (bounded * 10000 + width-1) / width
     }
     private var workspaceVisible: Bool { codeWorkspace != nil && chatVisible }
-    public mutating func finishWorkspace(text: String, status: Int) {
+    public mutating func finishWorkspace(text: String, status: Int, module: String? = nil) {
+        guard module == nil || module == codeWorkspace?.module else { return }
         codeWorkspace?.finish(text: text, status: status)
         if let share = codeWorkspace?.takeRestoredDivider() { codeShare = share }
+    }
+    public mutating func takeDeferredWorkspaceRead() -> TerminalEffect? {
+        codeWorkspace?.takeDeferredLanguageRead().map { .workspaceRead($0) }
     }
     public mutating func checkpointCodeWorkspace() -> TerminalEffect? {
         guard !closedWorkspaces.contains(where: { $0.checkpointPending }), codeWorkspace?.checkpointPending != true else { return nil }

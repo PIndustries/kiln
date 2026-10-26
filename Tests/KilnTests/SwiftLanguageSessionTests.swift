@@ -114,3 +114,35 @@ private func languageReply(_ result: SwiftIDEResult) throws -> String { String(d
         #expect(ui.hasUnsavedEdits)
     }
 }
+
+@Test(arguments:["complete","build","definition","references"]) func explicitSwiftRequestsWaitForBackgroundDiagnostics(action: String) throws {
+    var ui = try languageEditor()
+    _ = ui.handle(.text("e"),width:120,height:35)
+    _ = ui.handle(.text("// queued draft\n"),width:120,height:35)
+    #expect(ui.diagnoseAfterTyping() != nil)
+    let keys: [String:TerminalKey] = ["complete":.complete,"build":.build,"definition":.definition,"references":.references,"diagnostics":.diagnostics]
+    #expect(ui.handle(try #require(keys[action]),width:120,height:35) == nil)
+    #expect(ui.takeDeferredLanguageRead() == nil)
+    ui.finish(text:try languageReply(SwiftIDEResult(action:"diagnostics",message:"No diagnostics")),status:0)
+    let command = ui.takeDeferredLanguageRead()
+    let args = try KilnCommands.tokenize(try #require(command))
+    let request = try JSONDecoder().decode(SwiftIDERequest.self,from:Data(args[3].utf8))
+    #expect(request.action == action)
+    #expect(request.text.contains("queued draft"))
+    #expect(ui.takeDeferredLanguageRead() == nil)
+    ui.finish(text:try languageReply(SwiftIDEResult(action:action,message:"Requested tool completed")),status:0)
+    #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("Requested tool completed"))
+    #expect(ui.hasUnsavedEdits)
+}
+@Test(arguments:[false,true]) func queuedSwiftBuildCanBeCancelledOrInvalidatedByTyping(cancel: Bool) throws {
+    var ui = try languageEditor()
+    _ = ui.handle(.text("e"),width:120,height:35)
+    _ = ui.handle(.text("// draft\n"),width:120,height:35)
+    #expect(ui.diagnoseAfterTyping() != nil)
+    _ = ui.handle(.build,width:120,height:35)
+    _ = ui.handle(cancel ? .escape : .text("newer"),width:120,height:35)
+    ui.finish(text:try languageReply(SwiftIDEResult(action:"diagnostics",message:"No diagnostics")),status:0)
+    #expect(ui.takeDeferredLanguageRead() == nil)
+    #expect(ui.hasUnsavedEdits)
+    if !cancel { #expect(ui.render(width:120,height:35,theme:TerminalTheme()).contains("editor changed")) }
+}

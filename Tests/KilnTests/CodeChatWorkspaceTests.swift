@@ -164,3 +164,12 @@ private func dragDivider(_ ui: inout KilnTerminal, from: Int, to: Int, row: Int 
     #expect(keys.feed(Array("\u{1b}[<32;110;15M\u{1b}[<0;110;15m".utf8)) == [
         .mouse(button:32,column:110,row:15,released:false), .mouse(button:0,column:110,row:15,released:true)])
 }
+
+@Test func workspaceRepliesForOtherApplicationsCannotReplaceVisibleSource() throws {
+    var ui = try codeUI()
+    let before = ui.render()
+    ui.finishWorkspace(text:"Unavailable private source",status:1,module:"other/application")
+    #expect(ui.render() == before)
+    ui.finishWorkspace(text:"Current workspace failure",status:1,module:"demo/web")
+    #expect(ui.render().contains("Current workspace failure"))
+}

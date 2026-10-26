@@ -416,10 +416,14 @@ private final class ShellHandler: ChannelInboundHandler {
             }
         }
     }
+    private var deferredWorkspaceRead: String?
     func readWorkspace(_ line: String, channel: Channel) {
-        guard workspaceTask == nil else { return }
         // A separate lane is deliberately restricted to registered source reads.
         guard let parts = try? KilnCommands.tokenize(line), workspaceReadAllowed(parts) else { return }
+        // A bounded latest-view slot keeps a file navigation request while a
+        // language read is active. The UI blocks additional file opens while waiting.
+        guard workspaceTask == nil else { deferredWorkspaceRead = line; return }
+        let targetModule = parts[2]
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands, sessionID = owner.uuidString
         workspaceTask = Task {
@@ -429,9 +433,14 @@ private final class ShellHandler: ChannelInboundHandler {
                 shell.workspaceTask = nil
                 guard channel.isActive else { return }
                 if (try? commands.authorizeAdmin()) != nil {
-                    shell.terminal?.finishWorkspace(text: result.text, status: result.status)
+                    shell.terminal?.finishWorkspace(text: result.text, status: result.status, module:targetModule)
                 } else {
                     shell.terminal?.updateAIWorkspace(AIWorkspaceSnapshot(error: "Identity revoked or unauthorized"))
+                }
+                if let next = shell.deferredWorkspaceRead {
+                    shell.deferredWorkspaceRead = nil; shell.readWorkspace(next,channel:channel)
+                } else if case .workspaceRead(let next) = shell.terminal?.takeDeferredWorkspaceRead() {
+                    shell.readWorkspace(next,channel:channel)
                 }
                 if case .command(let command) = shell.terminal?.takeWorkspaceAttachment(), !shell.busy { shell.submit(command,channel:channel) }
                 shell.paint(channel: channel)

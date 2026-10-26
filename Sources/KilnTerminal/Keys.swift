@@ -113,3 +113,16 @@ public struct TerminalKeys {
         return keys
     }
 }
+
+extension TerminalKey {
+    var swiftLanguageAction: String? {
+        switch self {
+        case .build: "build"
+        case .diagnostics: "diagnostics"
+        case .definition: "definition"
+        case .references: "references"
+        case .complete: "complete"
+        default: nil
+        }
+    }
+}
