@@ -327,7 +327,7 @@ public actor WebDevelopment {
             throw KilnError.message("Web change \(id): \(receipt.result)")
         }
     }
-    func compile(sdk: WebBuildSDK, job: URL) async throws {
+    func compile(sdk: WebBuildSDK, job: URL, progress: @escaping @Sendable (String) -> Void = { _ in }) async throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: sdk.builder); process.arguments = [job.path]
         process.currentDirectoryURL = job
@@ -345,7 +345,9 @@ public actor WebDevelopment {
             }
         }
         let deadline = Date().addingTimeInterval(120)
+        var lastPhase = ""
         while process.isRunning {
+            if let phase = try? String(contentsOf:job.appendingPathComponent("phase.txt"),encoding:.utf8), phase != lastPhase, phase.utf8.count < 256 { lastPhase = phase; progress(phase) }
             try Task.checkCancellation()
             let size = (try? FileManager.default.attributesOfItem(atPath: log.path)[.size] as? NSNumber)?.intValue ?? 0
             guard Date() < deadline, size <= 65536 else { throw KilnError.message("Build exceeded its time or diagnostic limit") }

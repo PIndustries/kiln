@@ -7,6 +7,7 @@ import hashlib
 import json
 import shlex
 import shutil
+import subprocess
 from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -69,7 +70,53 @@ if args.snapshot_dir:
     inputs = {remap(v) for v in inputs}
     read_roots = [remap(v) for v in read_roots]
     builder, launcher = remap(builder), remap(launcher)
-metadata = dict(nativeViews=True, htmlTemplates=True, schemaVersion=1, projectFiles=True, compiler=str(compiler), arguments=arguments, objects=objects,
+# Use the installed toolchain's test flags, never a project package or plugin.
+test_command = next((v for k, v in plan['swiftCommands'].items() if k.startswith('C.KilnTests-')), command)
+testing_arguments = []
+testing_roots = []
+flags = iter(test_command['otherArguments'])
+for flag in flags:
+    if flag == '-Xcc':
+        next(flags)
+        continue
+    if flag in ['-plugin-path', '-F', '-I', '-L']:
+        path = next(flags)
+        if flag == '-plugin-path' or (flag, path) not in zip(arguments, arguments[1:]):
+            testing_arguments += [flag, path]
+        if flag in ['-F', '-L'] and path not in testing_roots:
+            testing_roots.append(path)
+        if flag == '-F':
+            binary = Path(path) / 'Testing.framework/Testing'
+            if binary.is_file():
+                inputs.add(str(binary.resolve()))
+                testing_arguments += ['-Xlinker', '-rpath', '-Xlinker', path]
+# Standalone toolchains may ship a dylib instead of Xcode's Testing.framework.
+# Discover its actual installed directory; do not infer a toolchain version path.
+target_flags = []
+for index, flag in enumerate(command['otherArguments'][:-1]):
+    if flag in ['-target', '-sdk']:
+        target_flags += [flag, command['otherArguments'][index + 1]]
+target_info = json.loads(subprocess.check_output([str(compiler), '-print-target-info'] + target_flags, text=True))
+native_roots = [Path(p) for p in target_info['paths']['runtimeLibraryPaths']]
+for native_root in native_roots:
+    for library in sorted(native_root.rglob('libTesting.*')):
+        if library.name not in ['libTesting.dylib', 'libTesting.so'] or not library.is_file():
+            continue
+        runtime = str(library.resolve().parent)
+        inputs.add(str(library.resolve()))
+        if runtime not in testing_roots:
+            testing_roots.append(runtime)
+        testing_arguments += ['-L', runtime, '-Xlinker', '-rpath', '-Xlinker', runtime]
+plugin = compiler.parent.parent / 'lib/swift/host/plugins/testing'
+if plugin.is_dir() and '-plugin-path' not in testing_arguments:
+    testing_arguments += ['-plugin-path', str(plugin)]
+if plugin.is_dir():
+    inputs |= {str(p.resolve()) for p in plugin.rglob('*') if p.is_file()}
+# Test-only flags may point at build modules; preserve immutable SDK remapping.
+if args.snapshot_dir:
+    testing_arguments = [remap(v) for v in testing_arguments]
+    testing_roots = [remap(v) for v in testing_roots]
+metadata = dict(testArguments=testing_arguments, testReadRoots=testing_roots, nativeViews=True, htmlTemplates=True, schemaVersion=1, projectFiles=True, compiler=str(compiler), arguments=arguments, objects=objects,
                 readRoots=read_roots, runtimeLibraries=libraries, builder=builder, launcher=launcher,
                 inputDigests={path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in sorted(inputs)})
 for name in ['builder', 'launcher']:

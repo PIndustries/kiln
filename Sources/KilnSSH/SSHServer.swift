@@ -263,6 +263,9 @@ private final class ShellHandler: ChannelInboundHandler {
     }
     func apply(_ key: TerminalKey, channel: Channel) {
         guard commands.isAuthorized() else { channel.close(promise: nil); return }
+        if key == .interrupt, workspaceTask != nil, terminal?.canCancelWorkspaceRead == true {
+            deferredWorkspaceRead = nil; terminal?.cancelWorkspaceRead(); workspaceTask?.cancel(); paint(channel:channel); return
+        }
         if key == .interrupt, busy, secretName == nil, !secretSaving {
             if let command = terminal?.workerCancelCommand { controlWorker(command,channel:channel) }
             else { commandTask?.cancel() }
@@ -427,7 +430,14 @@ private final class ShellHandler: ChannelInboundHandler {
         let bound = NIOLoopBound(self, eventLoop: channel.eventLoop)
         let commands = self.commands, sessionID = owner.uuidString
         workspaceTask = Task {
-            let result = await commands.execute(line, sessionID: sessionID)
+            let result = await commands.execute(line, sessionID: sessionID, progress: { event in
+                guard case .status(let message) = event else { return }
+                channel.eventLoop.execute {
+                    let shell = bound.value
+                    guard channel.isActive, (try? commands.authorizeAdmin()) != nil else { return }
+                    shell.terminal?.workspaceProgress(message,module:targetModule); shell.paint(channel:channel)
+                }
+            })
             channel.eventLoop.execute {
                 let shell = bound.value
                 shell.workspaceTask = nil
